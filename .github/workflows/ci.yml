@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: TypeScript (typecheck, unit tests, Studio build, shared code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Typecheck every workspace
+        run: npm run typecheck
+      - name: Unit tests (core, cli, sdk, mastra, example)
+        run: npm test
+      - name: Build the SDK, the Mastra integration and the CLI
+        run: npm run build -w @supaknowledge/sdk -w @supaknowledge/mastra -w @supaknowledge/cli
+      - name: Lint and build Studio (TanStack Start)
+        run: |
+          npm run lint -w @supaknowledge/studio
+          npm run build -w @supaknowledge/studio
+      - name: supabase/functions/_shared/core is in sync with packages/core
+        run: |
+          npm run sync:shared
+          git diff --exit-code -- supabase/functions/_shared/core
+          untracked="$(git status --porcelain -- supabase/functions/_shared/core)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo "::error::_shared/core is out of date: run npm run sync:shared and commit the result"
+            exit 1
+          fi
+
+  deno:
+    name: Edge Functions (deno check, connector tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: deno check every function
+        run: node scripts/check-functions.mjs
+      - name: Connector tests
+        run: npm run test:deno
+
+  python:
+    name: Python SDK (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest -q
+
+  database:
+    name: Database (pgTAP access-control suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 3.4.0
+      - name: Start the local stack (migrations + seed)
+        run: |
+          cp supabase/.env.example supabase/.env
+          supabase start
+      - name: pgTAP
+        run: supabase test db
+      - name: Stop
+        if: always()
+        run: supabase stop --no-backup

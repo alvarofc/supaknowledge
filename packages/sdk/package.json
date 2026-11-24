@@ -1,0 +1,61 @@
+{
+  "name": "@supaknowledge/sdk",
+  "version": "0.1.0",
+  "description": "Supaknowledge client SDK: search, read and flag knowledge, load skills, record traces, and expose Supaknowledge as tools for any OpenAI-compatible or JSON Schema tool loop. Runs in Node, Deno, browsers and edge runtimes.",
+  "keywords": [
+    "supaknowledge",
+    "knowledge",
+    "agents",
+    "ai",
+    "mcp",
+    "supabase",
+    "llm",
+    "tools",
+    "agent-skills",
+    "rag"
+  ],
+  "homepage": "https://github.com/alvarofc/supaknowledge/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/alvarofc/supaknowledge/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alvarofc/supaknowledge.git",
+    "directory": "packages/sdk"
+  },
+  "license": "Apache-2.0",
+  "author": "Supaknowledge contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "supaknowledge-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

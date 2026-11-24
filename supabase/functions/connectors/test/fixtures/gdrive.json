@@ -1,0 +1,33 @@
+{
+  "folders": {
+    "ROOT": [{"id": "SUB1", "parents": ["ROOT"]}],
+    "SUB1": []
+  },
+  "files": [
+    {"id": "DOC1", "name": "Pricing FAQ", "mimeType": "application/vnd.google-apps.document", "modifiedTime": "2026-11-20T08:00:00.000Z",
+     "webViewLink": "https://docs.google.com/document/d/DOC1/edit", "parents": ["ROOT"], "owners": [{"displayName": "Pat Lee", "emailAddress": "pat@acme.example"}],
+     "permissions": [{"type": "user", "role": "owner", "emailAddress": "pat@acme.example"}, {"type": "group", "role": "reader", "emailAddress": "sales@acme.example"}]},
+    {"id": "DOC2", "name": "Big export", "mimeType": "application/vnd.google-apps.document", "modifiedTime": "2026-11-21T08:00:00.000Z",
+     "webViewLink": "https://docs.google.com/document/d/DOC2/edit", "parents": ["SUB1"], "permissions": [{"type": "domain", "role": "reader", "domain": "acme.example"}]},
+    {"id": "MD1", "name": "runbook.md", "mimeType": "text/markdown", "modifiedTime": "2026-11-19T08:00:00.000Z", "md5Checksum": "abc", "size": "40", "parents": ["SUB1"],
+     "permissions": [{"type": "anyone", "role": "reader"}]},
+    {"id": "IMG1", "name": "diagram.png", "mimeType": "image/png", "modifiedTime": "2026-11-18T08:00:00.000Z", "parents": ["ROOT"]},
+    {"id": "SHEET1", "name": "Quotas", "mimeType": "application/vnd.google-apps.spreadsheet", "modifiedTime": "2026-11-22T08:00:00.000Z", "parents": ["ROOT"], "driveId": "DRIVE9"}
+  ],
+  "exports": {
+    "DOC1:text/markdown": "# Pricing FAQ\n\n**Q:** Do we discount nonprofits?\n\n**A:** Yes, 20%.\n",
+    "DOC2:text/plain": "Big export as plain text.",
+    "SHEET1:text/csv": "rep,quota\nann,100\n"
+  },
+  "media": {"MD1": "# Runbook\n\nRestart the worker.\n"},
+  "changes": {
+    "changes": [
+      {"fileId": "GONE1", "removed": true},
+      {"fileId": "TRASH1", "removed": false, "file": {"trashed": true, "parents": ["ROOT"]}},
+      {"fileId": "MOVED1", "removed": false, "file": {"trashed": false, "parents": ["ELSEWHERE"]}},
+      {"fileId": "UNKNOWN", "removed": true},
+      {"fileId": "MD1", "removed": false, "file": {"trashed": false, "parents": ["SUB1"]}}
+    ],
+    "newStartPageToken": "tok-2"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@supaknowledge/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supaknowledge core: OKF + Agent Skills formats, chunking, access rules, policies and the curator engine (Mastra model layer). Runs in Node and Deno. Internal: shipped as TypeScript source and bundled into the CLI and copied into the Edge Functions; not published.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./formats": "./src/formats.ts",
+    "./curator": "./src/curator/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7",
+    "@supabase/supabase-js": "^2.119.2",
+    "@mastra/core": "1.85.0"
+  }
+}

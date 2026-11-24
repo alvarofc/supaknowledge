@@ -1,0 +1,20 @@
+node_modules/
+dist/
+# Studio (TanStack Start / Vite / Nitro) build output
+.output/
+.nitro/
+.tanstack/
+.vercel/
+.netlify/
+.turbo/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+supabase/functions/.env
+.DS_Store
+coverage/
+# written by `kf init` / `kf pull` when you try the quickstart from the repo root
+/.supaknowledge.json
+/.supaknowledge/
+/.claude/skills/

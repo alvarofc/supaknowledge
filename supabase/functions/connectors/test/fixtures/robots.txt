@@ -1,0 +1,11 @@
+# robots for docs.acme.example
+User-agent: *
+Disallow: /private/
+Allow: /private/public-note
+Disallow: /*.json$
+Crawl-delay: 1
+
+User-agent: BadBot
+Disallow: /
+
+Sitemap: https://docs.acme.example/sitemap.xml
