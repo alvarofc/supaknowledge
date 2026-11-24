@@ -41,6 +41,23 @@ export function matchGroups(refs: AclHint["refs"], groups: GroupRef[]): string[]
   return [...out].sort();
 }
 
+/**
+ * Groups an AclHint maps to: object-level `refs` (union) combined with the most specific matching `tiers`
+ * entry. Combining narrows (intersection); disjoint sets keep the most specific hierarchical mapping.
+ */
+export function matchAcl(acl: AclHint, groups: GroupRef[]): string[] {
+  const direct = matchGroups(acl.refs ?? [], groups);
+  let tier: string[] = [];
+  for (const t of acl.tiers ?? []) {
+    tier = matchGroups(t, groups);
+    if (tier.length) break;
+  }
+  if (!tier.length) return direct;
+  if (!direct.length) return tier;
+  const inter = direct.filter((g) => tier.includes(g));
+  return inter.length ? inter : tier;
+}
+
 export function resolveAudience(
   sourceAudience: string[],
   acl: AclHint | undefined,
@@ -48,7 +65,7 @@ export function resolveAudience(
   opts: { strict?: boolean } = {},
 ): AudienceDecision {
   const source = [...new Set(sourceAudience ?? [])].sort();
-  const matched = acl ? matchGroups(acl.refs, groups) : [];
+  const matched = acl ? matchAcl(acl, groups) : [];
   if (!matched.length) {
     if (acl?.restricted && opts.strict) {
       return { kind: "skip", reason: "restricted upstream object with no group mapped through groups.external_ref (acl_strict)" };

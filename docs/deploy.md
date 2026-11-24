@@ -54,17 +54,25 @@ Optional model secrets: `KF_LLM_FAST_MODEL` (cheaper model for trace mining), `K
 redeploy needed. The endpoint must be reachable from Supabase's Edge Functions (public, or through your network's
 ingress). See [model configuration](curator.md#model-configuration).
 
-`supabase/config.jsonc` sets `verify_jwt = false` for every function: they authenticate callers themselves
-(agent keys are not JWTs; cron uses the internal secret). `SUPABASE_URL` and the project keys are provided by the
-platform.
+`supabase/config.jsonc` sets `verify_jwt = false` for every function, including `maintenance` (the Storage
+garbage collector, which accepts nothing but the internal secret): they authenticate callers themselves (agent
+keys are not JWTs; cron uses the internal secret). `supabase functions deploy` reads that setting; if you deploy a
+single function by name, keep `--no-verify-jwt`. `SUPABASE_URL` and the project keys are provided by the platform.
 
-Optional secrets:
+Optional secrets (all listed in `edge_runtime.secrets` of `supabase/config.jsonc` and in
+`supabase/.env.example` for local development; set them with `npx supabase secrets set NAME=value` when hosted):
 
-| Secret | When |
-|---|---|
-| `GITHUB_TOKEN` | Default token for GitHub sources without their own (public repos get a higher rate limit) |
-| `KF_PUBLIC_URL` | The `mcp` function builds its OAuth metadata from the request host; set this when clients reach the project through a custom domain or proxy, e.g. `https://kb.example.com` |
-| `CONNECTOR_DOC_LIMIT`, `CONNECTOR_TIME_BUDGET_MS` | Connector batch size and time budget per run (keep the budget below your plan's function wall-clock limit); see [connectors](connectors.md#limits-and-tuning) |
+| Secret | Default | When |
+|---|---|---|
+| `KF_PUBLIC_URL` | unset | Public origin of the API as MCP clients see it, e.g. `https://<project-ref>.supabase.co` or `https://kb.example.com`. The `mcp` function builds its OAuth metadata and resource URLs from it. Recommended for every deployment, required behind a custom domain or proxy. Without it the function uses `SUPABASE_PUBLIC_URL`, then `SUPABASE_URL` unless that is an internal host (`kong`, `*.internal`…), then validated request headers (those answers are sent `Cache-Control: no-store`) |
+| `SUPABASE_PUBLIC_URL` | unset | Fallback for `KF_PUBLIC_URL` (some self-hosted setups already define it) |
+| `KF_LLM_ALLOWED_MODELS` | any | Comma-separated model ids (`prefix/*` wildcards) that space admins may choose in curator settings; empty = any. See [model configuration](curator.md#model-configuration) |
+| `KF_CURATOR_TASK_BUDGET_MS` | `110000` | Wall-clock budget per curator task (clamped to 30000–380000); raise it on plans whose functions may run 400 s |
+| `GITHUB_TOKEN` | unset | Default token for GitHub sources without their own (higher rate limit for public repos); only ever sent to `api.github.com`, see [connectors](connectors.md#github-github) |
+| `KF_CONNECTOR_MAX_BYTES` | `20971520` (20 MiB) | Largest upstream response body a connector buffers; bigger files are skipped |
+| `KF_CONNECTORS_ALLOW_PRIVATE_NETWORK` | `false` | `true` lets connectors reach private, loopback and link-local addresses (the SSRF guard refuses them otherwise). Only for self-hosted setups that sync intranet sites |
+| `KF_EMBEDS_PER_REQUEST` | `4` | New chunks the `embed` function embeds per request (gte-small runs on the function's CPU); the `kf-embed` cron sends 4 jobs per request |
+| `CONNECTOR_DOC_LIMIT`, `CONNECTOR_TIME_BUDGET_MS` | `200`, `120000` | Connector batch size and time budget per run (keep the budget below your plan's function wall-clock limit); see [connectors](connectors.md#limits-and-tuning). Not in `config.jsonc`: set them with `supabase secrets set` if you need them |
 
 ## 4. Auth
 
@@ -81,7 +89,10 @@ In **Authentication → OAuth Server** (needed for MCP clients that sign people 
 - enable dynamic client registration, so Claude Code, Cursor and others can register themselves.
 
 Decide whether anyone may sign up (**Authentication → Sign In / Providers**). People only see what they are
-granted, but you may prefer invitations.
+granted: a new account belongs to no workspace until it accepts an invitation (Studio → Settings → Members, or
+`kf members invite`). Invitations are matched to the account's **verified** e-mail, so keep e-mail confirmation on.
+Supaknowledge sends no invitation e-mail itself; tell people to sign up and accept in Studio. See
+[access control](access-control.md#joining-a-workspace-invitations).
 
 ## 5. Studio on Vercel
 
@@ -92,6 +103,8 @@ set these variables for Production and Preview. Vite inlines them at build time,
 |---|---|
 | `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | the project's publishable key (`sb_publishable_…`) |
+| `SITE_URL` | recommended: your Studio URL, e.g. `https://studio.example.com`. Server-only (read at runtime); sign-in and sign-out redirects always go there. |
+| `TRUST_PROXY` | optional: `1` only if a proxy in front of Studio overwrites `X-Forwarded-Host` / `-Proto` (otherwise those headers are ignored) |
 
 Studio never needs a secret key.
 
@@ -158,7 +171,9 @@ Supaknowledge uses only standard Supabase services, so it runs on the self-hoste
 - **Auth.** Set the site URL and redirect URLs to Studio, and enable the OAuth 2.1 server with the authorization
   path `/oauth/consent` in the Auth (GoTrue) configuration; see the Supabase self-hosting docs for the
   environment variables of your version.
-- **Public URL.** If the API gateway sits behind another proxy, set `KF_PUBLIC_URL` on the functions so MCP
-  clients see the right OAuth metadata.
+- **Public URL.** Set `KF_PUBLIC_URL` (or `SUPABASE_PUBLIC_URL`) on the functions to the URL clients use, so MCP
+  clients see the right OAuth metadata; the internal `SUPABASE_URL` (e.g. `http://kong:8000`) is never advertised.
+- **Intranet sources.** Connectors refuse private network addresses; set `KF_CONNECTORS_ALLOW_PRIVATE_NETWORK=true`
+  only if you need to sync sites on your own network.
 - **Time limits.** Workers budget about 110–120 s per invocation and the queue visibility timeouts are 120 s
   (embed) and 400 s (connectors, curator). Keep the edge runtime's wall-clock limit above the budgets.

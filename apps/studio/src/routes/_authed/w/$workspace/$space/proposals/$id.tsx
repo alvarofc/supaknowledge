@@ -25,12 +25,14 @@ import type { Tone } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, EmptyState } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
 import type { Database } from "@/lib/database.types";
-import { actorLabel, formatDate, timeAgo } from "@/lib/format";
+import { actorLabel } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadProposal } from "@/server/proposal.functions";
 import type { ConceptCols } from "@/server/proposal.functions";
+import { safeHref } from "@/lib/safe-href";
+import { Timestamp } from "@/components/kf/timestamp";
 
 type Enums = Database["public"]["Enums"];
 
@@ -78,6 +80,9 @@ function ProposalPage() {
   const citedFlags = new Map(data.citedFlags.map((f) => [f.id, f]));
   const citedConcepts = new Map(data.citedConcepts.map((c) => [c.id, c]));
   const linkedFlags = data.linkedFlags.filter((f) => !citedFlags.has(f.id));
+  // evidence the curator read while researching but did not cite: it still counts for escalation and visibility
+  const cited = citations.filter((c) => !c.consulted);
+  const consulted = citations.filter((c) => c.consulted);
 
   const conflicts = p.status === "conflicted" ? parseConflicts(p.review_note) : null;
   const canReview = atLeast(ctx.role, "reviewer");
@@ -103,7 +108,7 @@ function ProposalPage() {
           <h1 className="text-xl font-normal tracking-tight sm:text-2xl text-fg">{p.title}</h1>
           <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-sm text-muted">
             {p.author.startsWith("curator") ? <Bot className="size-3.5 text-subtle" aria-hidden="true" /> : null}
-            Proposed by {actorLabel(p.author, profiles)} · <time dateTime={p.created_at} title={formatDate(p.created_at)}>{timeAgo(p.created_at)}</time>
+            Proposed by {actorLabel(p.author, profiles)} · <Timestamp iso={p.created_at} />
             {run ? (
               <>
                 {" "}
@@ -187,7 +192,7 @@ function ProposalPage() {
                     applied={applied}
                     base={ctx.base}
                     groups={ctx.groups}
-                    citationLabels={citations.filter((c) => c.op_id === op.id).map((c) => c.label)}
+                    citationLabels={cited.filter((c) => c.op_id === op.id).map((c) => c.label)}
                   />
                 );
               })
@@ -196,11 +201,11 @@ function ProposalPage() {
 
           <Card>
             <CardHeader title="Evidence" description="Every claim the curator writes should cite a source document, trace, flag or concept" />
-            {citations.length === 0 && linkedFlags.length === 0 ? (
+            {cited.length === 0 && linkedFlags.length === 0 ? (
               <p className="px-4 py-4 text-sm text-subtle">No citations. Treat uncited changes with extra care.</p>
             ) : (
               <ul className="divide-y divide-line">
-                {citations.map((c) => (
+                {cited.map((c) => (
                   <li key={c.id} id={`cite-${encodeURIComponent(c.label)}`} className="scroll-mt-20 px-4 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-xs text-subtle">[^{c.label}]</span>
@@ -238,6 +243,37 @@ function ProposalPage() {
               </ul>
             )}
           </Card>
+
+          {consulted.length ? (
+            <Card>
+              <CardHeader
+                title={`Also consulted (${consulted.length})`}
+                description="Read by the curator while researching but not cited. It still decides who can see this proposal and whether it widens access."
+              />
+              <ul className="divide-y divide-line">
+                {consulted.map((c) => (
+                  <li key={c.id} className="px-4 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge>{c.ref_kind.replace("_", " ")}</Badge>
+                      <AudienceBadge audience={c.audience} groups={ctx.groups} />
+                      <CitationLink
+                        kind={c.ref_kind}
+                        refId={c.ref_id}
+                        url={c.url}
+                        base={ctx.base}
+                        doc={c.ref_id ? docs.get(c.ref_id) : undefined}
+                        trace={c.ref_id ? traces.get(c.ref_id) : undefined}
+                        concept={c.ref_id ? citedConcepts.get(c.ref_id) : undefined}
+                      />
+                      {c.ref_kind === "flag" && c.ref_id && citedFlags.get(c.ref_id) ? (
+                        <span className="truncate text-sm text-muted">{citedFlags.get(c.ref_id)!.observation}</span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          ) : null}
         </div>
 
         <aside className="flex flex-col gap-4 lg:sticky lg:top-6 lg:self-start">
@@ -247,6 +283,7 @@ function ProposalPage() {
               canReview ? (
                 <ReviewActions
                   proposalId={p.id}
+                  hasFiles={data.hasFiles}
                   canApprove={pending}
                   canReject
                   approveBlockedReason={pending ? approveBlockedReason : null}
@@ -260,18 +297,25 @@ function ProposalPage() {
                   p.auto_applied ? (
                     <p className="flex items-start gap-1.5">
                       <Zap className="mt-0.5 size-3.5 shrink-0 text-ok" /> Applied automatically by the space auto-apply policy{" "}
-                      {p.applied_at ? timeAgo(p.applied_at) : ""}.
+                      {p.applied_at ? <Timestamp iso={p.applied_at} /> : ""}.
                     </p>
                   ) : (
                     <p>
-                      Applied {p.applied_at ? timeAgo(p.applied_at) : ""} by{" "}
+                      Applied {p.applied_at ? <Timestamp iso={p.applied_at} /> : ""} by{" "}
                       {p.reviewed_by ? (profiles[p.reviewed_by]?.display_name ?? "a reviewer") : "a reviewer"}.
                     </p>
                   )
                 ) : (
                   <p>
                     {p.status[0].toUpperCase() + p.status.slice(1)}
-                    {p.reviewed_at ? ` ${timeAgo(p.reviewed_at)}` : ""}
+                    {p.reviewed_at ? (
+                      <>
+                        {" "}
+                        <Timestamp iso={p.reviewed_at} />
+                      </>
+                    ) : (
+                      ""
+                    )}
                     {p.reviewed_by ? ` by ${profiles[p.reviewed_by]?.display_name ?? "a reviewer"}` : ""}.
                   </p>
                 )}
@@ -288,7 +332,7 @@ function ProposalPage() {
                   <li key={r.id} className="text-sm">
                     <div className="flex items-center gap-1.5 text-xs text-subtle">
                       <MessageSquare className="size-3.5" />
-                      {r.reviewer ? (profiles[r.reviewer]?.display_name ?? "Reviewer") : "Curator"} · {timeAgo(r.created_at)}
+                      {r.reviewer ? (profiles[r.reviewer]?.display_name ?? "Reviewer") : "Curator"} · <Timestamp iso={r.created_at} />
                     </div>
                     {r.note ? <div className="mt-1"><Markdown size="sm">{r.note}</Markdown></div> : null}
                   </li>
@@ -304,7 +348,7 @@ function ProposalPage() {
                 <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-subtle" aria-hidden="true" />
                 <span className="text-muted">
                   Proposed by {actorLabel(p.author, profiles)}
-                  <span className="block text-xs text-subtle">{formatDate(p.created_at)}</span>
+                  <Timestamp iso={p.created_at} format="date" className="block text-xs text-subtle" />
                 </span>
               </li>
               {reviews.map((r) => (
@@ -313,7 +357,7 @@ function ProposalPage() {
                   <span className="min-w-0 text-muted">
                     <Badge tone={DECISION[r.decision].tone}>{DECISION[r.decision].label}</Badge>{" "}
                     {r.reviewer ? (profiles[r.reviewer]?.display_name ?? "a reviewer") : "system"}
-                    <span className="block text-xs text-subtle">{formatDate(r.created_at)}</span>
+                    <Timestamp iso={r.created_at} format="date" className="block text-xs text-subtle" />
                     {r.note && (r.decision === "approve" || r.decision === "reject") ? (
                       <span className="mt-1 block border-l-2 border-line-strong pl-2 text-xs">{r.note}</span>
                     ) : null}
@@ -325,7 +369,7 @@ function ProposalPage() {
                   <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-ok" aria-hidden="true" />
                   <span className="text-muted">
                     Auto-applied by policy
-                    <span className="block text-xs text-subtle">{formatDate(p.applied_at)}</span>
+                    <Timestamp iso={p.applied_at} format="date" className="block text-xs text-subtle" />
                   </span>
                 </li>
               ) : null}
@@ -379,6 +423,8 @@ function CitationLink({
   concept?: { id: string; path: string; title: string };
 }) {
   const cls = "inline-flex min-w-0 items-center gap-1 text-sm text-accent hover:underline";
+  const docHref = safeHref(doc?.url);
+  const urlHref = safeHref(url);
   if (kind === "source_document" && refId) {
     return (
       <span className="flex min-w-0 flex-wrap items-center gap-2">
@@ -386,8 +432,8 @@ function CitationLink({
           <FileText className="size-3.5 shrink-0" />
           <span className="truncate">{doc?.title ?? "Source document"}</span>
         </Link>
-        {doc?.url ? (
-          <a href={doc.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-xs text-subtle hover:text-fg">
+        {docHref ? (
+          <a href={docHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-xs text-subtle hover:text-fg">
             original <ExternalLink className="size-3" />
           </a>
         ) : null}
@@ -410,13 +456,17 @@ function CitationLink({
       </Link>
     );
   }
-  if (url) {
+  if (urlHref) {
     return (
-      <a href={url} target="_blank" rel="noopener noreferrer" className={cls}>
+      <a href={urlHref} target="_blank" rel="noopener noreferrer" className={cls}>
         <ExternalLink className="size-3.5 shrink-0" />
         <span className="truncate">{url}</span>
       </a>
     );
+  }
+  if (url) {
+    // not an http(s) URL: show it, never link it
+    return <span className="truncate font-mono text-xs text-muted">{url}</span>;
   }
   return null;
 }

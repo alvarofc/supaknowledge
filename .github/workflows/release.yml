@@ -42,25 +42,32 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Read and check versions
+      - name: Check versions (npm packages, SDK_VERSION, Python), tag and LICENSE/NOTICE copies
         id: version
-        run: |
-          v_sdk=$(node -p "require('./packages/sdk/package.json').version")
-          v_mastra=$(node -p "require('./packages/mastra/package.json').version")
-          v_cli=$(node -p "require('./packages/cli/package.json').version")
-          v_py=$(sed -n 's/^version = "\(.*\)"$/\1/p' sdks/python/pyproject.toml)
-          echo "sdk=$v_sdk mastra=$v_mastra cli=$v_cli python=$v_py"
-          if [ "$v_sdk" != "$v_mastra" ] || [ "$v_sdk" != "$v_cli" ] || [ "$v_sdk" != "$v_py" ]; then
-            echo "::error::package versions differ"; exit 1
-          fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$v_sdk" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match package version v$v_sdk"; exit 1
-          fi
-          echo "version=$v_sdk" >> "$GITHUB_OUTPUT"
+        run: node scripts/check-release.mjs
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run check:shared
+      - name: Packed npm tarballs ship LICENSE and NOTICE, and no source maps
+        run: |
+          npm run build -w @supaknowledge/sdk -w @supaknowledge/mastra -w @supaknowledge/cli
+          for pkg in sdk mastra cli; do
+            # --ignore-scripts: prepack's build output would corrupt the JSON (built just above)
+            files=$(npm pack -w "packages/$pkg" --dry-run --json --ignore-scripts | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].files.map(f=>f.path).join("\n")))')
+            for f in LICENSE NOTICE README.md; do
+              echo "$files" | grep -qx "$f" || { echo "::error::packages/$pkg tarball is missing $f"; exit 1; }
+            done
+            if echo "$files" | grep -q '\.map$'; then echo "::error::packages/$pkg tarball ships source maps"; exit 1; fi
+          done
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Python SDK tests
+        working-directory: sdks/python
+        run: |
+          python -m pip install -e ".[test]"
+          python -m pytest -q
 
   npm:
     name: Publish to npm
@@ -117,6 +124,8 @@ jobs:
           python -m pip install --upgrade build twine
           python -m build
           python -m twine check dist/*
+          for f in dist/*.whl; do python -m zipfile -l "$f" | grep -q 'licenses/NOTICE' || { echo "::error::wheel is missing NOTICE"; exit 1; }; done
+          for f in dist/*.tar.gz; do tar -tzf "$f" | grep -q '/NOTICE$' || { echo "::error::sdist is missing NOTICE"; exit 1; }; done
       - name: Publish
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: pypa/gh-action-pypi-publish@release/v1

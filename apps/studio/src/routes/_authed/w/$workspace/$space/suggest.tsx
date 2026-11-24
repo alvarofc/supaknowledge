@@ -53,7 +53,6 @@ function SuggestPage() {
         key={concept?.id ?? "new"}
         concept={concept}
         spaceId={ctx.space.id}
-        userId={ctx.user.id}
         base={ctx.base}
         groups={ctx.groups}
         myGroupIds={ctx.myGroupIds}

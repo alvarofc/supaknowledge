@@ -8,11 +8,12 @@ import { AgentBadge, AudienceBadge, KindIcon } from "@/components/kf/badges";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, EmptyState } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
-import { formatDate, shortId, timeAgo } from "@/lib/format";
+import { shortId } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadTrace } from "@/server/activity.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/activity/traces/$id")({
   loader: ({ params }) => loadTrace({ data: { workspace: params.workspace, space: params.space, id: params.id } }),
@@ -37,14 +38,16 @@ function TracePage() {
       <div className="mb-6">
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           <OutcomeBadge outcome={trace.outcome} />
-          {trace.curated_at ? <Badge tone="accent">Curated {timeAgo(trace.curated_at)}</Badge> : <Badge>Not curated yet</Badge>}
+          {trace.curated_at ? <Badge tone="accent">
+              Curated <Timestamp iso={trace.curated_at} />
+            </Badge> : <Badge>Not curated yet</Badge>}
           <AudienceBadge audience={trace.audience} groups={ctx.groups} />
         </div>
         <h1 className="text-xl font-normal tracking-tight sm:text-2xl">{trace.name ?? `Trace ${shortId(trace.id)}`}</h1>
         <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-sm text-muted">
           Sent by {sender?.display_name ?? "an unknown sender"} {sender?.kind === "agent" ? <AgentBadge /> : null}
           {trace.on_behalf_of ? <> for {profiles[trace.on_behalf_of]?.display_name ?? "a user"}</> : null} ·{" "}
-          <time dateTime={trace.started_at}>{formatDate(trace.started_at)}</time>
+          <Timestamp iso={trace.started_at} format="date" />
           {d ? ` · ${d}` : ""}
         </p>
       </div>

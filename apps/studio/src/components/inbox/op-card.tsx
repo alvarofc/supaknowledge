@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import type { Tone } from "@/components/ui/badge";
 import { Callout, Card } from "@/components/ui/card";
 import type { Database, Json } from "@/lib/database.types";
+import { formatBytes, skillFiles } from "@/lib/skill-files";
 import { conceptHref } from "./flag-list";
 
 type Enums = Database["public"]["Enums"];
@@ -123,6 +124,7 @@ export function OpCard({
   const drifted = pending && op.op !== "create" && op.base_revision != null && currentRevision != null && currentRevision !== op.base_revision;
   const missing = pending && op.op !== "create" && currentRevision == null;
   const targetPath = op.op === "move" ? (op.new_path ?? op.path) : op.path;
+  const files = skillFiles(op.after);
   const widens = before && before.audience.length > 0 && (after.audience.length === 0 || after.audience.some((g) => !before.audience.includes(g)));
 
   return (
@@ -198,6 +200,22 @@ export function OpCard({
           </section>
         ) : op.op === "update" ? (
           <p className="text-xs text-subtle">The body is unchanged.</p>
+        ) : null}
+        {files.length ? (
+          <section aria-label="Skill files">
+            <h3 className="mb-2 mono-label text-subtle">Skill files ({files.length})</h3>
+            <ul className="flex flex-col gap-1 rounded-md border border-line px-3 py-2">
+              {files.map((f) => (
+                <li key={f.path} className="flex items-center gap-3 text-xs">
+                  <span className="min-w-0 flex-1 truncate font-mono text-fg">{f.path}</span>
+                  {f.size !== null ? <span className="shrink-0 text-subtle">{formatBytes(f.size)}</span> : null}
+                </li>
+              ))}
+            </ul>
+            {files.some((f) => f.stripped) ? (
+              <p className="mt-1 text-xs text-subtle">Copied into the concept's files; the proposal keeps only names and checksums.</p>
+            ) : null}
+          </section>
         ) : null}
         {citationLabels.length ? (
           <p className="text-xs text-subtle">

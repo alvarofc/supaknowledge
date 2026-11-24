@@ -69,6 +69,8 @@ function KnowledgePage() {
             Search knowledge
           </label>
           <input
+            // remount on client navigation so the box shows the current query (defaultValue is read only once)
+            key={`${kind ?? ""}:${q}`}
             id="kq"
             name="q"
             defaultValue={q}
@@ -177,7 +179,8 @@ function KnowledgePage() {
               </ul>
               <p className="mt-3">
                 It arrives through reviewed proposals: the curator drafts them from agent flags, traces and connected sources; you can import an
-                existing OKF bundle (<code className="font-mono text-xs">kf push</code> or the bundle import); or you can suggest a concept yourself.
+                existing OKF bundle or Agent Skills directory with the CLI (<code className="font-mono text-xs">kf import</code>); or you can suggest a
+                concept yourself.
               </p>
             </EmptyState>
           )}

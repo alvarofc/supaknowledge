@@ -9,18 +9,20 @@
 //   GET    /agents/:id                      one agent
 //   POST   /agents                          create -> { agent, key }   (key is shown once)
 //   POST   /agents/:id/rotate               new key -> { agent, key }
-//   POST   /agents/:id/revoke               ban the Auth user (key stops working)
+//   POST   /agents/:id/revoke               revoked_at + Auth ban + delete all its sessions (key stops working)
 //   POST   /agents/:id/restore              lift the ban
-//   DELETE /agents/:id                      delete the Auth user (cascades memberships)
+//   DELETE /agents/:id                      delete its sessions and the Auth user (cascades memberships)
+//
+// Management routes (everything but GET) require a human session: agent keys/JWTs and OAuth-client tokens
+// (MCP clients, JWT `client_id` set) are refused, so a token handed to an MCP client can never mint agents.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { agentEmail, authenticate, type Caller, formatAgentKey, newAgentSecret } from "../_shared/auth.ts";
-import { adminClient, publishableKey, SUPABASE_URL } from "../_shared/env.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { agentEmail, authenticate, type Caller, forgetAgent, formatAgentKey, keyPrefix, newAgentSecret } from "../_shared/auth.ts";
+import { adminClient } from "../_shared/env.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { auditActor, isUuid, must, subpath } from "../_lib/api.ts";
+import { parseCreateBody } from "./validate.ts";
 
-type SpaceRole = "reader" | "editor" | "reviewer";
-const GRANTABLE: SpaceRole[] = ["reader", "editor", "reviewer"];
 const BAN_FOREVER = "876000h";
 
 interface AgentRow {
@@ -32,19 +34,25 @@ interface AgentRow {
   created_by: string | null;
   created_at: string;
   last_seen_at: string | null;
+  /** set on revoke, cleared on restore (kept in sync with the Auth ban by this function) */
+  revoked_at: string | null;
 }
 
-const AGENT_COLS = "id, workspace_id, name, description, key_prefix, created_by, created_at, last_seen_at";
-
-function keyPrefix(agentId: string, secret: string): string {
-  // the agent id is not secret; 4 chars of the secret help tell keys apart after a rotation
-  return `skn_${agentId}_${secret.slice(0, 4)}`;
-}
+const AGENT_COLS = "id, workspace_id, name, description, key_prefix, created_by, created_at, last_seen_at, revoked_at";
 
 async function requireHuman(req: Request): Promise<Caller> {
   const caller = await authenticate(req);
   if (caller.kind !== "human") throw new HttpError(403, "agents cannot manage agents");
+  if (caller.clientId !== null) throw new HttpError(403, "OAuth client tokens cannot manage agents; use a Studio / CLI session");
   return caller;
+}
+
+/** Public shape of an agent row (never leak unknown future columns). */
+function publicAgent(a: AgentRow) {
+  return {
+    id: a.id, workspace_id: a.workspace_id, name: a.name, description: a.description, key_prefix: a.key_prefix,
+    created_by: a.created_by, created_at: a.created_at, last_seen_at: a.last_seen_at,
+  };
 }
 
 /** RLS check: the caller is owner/admin of the workspace. Must run before any admin-client call. */
@@ -90,45 +98,43 @@ async function withStatus(db: SupabaseClient, agents: AgentRow[]) {
   const ids = agents.map((a) => a.id);
   // space grants the caller can see (RLS: space readers)
   const grants = (await db.from("space_members").select("space_id, user_id, role").in("user_id", ids)).data ?? [];
-  // Admin client, read-only: ban state lives in auth.users. The agents were already filtered by RLS to
-  // ones the caller may see, and we only expose a boolean.
-  const admin = adminClient();
-  const banned = await Promise.all(agents.map(async (a) => {
-    const { data } = await admin.auth.admin.getUserById(a.id);
-    const until = (data?.user as { banned_until?: string | null } | undefined)?.banned_until;
-    return !!until && Date.parse(until) > Date.now();
-  }));
-  return agents.map((a, i) => ({
-    ...a,
-    revoked: banned[i],
+  return agents.map((a) => ({
+    ...publicAgent(a),
+    revoked: !!a.revoked_at && Date.parse(a.revoked_at) <= Date.now(),
+    revoked_at: a.revoked_at,
     spaces: grants.filter((g: { user_id: string }) => g.user_id === a.id).map((g: { space_id: string; role: string }) => ({ space_id: g.space_id, role: g.role })),
   }));
+}
+
+/**
+ * Delete every Auth session + refresh token of an agent (service-role RPC public.kf_revoke_user_sessions), so
+ * nothing minted from an old key can be refreshed. Banning or changing the password does not do this in GoTrue.
+ * Access tokens already issued stay valid until they expire (JWT exp); auth.ts additionally refuses agent JWTs
+ * once agents.revoked_at is set or the agent is deleted, and refuses keys whose prefix no longer matches.
+ */
+async function revokeSessions(id: string): Promise<number | null> {
+  // Admin client: the RPC is service-role only; every caller verified the workspace admin first.
+  const { data, error } = await adminClient().rpc("kf_revoke_user_sessions", { p_user: id });
+  if (error) {
+    console.warn(`could not revoke sessions of agent ${id}:`, error.message);
+    return null;
+  }
+  return data as number;
+}
+
+/** agents.revoked_at (not user-writable). */
+async function setRevokedAt(id: string, at: string | null): Promise<void> {
+  // Admin client: the column is not user-writable; caller verified as workspace admin.
+  const { error } = await adminClient().from("agents").update({ revoked_at: at }).eq("id", id);
+  if (error) throw new HttpError(500, `could not record the revocation: ${error.message}`);
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // routes
 // ---------------------------------------------------------------------------------------------------------
-interface CreateBody {
-  workspace_id?: string;
-  name?: string;
-  description?: string | null;
-  spaces?: { space_id: string; role?: string }[];
-}
-
 async function createAgent(req: Request): Promise<Response> {
   const caller = await requireHuman(req);
-  const body = await readJson<CreateBody>(req);
-  const workspaceId = body.workspace_id;
-  const name = body.name?.trim();
-  if (!isUuid(workspaceId)) throw new HttpError(400, "workspace_id (uuid) is required");
-  if (!name || name.length > 100) throw new HttpError(400, "name is required (max 100 characters)");
-  if (body.description != null && typeof body.description !== "string") throw new HttpError(400, "description must be a string");
-  const grants = (body.spaces ?? []).map((s) => ({ space_id: s.space_id, role: (s.role ?? "reader") as SpaceRole }));
-  if (!Array.isArray(body.spaces ?? [])) throw new HttpError(400, "spaces must be an array");
-  for (const g of grants) {
-    if (!isUuid(g.space_id)) throw new HttpError(400, "spaces[].space_id must be a uuid");
-    if (!GRANTABLE.includes(g.role)) throw new HttpError(400, `spaces[].role must be one of ${GRANTABLE.join(", ")} (agents never get admin)`);
-  }
+  const { workspaceId, name, description, grants } = parseCreateBody(await readJson<unknown>(req));
 
   // 1. permission + validation through RLS, before touching the admin client
   await requireWorkspaceAdmin(caller, workspaceId);
@@ -162,21 +168,23 @@ async function createAgent(req: Request): Promise<Response> {
     const agent = must(
       await admin
         .from("agents")
-        .insert({ id, workspace_id: workspaceId, name, description: body.description ?? null, key_prefix: keyPrefix(id, secret), created_by: caller.userId })
+        .insert({ id, workspace_id: workspaceId, name, description, key_prefix: keyPrefix(id, secret), created_by: caller.userId })
         .select(AGENT_COLS)
         .single(),
       "create agent",
     ) as AgentRow;
 
-    // 4. memberships through the caller's RLS client (workspace/space admins manage them)
-    must(await caller.db.from("workspace_members").insert({ workspace_id: workspaceId, user_id: id, role: "member" }), "add workspace member");
+    // 4. memberships. Workspace: admin client (nobody can add other users to a workspace directly, people are
+    // invited; an agent is created by a verified workspace admin, step 1). Space grants: the caller's RLS client
+    // (space admins manage them).
+    must(await admin.from("workspace_members").insert({ workspace_id: workspaceId, user_id: id, role: "member" }), "add workspace member");
     if (grants.length) {
       must(await caller.db.from("space_members").insert(grants.map((g) => ({ space_id: g.space_id, user_id: id, role: g.role }))), "grant spaces");
     }
 
     await audit(workspaceId, caller, "agent.created", id, { name, spaces: grants });
     const [withMeta] = await withStatus(caller.db, [agent]);
-    return json({ agent: withMeta, key: formatAgentKey(id, secret) }, 201);
+    return json({ agent: { ...withMeta, revoked: false }, key: formatAgentKey(id, secret) }, 201);
   } catch (e) {
     // roll back: deleting the Auth user cascades to agents + memberships
     await admin.auth.admin.deleteUser(id).catch(() => {});
@@ -191,42 +199,49 @@ async function rotateKey(caller: Caller, id: string): Promise<Response> {
   const admin = adminClient();
   const { error } = await admin.auth.admin.updateUserById(id, { password: secret });
   if (error) throw new HttpError(500, `could not rotate key: ${error.message}`);
-  // A password change does not revoke refresh tokens, so sessions minted from the OLD key (e.g. cached by
-  // auth.ts in a warm worker) could keep refreshing. Sign in once with the new key and sign out globally,
-  // which revokes every refresh token of the agent. Already-issued access tokens expire on their own (JWT exp).
-  const anon = createClient(SUPABASE_URL(), publishableKey(), { auth: { persistSession: false, autoRefreshToken: false } });
-  const s = await anon.auth.signInWithPassword({ email: agentEmail(id), password: secret });
-  if (s.data.session) {
-    const out = await admin.auth.admin.signOut(s.data.session.access_token, "global");
-    if (out.error) console.warn("revoke old sessions failed:", out.error.message);
-  } else if (s.error && !/banned/i.test(s.error.message)) {
-    console.warn("could not revoke old sessions:", s.error.message);
-  }
+  // key_prefix is what auth.ts checks on every request (cross-worker, ~15 s cache): the old key stops working
+  // as soon as this row changes. Admin client: caller verified as workspace admin by loadManagedAgent().
   const updated = must(
-    await caller.db.from("agents").update({ key_prefix: keyPrefix(id, secret) }).eq("id", id).select(AGENT_COLS).single(),
+    await admin.from("agents").update({ key_prefix: keyPrefix(id, secret) }).eq("id", id).select(AGENT_COLS).single(),
     "update agent",
   ) as AgentRow;
-  await audit(agent.workspace_id, caller, "agent.key_rotated", id);
+  forgetAgent(id);
+  // A password change does not revoke refresh tokens, so sessions minted from the OLD key could keep
+  // refreshing: delete them. Already-issued access tokens expire on their own (JWT exp).
+  const sessions = await revokeSessions(id);
+  await audit(agent.workspace_id, caller, "agent.key_rotated", id, { sessions_revoked: sessions });
   const [withMeta] = await withStatus(caller.db, [updated]);
   return json({ agent: withMeta, key: formatAgentKey(id, secret) });
 }
 
 async function setBan(caller: Caller, id: string, revoke: boolean): Promise<Response> {
   const agent = await loadManagedAgent(caller, id);
+  // Revoke: record it first (auth.ts refuses the key / agent JWTs once revoked_at is set), ban so no new
+  // session can be created, then delete the existing sessions (no refresh possible).
+  if (revoke) await setRevokedAt(id, new Date().toISOString());
   // Admin client: banning needs the Auth admin API; caller verified as workspace admin.
   const { error } = await adminClient().auth.admin.updateUserById(id, { ban_duration: revoke ? BAN_FOREVER : "none" });
   if (error) throw new HttpError(500, `could not ${revoke ? "revoke" : "restore"} agent: ${error.message}`);
-  await audit(agent.workspace_id, caller, revoke ? "agent.revoked" : "agent.restored", id);
-  const [withMeta] = await withStatus(caller.db, [agent]);
+  const sessions = revoke ? await revokeSessions(id) : null;
+  if (!revoke) await setRevokedAt(id, null);
+  forgetAgent(id);
+  await audit(agent.workspace_id, caller, revoke ? "agent.revoked" : "agent.restored", id, revoke ? { sessions_revoked: sessions } : {});
+  const fresh = must(await caller.db.from("agents").select(AGENT_COLS).eq("id", id).limit(1), "load agent") as AgentRow[];
+  const [withMeta] = await withStatus(caller.db, fresh.length ? fresh : [agent]);
   return json({ agent: withMeta });
 }
 
 async function deleteAgent(caller: Caller, id: string): Promise<Response> {
   const agent = await loadManagedAgent(caller, id);
   await audit(agent.workspace_id, caller, "agent.deleted", id, { name: agent.name });
+  // Deleting the Auth user cascades its sessions too; revoke them first anyway so a failed delete still
+  // cuts the agent off.
+  await setRevokedAt(id, new Date().toISOString());
+  await revokeSessions(id);
   // Admin client: deleting Auth users needs the admin API; caller verified as workspace admin.
   const { error } = await adminClient().auth.admin.deleteUser(id);
   if (error) throw new HttpError(500, `could not delete agent: ${error.message}`);
+  forgetAgent(id);
   return json({ deleted: id });
 }
 

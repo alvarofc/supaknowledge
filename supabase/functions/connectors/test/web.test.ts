@@ -1,6 +1,8 @@
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { runSync } from "../lib/engine.ts";
+import { ConfigError } from "../lib/types.ts";
 import { parseRobots, parseSitemap, robotsAllows, web } from "../lib/web.ts";
-import { collect, fakeFetch, fixtureText, lastCursor, makeCtx, upserts } from "./helpers.ts";
+import { collect, fakeFetch, fixtureText, lastCursor, makeCtx, MemoryStore, upserts } from "./helpers.ts";
 
 const BASE = "https://docs.acme.example";
 
@@ -101,4 +103,88 @@ Deno.test("web: follow_links discovers same-origin pages up to max_pages", async
   ]);
   const docs = upserts(await collect(web, makeCtx(web, { urls: [`${BASE}/start`], follow_links: true, max_pages: 3 }, { fetch: f, token: null })));
   assertEquals(docs.map((d) => d.externalId), [`${BASE}/start`, `${BASE}/a`, `${BASE}/b`]);
+});
+
+const html = (body: string, headers: Record<string, string> = {}) => () => new Response(`<main>${body}</main>`, { headers: { "content-type": "text/html", ...headers } });
+
+Deno.test("web: a 304 on the seed keeps crawled subpages alive (follow_links)", async () => {
+  const site304 = () =>
+    fakeFetch([
+      [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+      [`GET ${BASE}/start`, ({ headers }) =>
+        headers.get("if-none-match") === '"s1"' ? new Response(null, { status: 304 }) : html(`<p>See <a href="/sub">sub</a></p>`, { etag: '"s1"' })()],
+      [`GET ${BASE}/sub`, ({ headers }) =>
+        headers.get("if-none-match") === '"u1"' ? new Response(null, { status: 304 }) : html(`<p>Sub page</p>`, { etag: '"u1"' })()],
+    ]);
+  const store = new MemoryStore();
+  const source = { id: "s", space_id: "sp", connector: "web" as const, config: { urls: [`${BASE}/start`], follow_links: true }, audience: [], cursor: {}, status: "active" as const };
+  const r1 = await runSync({ source, connector: web as never, store, groups: [], token: null, full: true, fetch: site304(), log: () => {}, sleep: async () => {} });
+  assertEquals(store.live(), [`${BASE}/start`, `${BASE}/sub`]);
+  const f2 = site304();
+  await runSync({ source: { ...source, cursor: r1.cursor }, connector: web as never, store, groups: [], token: null, full: false, fetch: f2, log: () => {}, sleep: async () => {} });
+  assertEquals(store.live(), [`${BASE}/start`, `${BASE}/sub`], "the subpage must survive the incremental run");
+  assert(f2.calls.some((c) => c.url === `${BASE}/sub` && c.headers.get("if-none-match") === '"u1"'), "subpage is still revalidated");
+});
+
+Deno.test("web: capped crawls without validators make progress across continuations", async () => {
+  const urls = [0, 1, 2, 3, 4].map((i) => `${BASE}/p${i}`);
+  const f = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/p`, ({ url }) => html(`<p>${url.pathname}</p>`)()],
+  ]);
+  const store = new MemoryStore();
+  let cursor = {};
+  const order: string[] = [];
+  for (let run = 0; run < 5; run++) {
+    const before = f.calls.length;
+    const r = await runSync({
+      source: { id: "s", space_id: "sp", connector: "web", config: { urls }, audience: [], cursor, status: "active" },
+      connector: web as never, store, groups: [], token: null, full: run === 0, fetch: f, log: () => {}, sleep: async () => {}, limit: 2,
+    });
+    order.push(...f.calls.slice(before).map((c) => new URL(c.url).pathname).filter((p) => p !== "/robots.txt"));
+    cursor = r.cursor;
+    if (!r.more) break;
+  }
+  assertEquals(order, ["/p0", "/p1", "/p2", "/p3", "/p4"]);
+  assertEquals(store.live(), urls);
+  assertEquals((cursor as { crawl?: unknown }).crawl, undefined, "a completed cycle clears the crawl state");
+});
+
+Deno.test("web: redirects must stay in scope; off-origin child sitemaps are ignored", async () => {
+  const f = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/sitemap.xml`, () => new Response(`<sitemapindex><sitemap><loc>http://169.254.169.254/latest/</loc></sitemap><sitemap><loc>https://other.example/s.xml</loc></sitemap><sitemap><loc>${BASE}/s2.xml</loc></sitemap></sitemapindex>`)],
+    [`GET ${BASE}/s2.xml`, () => new Response(`<urlset><url><loc>${BASE}/moved</loc></url><url><loc>${BASE}/old</loc></url></urlset>`)],
+    [`GET ${BASE}/moved`, () => new Response(null, { status: 301, headers: { location: "https://evil.example/landing" } })],
+    [`GET ${BASE}/old`, () => new Response(null, { status: 302, headers: { location: "/new?token=abc" } })],
+    [`GET ${BASE}/new`, html("<p>New home</p>")],
+  ]);
+  const logs: string[] = [];
+  const ctx = makeCtx(web, { sitemap: `${BASE}/sitemap.xml` }, { fetch: f, token: null, full: true });
+  ctx.log = (m) => logs.push(m);
+  const changes = await collect(web, ctx);
+  assert(!f.calls.some((c) => !c.url.startsWith(BASE)), "nothing outside the configured origin is fetched");
+  assert(changes.some((c) => c.type === "delete" && c.externalId === `${BASE}/moved`));
+  const doc = upserts(changes).find((d) => d.externalId === `${BASE}/old`)!;
+  assertEquals(doc.metadata?.final_url, `${BASE}/new?token=abc`);
+  assert(logs.length > 0 && logs.every((l) => !l.includes("token=abc")), "logged URLs carry no query strings");
+});
+
+Deno.test("web: oversized responses are skipped, internal URLs are config errors", async () => {
+  Deno.env.set("KF_CONNECTOR_MAX_BYTES", "1000");
+  try {
+    const f = fakeFetch([
+      [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+      [`GET ${BASE}/huge`, () => new Response("x".repeat(5000), { headers: { "content-type": "text/plain" } })],
+      [`GET ${BASE}/small`, () => new Response("small", { headers: { "content-type": "text/plain" } })],
+    ]);
+    const docs = upserts(await collect(web, makeCtx(web, { urls: [`${BASE}/huge`, `${BASE}/small`] }, { fetch: f, token: null })));
+    assertEquals(docs.map((d) => d.externalId), [`${BASE}/small`]);
+  } finally {
+    Deno.env.delete("KF_CONNECTOR_MAX_BYTES");
+  }
+  for (const u of ["http://169.254.169.254/latest/meta-data/", "http://localhost:54321/", "http://kong:8000/", "http://10.0.0.1/"]) {
+    assertThrows(() => web.parseConfig({ urls: [u] }), ConfigError, undefined, u);
+    assertThrows(() => web.parseConfig({ sitemap: u }), ConfigError, undefined, u);
+  }
 });

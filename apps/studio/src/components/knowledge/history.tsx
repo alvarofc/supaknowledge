@@ -4,9 +4,10 @@ import { DiffView, FieldDiff } from "@/components/kf/diff-view";
 import { Card, CardHeader, EmptyState } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
 import type { Database } from "@/lib/database.types";
-import { actorLabel, formatDate, timeAgo } from "@/lib/format";
+import { actorLabel } from "@/lib/format";
 import type { ProfileMap } from "@/lib/format";
 import { RevertButton } from "./concept-actions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export type Revision = Pick<
   Database["public"]["Tables"]["concept_revisions"]["Row"],
@@ -112,8 +113,8 @@ export function ConceptHistory({
                         <BadgeCheck className="size-3.5" />
                       </span>
                     ) : null}
-                    <span className="ml-auto text-xs text-subtle" title={formatDate(r.created_at)}>
-                      {timeAgo(r.created_at)}
+                    <span className="ml-auto text-xs text-subtle">
+                      <Timestamp iso={r.created_at} />
                     </span>
                   </div>
                   <div className="mt-0.5 truncate text-xs text-muted">{actorLabel(r.actor, profiles)}</div>
@@ -134,7 +135,7 @@ export function ConceptHistory({
                 {fromRev ? <span className="font-normal text-muted"> compared with revision {fromRev.revision}</span> : <span className="font-normal text-muted"> (first revision)</span>}
               </div>
               <div className="mt-0.5 text-xs text-subtle">
-                {actorLabel(toRev.actor, profiles)} · {formatDate(toRev.created_at)}
+                {actorLabel(toRev.actor, profiles)} · <Timestamp iso={toRev.created_at} format="date" />
                 {toRev.proposal_id ? (
                   <>
                     {" · "}
@@ -154,6 +155,8 @@ export function ConceptHistory({
               <input type="hidden" name="to" value={toRev.revision} />
               <label htmlFor="from-rev">Compare against</label>
               <select
+                // remount when the compared revisions change on client navigation (defaultValue is read only once)
+                key={`${toRev.revision}:${fromRev?.revision ?? ""}`}
                 id="from-rev"
                 name="from"
                 defaultValue={fromRev?.revision}
@@ -178,7 +181,7 @@ export function ConceptHistory({
                   <li key={v.id} className="flex items-start gap-1.5 py-0.5">
                     <BadgeCheck className={cn("mt-px size-3.5 shrink-0", v.actor.startsWith("human:") ? "text-ok" : "text-info")} />
                     <span>
-                      Verified by {actorLabel(v.actor, profiles)} {timeAgo(v.created_at)}
+                      Verified by {actorLabel(v.actor, profiles)} <Timestamp iso={v.created_at} />
                       {v.note ? <span className="text-subtle"> — “{v.note}”</span> : null}
                     </span>
                   </li>

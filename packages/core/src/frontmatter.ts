@@ -10,7 +10,8 @@ export interface ParsedMarkdown {
   body: string;
 }
 
-const FENCE = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+// "---\n---" (an empty block) is valid frontmatter too, hence the optional inner group
+const FENCE = /^---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/;
 
 export class FrontmatterError extends Error {}
 

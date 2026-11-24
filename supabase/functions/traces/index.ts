@@ -8,25 +8,29 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { dbError, isUuid, must, resolveGroups, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import {
+  attrs,
+  audienceParam,
+  clipPayload,
+  compareSpans,
+  type EventIn,
+  hexId,
+  type Mapped,
+  mapSpan,
+  nanoToIso,
+  type OtlpRequest,
+  type OtlpSpan,
+  ROLES,
+} from "./otlp.ts";
 
-const ROLES = ["system", "user", "assistant", "tool", "feedback"] as const;
-type Role = (typeof ROLES)[number];
 const OUTCOMES = ["unknown", "success", "failure", "corrected"] as const;
 type Outcome = (typeof OUTCOMES)[number];
 
 const MAX_EVENTS = 2000;
 const MAX_CONTENT = 100_000;
-
-interface EventIn {
-  role: Role;
-  content?: string | null;
-  tool_name?: string | null;
-  tool_input?: unknown;
-  tool_output?: unknown;
-  is_error?: boolean;
-  at?: string | null;
-  metadata?: Record<string, unknown>;
-}
+/** page size for reading stored events (<= PostgREST api.max_rows) and how many we compare against */
+const EVENTS_PAGE = 1000;
+const MAX_DEDUP_EVENTS = 50_000;
 
 interface TraceIn {
   space?: string;
@@ -63,7 +67,8 @@ function validateEvents(events: unknown): EventIn[] {
   return events.map((e, i) => {
     if (!e || typeof e !== "object") throw new HttpError(400, `events[${i}] must be an object`);
     if (!ROLES.includes(e.role)) throw new HttpError(400, `events[${i}].role must be one of ${ROLES.join(", ")}`);
-    if (e.metadata !== undefined && (typeof e.metadata !== "object" || Array.isArray(e.metadata))) throw new HttpError(400, `events[${i}].metadata must be an object`);
+    if (e.metadata !== undefined && (typeof e.metadata !== "object" || e.metadata === null || Array.isArray(e.metadata))) throw new HttpError(400, `events[${i}].metadata must be an object`);
+    if (e.tool_name != null && (typeof e.tool_name !== "string" || e.tool_name.length > 200)) throw new HttpError(400, `events[${i}].tool_name must be a string (max 200)`);
     return { ...e, at: ts(e.at, `events[${i}].at`) ?? null };
   });
 }
@@ -89,6 +94,9 @@ async function appendEvents(caller: Caller, traceId: string, spaceId: string, ev
       "read events",
     ) as { seq: number }[];
     const base = (last[0]?.seq ?? -1) + 1;
+    // every row carries `at`: in a bulk insert PostgREST sends null (not the column default) for keys that only
+    // some rows have, which violates NOT NULL when one event lacks a timestamp
+    const now = new Date().toISOString();
     const rows = events.map((e, i) => ({
       trace_id: traceId,
       space_id: spaceId,
@@ -96,11 +104,11 @@ async function appendEvents(caller: Caller, traceId: string, spaceId: string, ev
       role: e.role,
       content: clip(e.content),
       tool_name: e.tool_name ?? null,
-      tool_input: e.tool_input ?? null,
-      tool_output: e.tool_output ?? null,
+      tool_input: clipPayload(e.tool_input),
+      tool_output: clipPayload(e.tool_output),
       is_error: !!e.is_error,
-      metadata: e.metadata ?? {},
-      ...(e.at ? { at: e.at } : {}),
+      metadata: (clipPayload(e.metadata ?? {}) ?? {}) as Record<string, unknown>,
+      at: e.at || now,
     }));
     const { error } = await caller.db.from("trace_events").insert(rows);
     if (!error) return rows.length;
@@ -202,191 +210,8 @@ async function patchTrace(req: Request, id: string): Promise<Response> {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// OTLP/HTTP JSON -> traces (best effort, OpenTelemetry GenAI semantic conventions)
+// OTLP/HTTP JSON -> traces (mapping in ./otlp.ts)
 // ---------------------------------------------------------------------------------------------------------
-// deno-lint-ignore no-explicit-any
-type AnyValue = any;
-interface KeyValue { key: string; value: AnyValue }
-interface OtlpEvent { timeUnixNano?: string | number; name?: string; attributes?: KeyValue[] }
-interface OtlpSpan {
-  traceId?: string; spanId?: string; parentSpanId?: string; name?: string; kind?: number | string;
-  startTimeUnixNano?: string | number; endTimeUnixNano?: string | number;
-  attributes?: KeyValue[]; events?: OtlpEvent[]; status?: { code?: number | string; message?: string };
-}
-interface OtlpRequest {
-  resourceSpans?: { resource?: { attributes?: KeyValue[] }; scopeSpans?: { scope?: { name?: string }; spans?: OtlpSpan[] }[] }[];
-}
-
-function anyValue(v: AnyValue): unknown {
-  if (!v || typeof v !== "object") return v;
-  if ("stringValue" in v) return v.stringValue;
-  if ("intValue" in v) return Number(v.intValue);
-  if ("doubleValue" in v) return Number(v.doubleValue);
-  if ("boolValue" in v) return !!v.boolValue;
-  if ("arrayValue" in v) return (v.arrayValue?.values ?? []).map(anyValue);
-  if ("kvlistValue" in v) return attrs(v.kvlistValue?.values);
-  if ("bytesValue" in v) return v.bytesValue;
-  return null;
-}
-
-function attrs(kvs?: KeyValue[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const kv of kvs ?? []) if (kv?.key) out[kv.key] = anyValue(kv.value);
-  return out;
-}
-
-/** traceId/spanId: hex per the OTLP JSON spec; some exporters send base64. Normalise to lowercase hex. */
-function hexId(id: unknown): string {
-  if (typeof id !== "string" || !id) return "";
-  if (/^[0-9a-f]+$/i.test(id)) return id.toLowerCase();
-  try {
-    return [...atob(id)].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
-  } catch {
-    return id;
-  }
-}
-
-function nanoToIso(n: unknown): string | null {
-  if (n === undefined || n === null || n === "" || n === "0" || n === 0) return null;
-  try {
-    return new Date(Number(BigInt(String(n)) / 1_000_000n)).toISOString();
-  } catch {
-    return null;
-  }
-}
-
-function parseMaybeJson(v: unknown): unknown {
-  if (typeof v !== "string") return v;
-  const t = v.trim();
-  if (!(t.startsWith("{") || t.startsWith("["))) return v;
-  try {
-    return JSON.parse(t);
-  } catch {
-    return v;
-  }
-}
-
-function mapRole(r: unknown): Role {
-  const s = String(r ?? "").toLowerCase();
-  if (s === "system" || s === "developer") return "system";
-  if (s === "user" || s === "human") return "user";
-  if (s === "tool" || s === "function" || s === "ipython") return "tool";
-  return "assistant";
-}
-
-/** Text of a GenAI message in any of the shapes seen in the wild (parts[], content string/array). */
-function messageText(m: AnyValue): string {
-  if (m == null) return "";
-  if (typeof m === "string") return m;
-  const parts = Array.isArray(m.parts) ? m.parts : Array.isArray(m.content) ? m.content : null;
-  if (parts) {
-    return parts.map((p: AnyValue) => {
-      if (typeof p === "string") return p;
-      if (p?.type === "text" || p?.text || typeof p?.content === "string") return p.text ?? p.content ?? "";
-      if (p?.type === "tool_call") return `[tool call ${p.name ?? ""}] ${typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments ?? {})}`;
-      if (p?.type === "tool_call_response") return `[tool result] ${typeof p.response === "string" ? p.response : JSON.stringify(p.response ?? null)}`;
-      return "";
-    }).filter(Boolean).join("\n");
-  }
-  if (typeof m.content === "string") return m.content;
-  if (m.message) return messageText(m.message);
-  return "";
-}
-
-function messagesFrom(v: unknown): { role: Role; content: string }[] {
-  const parsed = parseMaybeJson(v);
-  const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
-  return list.map((m: AnyValue) => ({ role: mapRole(m?.role ?? (m?.message?.role)), content: messageText(m) })).filter((m) => m.content.trim());
-}
-
-/** Legacy indexed attributes: gen_ai.prompt.0.role / gen_ai.prompt.0.content, gen_ai.completion.N.* */
-function indexed(a: Record<string, unknown>, prefix: string, defaultRole: Role): { role: Role; content: string }[] {
-  const idx = new Set<number>();
-  for (const k of Object.keys(a)) {
-    const m = new RegExp(`^${prefix.replace(/\./g, "\\.")}\\.(\\d+)\\.`).exec(k);
-    if (m) idx.add(Number(m[1]));
-  }
-  return [...idx].sort((x, y) => x - y).map((i) => ({
-    role: a[`${prefix}.${i}.role`] ? mapRole(a[`${prefix}.${i}.role`]) : defaultRole,
-    content: String(a[`${prefix}.${i}.content`] ?? ""),
-  })).filter((m) => m.content.trim());
-}
-
-interface Mapped { events: (EventIn & { key: string; t: number })[]; meta: Record<string, unknown> }
-
-function mapSpan(span: OtlpSpan, out: Mapped) {
-  const a = attrs(span.attributes);
-  const start = nanoToIso(span.startTimeUnixNano);
-  const end = nanoToIso(span.endTimeUnixNano) ?? start;
-  const t0 = start ? Date.parse(start) : 0;
-  const t1 = end ? Date.parse(end) : t0;
-  const sid = hexId(span.spanId);
-  const op = String(a["gen_ai.operation.name"] ?? "");
-  const statusCode = String(span.status?.code ?? "");
-  const isErr = statusCode === "2" || statusCode === "STATUS_CODE_ERROR" || !!a["error.type"];
-  let n = 0;
-  const push = (e: EventIn, t: number, key: string) => out.events.push({ ...e, t: t + n++ * 1e-3, key });
-
-  for (const k of ["gen_ai.system", "gen_ai.provider.name", "gen_ai.request.model", "gen_ai.agent.name", "gen_ai.conversation.id"]) {
-    if (a[k] !== undefined && out.meta[k] === undefined) out.meta[k] = a[k];
-  }
-
-  // tool executions
-  const toolName = a["gen_ai.tool.name"];
-  if (op === "execute_tool" || (toolName && !a["gen_ai.input.messages"])) {
-    push({
-      role: "tool",
-      tool_name: String(toolName ?? span.name ?? "tool"),
-      tool_input: parseMaybeJson(a["gen_ai.tool.call.arguments"] ?? a["gen_ai.tool.input"] ?? null),
-      tool_output: parseMaybeJson(a["gen_ai.tool.call.result"] ?? a["gen_ai.tool.output"] ?? null),
-      is_error: isErr,
-      content: isErr ? (span.status?.message || String(a["error.type"] ?? "error")) : null,
-      at: end,
-      metadata: { span_id: sid, ...(a["gen_ai.tool.call.id"] ? { tool_call_id: a["gen_ai.tool.call.id"] } : {}) },
-    }, t1, `span:${sid}`);
-    return;
-  }
-
-  // chat / inference spans: inputs at start, outputs at end. Inputs repeat the whole history on every
-  // call, so events are de-duplicated by content later.
-  const inputs = [
-    ...messagesFrom(a["gen_ai.input.messages"]),
-    ...(a["gen_ai.system_instructions"] ? messagesFrom(a["gen_ai.system_instructions"]).map((m) => ({ ...m, role: "system" as Role })) : []),
-    ...(typeof a["gen_ai.prompt"] === "string" ? messagesFrom(a["gen_ai.prompt"]).length ? messagesFrom(a["gen_ai.prompt"]) : [{ role: "user" as Role, content: a["gen_ai.prompt"] as string }] : []),
-    ...indexed(a, "gen_ai.prompt", "user"),
-  ];
-  const outputs = [
-    ...messagesFrom(a["gen_ai.output.messages"]).map((m) => ({ ...m, role: "assistant" as Role })),
-    ...(typeof a["gen_ai.completion"] === "string" ? messagesFrom(a["gen_ai.completion"]).length ? messagesFrom(a["gen_ai.completion"]) : [{ role: "assistant" as Role, content: a["gen_ai.completion"] as string }] : []),
-    ...indexed(a, "gen_ai.completion", "assistant"),
-  ];
-
-  // span events (older semconv: gen_ai.user.message, gen_ai.choice, gen_ai.content.prompt ...)
-  for (const ev of span.events ?? []) {
-    const ea = attrs(ev.attributes);
-    const at = nanoToIso(ev.timeUnixNano) ?? start;
-    const t = at ? Date.parse(at) : t0;
-    const name = ev.name ?? "";
-    let msgs: { role: Role; content: string }[] = [];
-    if (name === "gen_ai.content.prompt") msgs = messagesFrom(ea["gen_ai.prompt"]);
-    else if (name === "gen_ai.content.completion") msgs = messagesFrom(ea["gen_ai.completion"]).map((m) => ({ ...m, role: "assistant" as Role }));
-    else if (name === "gen_ai.client.inference.operation.details") {
-      msgs = [...messagesFrom(ea["gen_ai.input.messages"]), ...messagesFrom(ea["gen_ai.output.messages"]).map((m) => ({ ...m, role: "assistant" as Role }))];
-    } else if (/^gen_ai\.(system|user|assistant|tool)\.message$/.test(name) || name === "gen_ai.choice") {
-      const role = name === "gen_ai.choice" ? "assistant" : mapRole(name.split(".")[1]);
-      const c = ea["content"] ?? ea["gen_ai.event.content"] ?? ea["message"];
-      const text = typeof c === "string" ? (messagesFrom(c)[0]?.content ?? c) : messageText(c);
-      if (text) msgs = [{ role, content: text }];
-    } else if (name === "exception") {
-      push({ role: "tool", tool_name: span.name ?? "exception", is_error: true, content: String(ea["exception.message"] ?? ea["exception.type"] ?? "exception"), at, metadata: { span_id: sid } }, t, `exc:${sid}:${t}`);
-    }
-    for (const m of msgs) push({ role: m.role, content: m.content, at, metadata: { span_id: sid } }, t, `msg:${m.role}:${m.content}`);
-  }
-
-  for (const m of inputs) push({ role: m.role, content: m.content, at: start, metadata: { span_id: sid } }, t0, `msg:${m.role}:${m.content}`);
-  for (const m of outputs) push({ role: m.role, content: m.content, at: end, metadata: { span_id: sid } }, t1, `msg:${m.role}:${m.content}`);
-}
-
 async function postOtlp(req: Request): Promise<Response> {
   const caller = await authenticate(req);
   const ct = req.headers.get("content-type") ?? "";
@@ -395,6 +220,9 @@ async function postOtlp(req: Request): Promise<Response> {
   }
   const params = new URL(req.url).searchParams;
   const space = await resolveSpace(caller.db, params.get("space") ?? req.headers.get("x-supaknowledge-space"));
+  // optional audience (group slugs) for every trace in this export: ?audience=finance or x-supaknowledge-audience
+  const wantedAudience = audienceParam(new URL(req.url), req.headers);
+  const audience = wantedAudience === undefined ? undefined : await resolveGroups(caller.db, space.workspace_id, wantedAudience);
   const body = await readJson<OtlpRequest>(req);
 
   // group spans by trace id
@@ -417,7 +245,7 @@ async function postOtlp(req: Request): Promise<Response> {
   let rejected = 0;
   for (const [tid, g] of groups) {
     try {
-      const spans = [...g.spans].sort((x, y) => Number(BigInt(String(x.startTimeUnixNano ?? 0)) - BigInt(String(y.startTimeUnixNano ?? 0))));
+      const spans = [...g.spans].sort(compareSpans);
       const mapped: Mapped = { events: [], meta: {} };
       for (const sp of spans) mapSpan(sp, mapped);
       mapped.events.sort((x, y) => x.t - y.t);
@@ -429,10 +257,16 @@ async function postOtlp(req: Request): Promise<Response> {
         "find trace",
       ) as { id: string }[];
       if (existing[0]) {
-        const prev = must(
-          await caller.db.from("trace_events").select("role, content, metadata").eq("trace_id", existing[0].id).order("seq").limit(5000),
-          "read events",
-        ) as { role: string; content: string | null; metadata: Record<string, unknown> }[];
+        // page through every stored event: PostgREST caps a single select at api.max_rows (1,000)
+        const prev: { role: string; content: string | null; metadata: Record<string, unknown> }[] = [];
+        for (let from = 0; ; from += EVENTS_PAGE) {
+          const page = must(
+            await caller.db.from("trace_events").select("role, content, metadata").eq("trace_id", existing[0].id).order("seq").range(from, from + EVENTS_PAGE - 1),
+            "read events",
+          ) as typeof prev;
+          prev.push(...page);
+          if (page.length < EVENTS_PAGE || prev.length >= MAX_DEDUP_EVENTS) break;
+        }
         for (const e of prev) {
           if (e.content) seen.add(`msg:${e.role}:${e.content}`);
           if (e.role === "tool" && e.metadata?.span_id) seen.add(`span:${e.metadata.span_id}`);
@@ -466,7 +300,7 @@ async function postOtlp(req: Request): Promise<Response> {
           ...mapped.meta,
         },
       };
-      const r = await upsertTrace(caller, space, trace, events.slice(0, MAX_EVENTS), undefined);
+      const r = await upsertTrace(caller, space, trace, events.slice(0, MAX_EVENTS), audience);
       results.push({ external_id: tid, ...r });
     } catch (e) {
       rejected += g.spans.length;

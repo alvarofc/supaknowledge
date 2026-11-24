@@ -1,7 +1,7 @@
 -- Catalog-level hardening: grants, search_path, RLS coverage, service-role detection.
 begin;
 \ir _fixture.psql
-select plan(14);
+select plan(19);
 
 select is_empty($$
   select n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -21,7 +21,9 @@ select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schem
 
 select is_empty($$
   select p from unnest(array['public.kf_get_source_secret(uuid)', 'public.kf_queue_ack(text,bigint[])', 'public.kf_queue_send(text,jsonb[],integer)',
-                             'public.kf_queue_archive(text,bigint[])', 'public.kf_enqueue_curator_task(uuid,text,jsonb)']) p
+                             'public.kf_queue_archive(text,bigint[])', 'public.kf_enqueue_curator_task(uuid,text,jsonb)',
+                             'public.kf_add_run_stats(uuid,jsonb)', 'public.kf_finish_task(uuid,text,jsonb,text)',
+                             'public.kf_maybe_finish_run(uuid)', 'public.kf_trace_events(uuid[],integer)']) p
   where has_function_privilege('authenticated', p::regprocedure, 'execute') or has_function_privilege('anon', p::regprocedure, 'execute')
 $$, 'service-only RPCs are not executable by authenticated or anon');
 
@@ -49,6 +51,35 @@ select is_empty($$
                       'source_documents', 'source_chunks', 'audit_log', 'curator_runs', 'curator_tasks', 'flags')
     and not (tablename = 'flags' and cmd = 'UPDATE')
 $$, 'knowledge, raw evidence, audit and curator tables have no client write policies');
+
+select is_empty($$
+  select p from unnest(array['private.aud_ok(uuid[],uuid[])', 'private.my_group_ids()', 'private.my_spaces(public.space_role)',
+                             'private.my_workspaces(public.workspace_role)', 'private.can_see_proposal(uuid,uuid[])',
+                             'private.is_oauth_client()', 'private.try_uuid(text)', 'private.space_rank(uuid)']) p
+  where not has_function_privilege('authenticated', p::regprocedure, 'execute')
+$$, 'helpers used inside RLS policies are executable by authenticated');
+
+select is_empty($$
+  select p from unnest(array['private.recompute_proposal_access(uuid)', 'private.start_curator_run(uuid,text,uuid)',
+                             'private.audit(uuid,text,text,uuid,jsonb)', 'private.hook_before_user_created(jsonb)',
+                             'private.finish_run_if_done(uuid)', 'util.cleanup()', 'util.reap_curator_runs()']) p
+  where has_function_privilege('authenticated', p::regprocedure, 'execute')
+$$, 'internal helpers are not executable by authenticated');
+
+select ok(has_function_privilege('supabase_auth_admin', 'private.hook_before_user_created(jsonb)', 'execute'),
+  'the Auth hook is executable by supabase_auth_admin');
+
+select is_empty($$
+  select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind in ('r', 'p')
+    and (has_table_privilege('anon', c.oid, 'select') or has_table_privilege('anon', c.oid, 'insert')
+         or has_table_privilege('authenticated', c.oid, 'truncate'))
+$$, 'anon has no table privileges and authenticated cannot TRUNCATE');
+
+select ok(not has_table_privilege('authenticated', 'public.proposals', 'insert')
+          and not has_table_privilege('authenticated', 'public.proposal_ops', 'insert')
+          and not has_table_privilege('authenticated', 'public.proposal_citations', 'insert'),
+  'proposals are only created through create_proposal()');
 
 -- private.is_service_role
 select tests.as_user('s_admin');

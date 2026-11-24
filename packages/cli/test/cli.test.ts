@@ -169,6 +169,27 @@ describe("files", () => {
     assert.deepEqual(readTree(d).files.map((f) => f.path), ["a.md"]);
   });
 
+  it("readTree never uploads dotfiles (.env) and reports them", () => {
+    const h = harness({ loggedIn: false, project: false });
+    const d = join(h.dir, "b");
+    mkdirSync(join(d, ".github"), { recursive: true });
+    mkdirSync(join(d, "skills", "x"), { recursive: true });
+    writeFileSync(join(d, ".env"), "SECRET=1");
+    writeFileSync(join(d, ".env.local"), "SECRET=2");
+    writeFileSync(join(d, ".github", "ci.yml"), "on: push");
+    writeFileSync(join(d, "skills", "x", ".secret"), "s");
+    writeFileSync(join(d, "skills", "x", "SKILL.md"), "# x");
+    writeFileSync(join(d, ".kfignore"), ".env.local\n");
+    const r = readTree(d);
+    assert.deepEqual(r.files.map((f) => f.path), ["skills/x/SKILL.md"]);
+    assert.deepEqual(
+      r.skipped.map((s) => s.path).sort(),
+      [".env", ".github/", "skills/x/.secret"],
+      "ignored dotfiles are not reported, the rest are",
+    );
+    assert.ok(r.skipped.every((s) => s.reason === "dotfile"));
+  });
+
   it("writeManaged only overwrites what it wrote and prunes what disappeared", () => {
     const h = harness({ loggedIn: false, project: false });
     const root = join(h.dir, "w");

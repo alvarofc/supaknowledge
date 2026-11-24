@@ -20,20 +20,29 @@ the offline demo with an in-memory store (`examples/revenue-report/src/offline.t
 
 ## Runs and triggers
 
-A **run** (`curator_runs`) covers the evidence since the previous successful run; there is at most one queued or
+A **run** (`curator_runs`) covers the evidence since the previous successful run (staleness runs do not count:
+they never read documents, so they do not move that watermark); the database allows at most one queued or
 running run per space. Runs start from:
 
 | Trigger | How |
 |---|---|
-| `manual` | Studio (Activity → Run now), `kf curate [--watch]`, `POST /functions/v1/curator/run {"space": "<ws>/<space>"}` or `select request_curator_run('<space-id>')`. Needs the reviewer role |
+| `manual` | Studio (Activity → Run now), `kf curate [--watch]`, `POST /functions/v1/curator/run {"space": "<ws>/<space>"}` or `select request_curator_run('<space-id>')`. Needs the reviewer role (not through an OAuth client token) |
 | `flag_threshold` | A trigger on `flags`: `curator.flag_threshold` open flags on one concept, or that many `missing` flags in the space (default 3; 0 disables) |
 | `cron` | 02:00 UTC, for every space with open flags, uncurated traces or documents changed since the last run |
 | `staleness` | 03:00 UTC, for every space with stable concepts past `stale_after` |
 
 A run is split into **tasks** (`curator_tasks`), one per `kf_curator` queue message, so each fits in one Edge
 Function invocation (the worker gives each task a 110 s budget). The `kf-curator` cron job hands messages to the
-function every 15 seconds. A failing task is retried up to 3 times; then the run is marked failed with the error.
-When the last task of a run finishes, the run is closed with its `stats`.
+function every 15 seconds. A failing task is retried up to 3 times; then the task is marked failed with the error.
+When the last task of a run finishes, the run is closed with its `stats`: `succeeded` only if every task
+succeeded, `failed` if any task failed (so a failed run's evidence is picked up again by the next run).
+
+A trace is curated again when it changes after a run: new events or a new outcome reset its `curated_at`.
+
+**Stuck and cancelled runs.** A reaper fails runs and tasks that have been running for more than 30 minutes
+(per space: `curator.stuck_after_minutes`), so a crashed task cannot keep a space from starting new runs. A
+reviewer can also cancel a queued or running run: **Cancel** on the run in Studio's Activity page,
+`kf runs cancel <run-id>`, or `select cancel_curator_run('<run-id>')`.
 
 ## Pipeline
 
@@ -95,7 +104,8 @@ and the note becomes context for the next draft.
 Every new or changed claim gets a footnote (`[^label]`) in the body, and every label is a citation:
 
 - a `proposal_citations` row with the evidence kind (`flag`, `trace`, `source_document`, `concept`, `url`), its
-  id, a supporting quote and the evidence's audience, which reviewers see on the proposal page;
+  id, a supporting quote and the evidence's audience, which reviewers see on the proposal page. A `url` citation
+  that matches a source document of the space is stored as that document, with its audience;
 - an entry in the concept's OKF frontmatter `sources`, so the provenance travels with exports:
 
 ```yaml
@@ -114,10 +124,14 @@ next run drafts against that concept.
 ## Access
 
 The curator runs with the service role, because it has to see evidence from every audience. It keeps access
-intact in three ways: each piece of evidence carries its audience into the proposal's citations; new concepts
-get the narrowest safe audience; and the database marks any proposal that would move restricted material into a
-wider audience as an **escalation** (risk `high`), which only a space admin can approve and which is never
-auto-applied, whatever the policy says. The prompts also tell the model to summarise only what agents need from
+intact in four ways: each piece of evidence carries its audience into the proposal's citations; restricted
+evidence the model **consulted** while drafting (shown to it, or read through its research tools) but did not
+cite is recorded too, as citations with `consulted = true`, so it counts for visibility and escalation exactly
+like cited evidence (Studio lists it separately on the proposal page); new concepts get the narrowest safe
+audience; and the database marks any proposal that would move restricted material into a wider audience as an
+**escalation** (risk `high`), which only a space admin can approve and which is never auto-applied, whatever the
+policy says. The proposal, its ops and its citations are written in one transaction by `create_proposal()`, so
+nothing is visible before the escalation check has run. The prompts also tell the model to summarise only what agents need from
 restricted evidence. See [access control](access-control.md#the-escalation-guard).
 
 ## Settings and policy
@@ -135,24 +149,41 @@ update public.spaces set settings = '{
 | Key | Default | Meaning |
 |---|---|---|
 | `curator.enabled` | `true` | Scheduled and threshold runs for this space |
-| `curator.flag_threshold` | `3` | Open flags on one concept (or `missing` flags in the space) that start a run; `0` disables |
+| `curator.flag_threshold` | `3` | Open flags on one concept (or `missing` flags in the space) that start a run (0–1000000); `0` disables |
+| `curator.flag_cooldown_minutes` | `60` | Minimum minutes between flag-threshold runs of one space (0–10080), so a misbehaving agent cannot trigger runs continuously |
 | `curator.model` | `""` (= `KF_LLM_MODEL`) | Model id for triage, drafting and self-review, e.g. `vercel/openai/gpt-6.2-sol` or `acme/your-model` |
 | `curator.fast_model` | `""` (= `KF_LLM_FAST_MODEL`, else the model) | Cheaper model for correction mining in traces |
 | `curator.fallback_models` | `[]` (= `KF_LLM_FALLBACK_MODELS`) | Tried in order when the model errors |
 | `curator.max_research_steps` | `8` | Agent steps (model calls that may use research tools) per draft (1–20) |
 | `curator.max_clusters_per_run` | `25` | Drafts per run (1–200); the rest wait for the next run |
 | `curator.max_traces_per_run` | `200` | Traces scanned per run (0–5000) |
+| `curator.max_tokens_per_run` | `3000000` | Model tokens (input + output) one run may spend across its tasks (0–2000000000); when spent, the remaining tasks fail with a clear error. `0` = unlimited |
+| `curator.research_scope` | `target_audience` | What the drafting model may research: `target_audience` shows only results readable by everyone who can read the concepts being changed; `all` searches everything (restricted items it reads still escalate) |
+| `curator.auto_dismiss_flags` | `true` | Let the curator dismiss flags it judges mistaken or noise; `false` leaves them open for a person |
 | `curator.instructions` | `""` | House rules appended to every curator system prompt |
+| `curator.stuck_after_minutes` | `30` | A run or task without progress for this long is failed by the reaper (5–1440) |
 | `auto_apply.enabled` | `false` | Let the curator apply proposals that match the rules below |
 | `auto_apply.max_risk` | `low` | `low` or `medium` |
 | `auto_apply.kinds` | `["data_access"]` | Kinds of knowledge that may change without review |
 | `auto_apply.require_observed_evidence` | `true` | Only when a citation is a trace or a flag, i.e. the problem was seen in real work |
 | `auto_apply.allow_create` | `false` | Allow new concepts |
-| `staleness.data_access_days` | `90` | `stale_after` given to data-access concepts that have none (0 disables) |
+| `auto_apply.untrusted_source_kinds` | `["web"]` | Connector kinds (`notion`, `slack`, `github`, `gdrive`, `web`, `upload`) whose content outsiders can write; a proposal that read or cited them is never auto-applied |
+| `staleness.data_access_days` | `90` | `stale_after` given to data-access concepts that have none (0–36500; 0 disables) |
 | `embeddings.provider` | `gte-small` | Only option today |
+| `retention.trace_days` | `null` (keep) | Delete traces older than this many days (1–36500), daily by cron `kf-cleanup` |
+| `retention.usage_days` | `null` (keep) | Delete concept usage rows older than this many days (1–36500) |
+
+The schema is `SpaceSettingsSchema` in `packages/core/src/settings.ts`. Studio's **Settings → Curator & policy**
+has a field for every key above. The database validates the same keys, types and bounds whenever
+`spaces.settings` is written (`private.validate_space_settings()`, SQLSTATE `22023` with the key and the expected
+value); unknown keys are kept for forward compatibility. A test (`packages/core/test/settings-db.test.ts`) keeps
+the schema and the database validator in sync. When reading, an invalid value (for example in a row written
+before validation existed) falls back to that field's default with a warning, and every valid field is kept, so
+one typo never resets a space's whole policy.
 
 The policy (`decideAutoApply()`) refuses, in this order: auto-apply disabled; an escalation; risk above
-`max_risk`; creates (unless allowed); moves; a concept kind outside `kinds`; no observed evidence (when required).
+`max_risk`; creates (unless allowed); moves; a concept kind outside `kinds`; evidence read from an untrusted
+source kind; a citation of an external URL; no observed evidence (when required).
 The reason is recorded in the task output.
 
 Risk comes from the model (low: a factual fix with direct evidence in one concept, such as a renamed column;
@@ -189,6 +220,8 @@ Endpoints and API keys only ever come from these secrets; space settings can onl
 | `KF_LLM_HEADERS` | Extra headers for your endpoint, as a JSON object, e.g. `{"x-team":"knowledge"}` |
 | `KF_LLM_API` | Wire format of your endpoint: `chat` (chat completions, default) or `responses` |
 | `KF_LLM_EXTRA_BODY` | JSON merged into every request body to your endpoint, for server-specific switches (single-quote it in `.env`) |
+| `KF_LLM_ALLOWED_MODELS` | Comma-separated model ids that space settings may choose (`curator.model`, `fast_model`, `fallback_models`); a trailing `*` matches a prefix, e.g. `acme/*`. Empty or unset = any id. A space that picks another model fails its tasks with a clear error. The environment's own `KF_LLM_*` ids are not checked |
+| `KF_CURATOR_TASK_BUDGET_MS` | Wall-clock budget per curator task in ms (default `110000`, clamped to 30000–380000). The engine stops model calls when it runs out and keeps a reserve to record the result. Raise it (e.g. `300000`) on plans whose functions may run 400 s |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway key, for `vercel/...` model ids |
 | `OPENROUTER_API_KEY` | OpenRouter key, for `openrouter/...` model ids |
 
@@ -245,6 +278,7 @@ the main model.
 **Per-space override.** Space admins can set `curator.model`, `curator.fast_model` and `curator.fallback_models`
 (Studio: Settings → Curator & policy). They replace the environment's ids for that space only, and must be ids
 the configured endpoint or gateway can serve. Leave them blank to use the server default.
+Operators can restrict those overrides with `KF_LLM_ALLOWED_MODELS` (see the table above).
 
 Without `KF_LLM_MODEL`, a task fails at once with `no model configured: set KF_LLM_MODEL ...` and the run is marked
 failed (no retries: retrying cannot help).
@@ -258,7 +292,7 @@ failed (no retries: retrying cannot help).
   LiteLLM): set `KF_LLM_BASE_URL=http://host.docker.internal:<port>/v1` in `supabase/.env` (the functions run in
   Docker, so `127.0.0.1` would be the container), restart the stack, then `npx kf curate --watch`. Your server
   sees the requests (model name, `Authorization: Bearer $KF_LLM_API_KEY`, your headers); the run's tasks show any
-  error in Studio (Activity) and in `docker logs supabase_edge_runtime_openkf`.
+  error in Studio (Activity) and in `docker logs supabase_edge_runtime_supaknowledge`.
 
 ## Cost and model choice
 
@@ -310,7 +344,7 @@ npx kf curate --watch
 
 Without a model, tasks fail at once with `no model configured: set KF_LLM_MODEL ...` and the run is marked failed.
 Follow runs with `kf runs` or in Studio (Activity; admins also see each task's status), and the function logs with
-`docker logs -f supabase_edge_runtime_openkf`.
+`docker logs -f supabase_edge_runtime_supaknowledge`.
 
 To try the pipeline without a stack or a model, `npm run demo:offline` runs the revenue-report story through
 `runTask()` with an in-memory store and a scripted model, and prints each task and the resulting diffs.

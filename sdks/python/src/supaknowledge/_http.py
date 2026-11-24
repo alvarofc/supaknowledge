@@ -145,8 +145,19 @@ class McpClient:
         if "text/event-stream" in res.headers.get("content-type", ""):
             msgs = parse_sse(res.text)
         else:
-            parsed = res.json()
+            try:
+                parsed = res.json()
+            except ValueError:
+                # a proxy / login page / misrouted URL answered instead of the MCP server
+                ct = res.headers.get("content-type") or "no content-type"
+                raise SupaknowledgeError(
+                    f"MCP {method}: expected a JSON or SSE response from {self._endpoint}, got {ct}: {res.text[:200]}",
+                    status=res.status_code,
+                    code="invalid_response",
+                    details=res.text[:2000],
+                ) from None
             msgs = parsed if isinstance(parsed, list) else [parsed]
+        msgs = [m for m in msgs if isinstance(m, dict)]
         reply = next((m for m in msgs if m.get("id") == msg_id), None) or next((m for m in msgs if "result" in m or "error" in m), None)
         if reply is None:
             raise SupaknowledgeError(f"MCP {method}: no response", status=res.status_code)

@@ -13,7 +13,7 @@ await build({
   format: "esm",
   platform: "neutral",
   target: "es2022",
-  sourcemap: true,
+  sourcemap: false,
   legalComments: "none",
 });
 execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", "tsconfig.build.json"], { stdio: "inherit" });

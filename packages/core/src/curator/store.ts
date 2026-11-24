@@ -22,6 +22,8 @@ export interface CuratorRun {
   trigger: string;
   since: string | null;
   until: string | null;
+  /** accumulated run stats (model_calls, input_tokens, ...); used for the per-run token budget */
+  stats?: Record<string, unknown>;
 }
 
 export interface CuratorTask {
@@ -54,6 +56,8 @@ export interface SourceHit {
   snippet: string;
   audience: Audience;
   changed_at: string;
+  /** connector kind of the document's source (notion, slack, web, ...) */
+  source_kind?: string | null;
 }
 
 export interface RejectedProposal {
@@ -63,6 +67,8 @@ export interface RejectedProposal {
   review_note: string | null;
   reviewed_at: string | null;
 }
+
+export const MAX_TASK_ATTEMPTS = 3;
 
 export interface NewSyntheticFlag {
   space_id: string;
@@ -86,13 +92,25 @@ export interface CuratorStore {
   // runs & tasks
   getRun(runId: string): Promise<CuratorRun>;
   startRun(runId: string): Promise<void>;
+  /** mark the task succeeded (public.kf_finish_task) */
   finishTask(taskId: string, output: Record<string, unknown>): Promise<void>;
-  failTask(taskId: string, error: string): Promise<void>;
-  enqueueTask(runId: string, step: string, input: Record<string, unknown>): Promise<string>;
-  /** count tasks of the run not yet succeeded/failed */
-  outstandingTasks(runId: string): Promise<number>;
-  finishRun(runId: string, status: "succeeded" | "failed", stats: Record<string, unknown>, error?: string): Promise<void>;
-  addRunStats(runId: string, delta: Record<string, number>): Promise<void>;
+  /**
+   * Record a failed attempt. The task goes back to `queued` for a retry until it has failed MAX_ATTEMPTS
+   * times (or `permanent` is set), then it is `failed` for good. Returns whether it is now final.
+   */
+  failTask(taskId: string, error: string, opts?: { permanent?: boolean }): Promise<{ final: boolean }>;
+  /**
+   * Enqueue a task. With `dedupeKey`, a task of the same run+step+key that already exists is returned instead
+   * (retries of a task that enqueues work must not enqueue it twice).
+   */
+  enqueueTask(runId: string, step: string, input: Record<string, unknown>, opts?: { dedupeKey?: string }): Promise<string>;
+  /**
+   * Close the run if no task is outstanding (public.kf_maybe_finish_run): `failed` when any task failed,
+   * `succeeded` when all succeeded. Returns the run status ("running" while tasks remain).
+   */
+  maybeFinishRun(runId: string): Promise<string>;
+  /** atomically add numeric stats; returns the run's new stats when the store can */
+  addRunStats(runId: string, delta: Record<string, number>): Promise<Record<string, unknown> | void>;
 
   // space
   getSettings(spaceId: string): Promise<SpaceSettings>;
@@ -100,11 +118,17 @@ export interface CuratorStore {
   // evidence
   listOpenFlags(spaceId: string, limit: number): Promise<Flag[]>;
   getFlags(ids: string[]): Promise<Flag[]>;
+  /** traces not yet curated, oldest first, with ALL their events */
   listUncuratedTraces(spaceId: string, limit: number): Promise<Trace[]>;
   getTraces(ids: string[]): Promise<Trace[]>;
   markTracesCurated(ids: string[]): Promise<void>;
   listChangedDocuments(spaceId: string, since: string | null, until: string | null, limit: number): Promise<SourceDocument[]>;
   getDocuments(ids: string[]): Promise<SourceDocument[]>;
+  /**
+   * Insert flags mined from traces. Idempotent: a flag whose `evidence.dedupe_key` already exists for the same
+   * trace is not inserted again. A flag is attached to an existing concept only when everyone who can read the
+   * flag can also read that concept.
+   */
   createSyntheticFlags(flags: NewSyntheticFlag[]): Promise<Flag[]>;
 
   // knowledge
@@ -112,11 +136,15 @@ export interface CuratorStore {
   listStaleConcepts(spaceId: string, limit: number): Promise<Concept[]>;
   searchConcepts(spaceId: string, query: string, limit: number): Promise<ConceptHit[]>;
   searchSources(spaceId: string, query: string, limit: number): Promise<SourceHit[]>;
-  /** documents a concept cites (frontmatter sources -> source_documents) */
-  conceptsCitingDocument(spaceId: string, documentId: string): Promise<string[]>;
+  /**
+   * Concepts citing each document (frontmatter `sources[]` entries with `x-supaknowledge-document: <id>`,
+   * `resource: supaknowledge://documents/<id>`, or the document's URL). One batched lookup: doc id -> paths.
+   */
+  conceptsCitingDocuments(spaceId: string, docs: { id: string; url: string | null }[]): Promise<Map<string, string[]>>;
   recentRejections(spaceId: string, paths: string[], limit: number): Promise<RejectedProposal[]>;
 
   // output
+  /** atomic (public.create_proposal): ops + citations (incl. consulted evidence) land in one transaction */
   createProposal(spaceId: string, runId: string, author: string, draft: ProposalDraft): Promise<PersistedProposal>;
   applyProposal(proposalId: string, actor: string): Promise<{ status: string }>;
   setFlagsInProposal(flagIds: string[], proposalId: string): Promise<void>;

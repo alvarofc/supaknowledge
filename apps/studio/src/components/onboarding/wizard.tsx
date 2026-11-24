@@ -317,9 +317,10 @@ function ConnectStep({ workspace, space }: { workspace: Ws; space: { slug: strin
         </LinkButton>
       </div>
       <p className="mt-3 text-right text-xs text-subtle">
-        Have an OKF bundle already? Import it with the CLI (<code className="font-mono">kf push</code>) or from{" "}
-        <Link href={`${base}/knowledge`} className="underline">
-          Knowledge
+        Have an OKF bundle or Agent Skills already? Import them with the CLI: <code className="font-mono">kf import &lt;dir&gt;</code>. They arrive
+        as a proposal in the{" "}
+        <Link href={base} className="underline">
+          inbox
         </Link>
         .
       </p>

@@ -1,5 +1,6 @@
 import type { SpaceSettings } from "@supaknowledge/core";
 import type { GroupRow } from "@/components/settings/groups";
+import type { PendingInvitation } from "@/components/settings/people";
 import { createServerFn } from "@tanstack/react-start";
 import type { SpaceRole, WorkspaceRole } from "@/lib/roles";
 import { spaceParams } from "@/server/shell.functions";
@@ -21,7 +22,13 @@ type WsPerson = { user_id: string; role: WorkspaceRole; name: string; kind: Kind
 export type SettingsData =
   | { tab: "general" }
   | { tab: "curator"; settings: SpaceSettings }
-  | { tab: "members"; people: WsPerson[]; members: { user_id: string; role: SpaceRole; name: string; kind: Kind }[] }
+  | {
+      tab: "members";
+      people: WsPerson[];
+      members: { user_id: string; role: SpaceRole; name: string; kind: Kind }[];
+      /** open invitations to the workspace (RLS: only workspace admins see them) */
+      invitations: PendingInvitation[];
+    }
   | {
       tab: "groups";
       people: WsPerson[];
@@ -54,11 +61,21 @@ export const loadSettings = createServerFn({ method: "GET" })
     if (tab === "curator") return { tab, settings: readSettings(ctx.space.settings) };
 
     if (tab === "members") {
-      const [{ people, profiles }, { data: sm }] = await Promise.all([
+      const [{ people, profiles }, { data: sm }, { data: inv }] = await Promise.all([
         workspacePeople(ctx),
         supabase.from("space_members").select("user_id, role").eq("space_id", ctx.space.id).order("created_at"),
+        supabase
+          .from("workspace_invitations")
+          .select("id, email, role, created_at, expires_at, invited_by")
+          .eq("workspace_id", ctx.workspace.id)
+          .is("accepted_at", null)
+          .is("declined_at", null)
+          .order("created_at", { ascending: false })
+          .limit(200),
       ]);
-      const extra = await getProfiles((sm ?? []).map((m) => m.user_id).filter((id) => !profiles[id]));
+      const extra = await getProfiles(
+        [...(sm ?? []).map((m) => m.user_id), ...(inv ?? []).flatMap((i) => (i.invited_by ? [i.invited_by] : []))].filter((id) => !profiles[id]),
+      );
       const all = { ...profiles, ...extra };
       const members = (sm ?? []).map((m) => ({
         user_id: m.user_id,
@@ -66,7 +83,15 @@ export const loadSettings = createServerFn({ method: "GET" })
         name: all[m.user_id]?.display_name ?? `User ${m.user_id.slice(0, 8)}`,
         kind: all[m.user_id]?.kind ?? "human",
       }));
-      return { tab, people, members };
+      const invitations: PendingInvitation[] = (inv ?? []).map((i) => ({
+        id: i.id,
+        email: i.email,
+        role: i.role,
+        created_at: i.created_at,
+        expires_at: i.expires_at,
+        invited_by_name: i.invited_by ? (all[i.invited_by]?.display_name ?? null) : null,
+      }));
+      return { tab, people, members, invitations };
     }
 
     if (tab === "groups") {

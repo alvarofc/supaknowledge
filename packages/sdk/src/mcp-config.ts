@@ -39,7 +39,7 @@ export function mcpEndpoint(url: string, space: string): string {
   return `${trimUrl(url)}/functions/v1/mcp?space=${encodeURIComponent(space).replace(/%2F/gi, "/")}`;
 }
 
-function shellQuote(s: string): string {
+export function shellQuote(s: string): string {
   return /^[A-Za-z0-9_\-./:=%@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -64,7 +64,7 @@ export function buildMcpConfig(o: McpConfigOptions): McpConfig {
       const keyRef = o.apiKey ?? `\${${envName}}`;
       const entry: Record<string, unknown> = { type: "http", url: endpoint };
       if (!oauth) entry.headers = { Authorization: `Bearer ${keyRef}` };
-      const cmd = ["claude", "mcp", "add", "--transport", "http", name, shellQuote(endpoint)];
+      const cmd = ["claude", "mcp", "add", "--transport", "http", shellQuote(name), shellQuote(endpoint)];
       if (!oauth) cmd.push("--header", o.apiKey ? shellQuote(`Authorization: Bearer ${o.apiKey}`) : `"Authorization: Bearer \$${envName}"`);
       if (oauth) notes.push("After adding, run /mcp inside Claude Code and choose Authenticate.");
       return { client, name, url: endpoint, config: { mcpServers: { [name]: entry } }, file: ".mcp.json (project) or `claude mcp add --scope user`", command: cmd.join(" "), notes };

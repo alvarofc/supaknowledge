@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/client";
 
 type Table = "flags" | "proposals" | "curator_runs" | "concepts";
 
+let instance = 0;
+
 /**
  * Subscribes to Realtime postgres_changes for a space and refreshes the server-rendered page when rows
  * change. postgres_changes respects RLS, so users only hear about rows they can read.
@@ -23,7 +25,9 @@ export function LiveRefresh({ spaceId, tables, label = true }: { spaceId: string
       const { data } = await supabase.auth.getSession();
       if (data.session) await supabase.realtime.setAuth(data.session.access_token);
       if (cancelled) return;
-      channel = supabase.channel(`space:${spaceId}:${key}`);
+      // a unique topic per mount: supabase.channel() returns an existing channel with the same topic, so a remount
+      // (or two components on one page) would otherwise reuse a channel the previous cleanup is removing
+      channel = supabase.channel(`space:${spaceId}:${key}:${++instance}`);
       for (const table of key.split(",")) {
         channel.on("postgres_changes", { event: "*", schema: "public", table, filter: `space_id=eq.${spaceId}` }, () => {
           if (timer.current) clearTimeout(timer.current);

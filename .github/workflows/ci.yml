@@ -23,9 +23,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Release consistency (versions, LICENSE/NOTICE copies in published packages)
+        run: node scripts/check-release.mjs
       - name: Typecheck every workspace
         run: npm run typecheck
-      - name: Unit tests (core, cli, sdk, mastra, example)
+      - name: Unit tests (core, cli, sdk, mastra, Studio, example)
         run: npm test
       - name: Build the SDK, the Mastra integration and the CLI
         run: npm run build -w @supaknowledge/sdk -w @supaknowledge/mastra -w @supaknowledge/cli
@@ -45,7 +47,7 @@ jobs:
           fi
 
   deno:
-    name: Edge Functions (deno check, connector tests)
+    name: Edge Functions (deno check, Deno test suites)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,7 +56,7 @@ jobs:
           node-version: 24
       - name: deno check every function
         run: node scripts/check-functions.mjs
-      - name: Connector tests
+      - name: Deno tests (connectors, agents, bundle, maintenance, mcp, traces, _shared)
         run: npm run test:deno
 
   python:

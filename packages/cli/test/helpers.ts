@@ -32,7 +32,12 @@ export interface Harness {
   calls: Call[];
   routes: Route[];
   run: (...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  /** run with a different working directory (e.g. a subdirectory of the project) */
+  runIn: (cwd: string, ...argv: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
   stdin: string;
+  stdinIsTTY: boolean;
+  /** answers for io.prompt (in order); prompting throws when empty */
+  prompts: string[];
 }
 
 /** Temp project + config dir, scripted fetch, in-memory stdio. */
@@ -63,7 +68,10 @@ export function harness(opts: { loggedIn?: boolean; project?: boolean; expiresIn
     calls: [],
     routes: [],
     stdin: "",
-    run: async (...argv) => {
+    stdinIsTTY: false,
+    prompts: [],
+    run: (...argv) => h.runIn(dir, ...argv),
+    runIn: async (cwd, ...argv) => {
       let stdout = "";
       let stderr = "";
       const io: Io = {
@@ -71,11 +79,14 @@ export function harness(opts: { loggedIn?: boolean; project?: boolean; expiresIn
         stderr: (s) => void (stderr += s),
         readStdin: async () => h.stdin,
         prompt: async () => {
-          throw new Error("no tty");
+          const next = h.prompts.shift();
+          if (next === undefined) throw new Error("no tty");
+          return next;
         },
         isTTY: false,
+        stdinIsTTY: h.stdinIsTTY,
         env: { SUPAKNOWLEDGE_CONFIG_DIR: configDir, HOME: dir },
-        cwd: dir,
+        cwd,
         now: () => Date.now(),
         sleep: async () => {},
         fetch: async (input, init = {}) => {

@@ -9,7 +9,7 @@ export interface BundleFile {
   encoding?: "utf8" | "base64";
 }
 
-/** Always skipped, whatever .gitignore says. */
+/** Always skipped silently, whatever .gitignore says (every other dotfile is skipped too, and reported). */
 const ALWAYS_SKIP = new Set([".git", "node_modules", ".DS_Store", "Thumbs.db", ".supaknowledge-manifest.json", ".supaknowledge.json", ".supaknowledge"]);
 export const MAX_FILE_BYTES = 10 * 1024 * 1024; // concept-files bucket limit
 
@@ -113,6 +113,12 @@ export function readTree(root: string): ReadTreeResult {
       const full = join(dir, ent.name);
       const rel = relative(abs, full).split(sep).join("/");
       if (ALWAYS_SKIP.has(ent.name) || ent.name === ".gitignore" || ent.name === ".kfignore") continue;
+      // dotfiles and dot-directories (.env, .github, .vscode, ...) are never uploaded: they hold secrets and tooling
+      // config, not knowledge. Reported so nobody wonders where a file went.
+      if (ent.name.startsWith(".")) {
+        if (!isIgnored(rules, rel, ent.isDirectory())) skipped.push({ path: ent.isDirectory() ? `${rel}/` : rel, reason: "dotfile" });
+        continue;
+      }
       if (ent.isSymbolicLink()) {
         skipped.push({ path: rel, reason: "symlink" });
         continue;

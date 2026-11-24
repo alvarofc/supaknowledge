@@ -11,7 +11,7 @@ import { useToast } from "@/components/ui/toast";
 import { errorMessage } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
 import { ConfigFields } from "./config-fields";
-import { CONNECTORS, ConnectorIcon, SYNC_INTERVALS, connectorDef, draftToConfig } from "./connectors";
+import { CONNECTORS, ConnectorIcon, SYNC_INTERVALS, configToDraft, connectorDef, draftToConfig } from "./connectors";
 import type { ConfigDraft, ConnectorKind } from "./connectors";
 
 export function AddSourceButton({
@@ -56,7 +56,7 @@ function AddSourceDialog({
   const toast = useToast();
   const [kind, setKind] = useState<ConnectorKind>("notion");
   const [name, setName] = useState("");
-  const [draft, setDraft] = useState<ConfigDraft>({});
+  const [draft, setDraft] = useState<ConfigDraft>(() => configToDraft(kind, {}));
   const [interval, setInterval] = useState("01:00:00");
   const [audience, setAudience] = useState<string[]>([]);
   const [token, setToken] = useState("");
@@ -131,7 +131,7 @@ function AddSourceDialog({
                   checked={kind === c.kind}
                   onChange={() => {
                     setKind(c.kind);
-                    setDraft({});
+                    setDraft(configToDraft(c.kind, {}));
                     setErrors({});
                     setToken("");
                   }}

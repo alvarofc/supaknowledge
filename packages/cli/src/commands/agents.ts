@@ -15,7 +15,9 @@ interface AgentRow {
   key_prefix: string | null;
   created_at: string;
   last_seen_at: string | null;
-  revoked?: boolean;
+  /** from the agents function (agents.revoked_at); null = unknown */
+  revoked?: boolean | null;
+  revoked_at?: string | null;
   spaces?: { space_id: string; role: string }[];
   [k: string]: unknown;
 }
@@ -136,7 +138,10 @@ export function registerAgents(program: Command, run: Runner): void {
         } catch (e) {
           if (!isNotDeployed(e)) throw e;
           const db = await ctx.db();
-          rows = (await must(db.from("agents").select("*").eq("workspace_id", ws).order("name"))) as AgentRow[];
+          rows = ((await must(db.from("agents").select("*").eq("workspace_id", ws).order("name"))) as AgentRow[]).map((a) => ({
+            ...a,
+            revoked: "revoked_at" in a ? !!a.revoked_at : null,
+          }));
         }
         ctx.out(rows, () =>
           table(

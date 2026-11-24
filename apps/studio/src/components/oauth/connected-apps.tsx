@@ -4,8 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { useToast } from "@/components/ui/toast";
-import { timeAgo } from "@/lib/format";
+
 import { createClient } from "@/lib/supabase/client";
+import { Timestamp } from "@/components/kf/timestamp";
 
 /** Applications the current user approved on /oauth/consent, with revoke (listGrants / revokeGrant). */
 export function ConnectedApps() {
@@ -55,7 +56,7 @@ export function ConnectedApps() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{g.client.name || g.client.id}</div>
                   <div className="text-xs text-subtle">
-                    {g.scopes.join(" ") || "no scopes"} · approved {timeAgo(g.granted_at)}
+                    {g.scopes.join(" ") || "no scopes"} · approved <Timestamp iso={g.granted_at} />
                   </div>
                 </div>
                 <Button

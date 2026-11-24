@@ -11,11 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Callout, Card, CardHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
 import { LinkTabs } from "@/components/ui/tabs";
-import { actorLabel, formatDate, pluralize, timeAgo } from "@/lib/format";
+import { actorLabel, pluralize } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadConcept } from "@/server/concept.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 /** Concept path from the splat ("metrics/arr"), decoding each segment like the links in conceptHref() encode it. */
 function pathFromSplat(splat: string | undefined): string {
@@ -92,7 +93,7 @@ function ConceptPage() {
           </div>
           <p className="mt-2 text-xs text-subtle">
             <span className="font-mono">{concept.path}</span> · revision {concept.revision} · updated by {actorLabel(concept.generated_by, profiles)}{" "}
-            <span title={formatDate(concept.generated_at)}>{timeAgo(concept.generated_at)}</span>
+            <Timestamp iso={concept.generated_at} />
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -127,7 +128,7 @@ function ConceptPage() {
       ) : null}
       {concept.is_stale ? (
         <Callout tone="warn" icon={<Info />} title="Past its freshness date" className="mb-4">
-          This concept was due for a re-check on {formatDate(concept.stale_after)}. The nightly staleness sweep asks the curator to compare it
+          This concept was due for a re-check on <Timestamp iso={concept.stale_after} format="date" />. The nightly staleness sweep asks the curator to compare it
           against its sources; verify it yourself if you know it is still right.
         </Callout>
       ) : null}
@@ -209,7 +210,7 @@ function ConceptPage() {
                           ) : (
                             <>from {f.created_by ? (profiles[f.created_by]?.display_name ?? "a user") : "unknown"}</>
                           )}{" "}
-                          · {timeAgo(f.created_at)}
+                          · <Timestamp iso={f.created_at} />
                         </span>
                       </div>
                       <p className="mt-1 text-fg">{f.observation}</p>
@@ -304,7 +305,7 @@ function ConceptPage() {
             </Card>
             <Card className="px-4 py-3 text-xs text-subtle">
               <div className="flex items-center gap-1.5">
-                <FileText className="size-3.5" /> Created {formatDate(concept.created_at)}
+                <FileText className="size-3.5" /> Created <Timestamp iso={concept.created_at} format="date" />
               </div>
               <div className="mt-1">
                 {currentVer.length

@@ -53,3 +53,11 @@ Deno.test("upload: documents inherit the source audience and re-uploads only wri
   r = await runSync({ ...base, connector: scripted([{ type: "upsert", doc }]) });
   assertEquals([r.upserted, r.unchanged], [0, 1]);
 });
+
+Deno.test("upload: url must be an absolute http(s) URL", async () => {
+  const ok = await prepareUpload({ text: "# x", url: "https://wiki.acme.example/page" });
+  assertEquals(ok.url, "https://wiki.acme.example/page");
+  for (const url of ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi", "/relative", "https://u:p@x.example/"]) {
+    await assertRejects(() => prepareUpload({ text: "# x", url }), UploadError, "url");
+  }
+});

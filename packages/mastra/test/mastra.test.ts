@@ -245,3 +245,32 @@ describe("withSupaknowledge and instructions", () => {
     assert.match(createSupaknowledgeInstructions({ prefix: "kf_" }), /kf_search_knowledge/);
   });
 });
+
+describe("review fixes", () => {
+  it("traceRun reports recording errors to the client's onError when the run sets none", async () => {
+    const errors: unknown[] = [];
+    const kf = new Supaknowledge({ url: "http://kf.test", space: "a/b", apiKey: KEY, fetch: fakeSupaknowledge(knowledge).fetch, onError: (e) => errors.push(e) });
+    const broken = { setRaw: () => { throw new Error("ctx broken"); }, deleteRaw: () => {}, getRaw: () => undefined } as any;
+    const run = traceRun(kf, { requestContext: broken, flushIntervalMs: 0 });
+    assert.equal(errors.length, 1);
+    assert.match(String((errors[0] as Error).message), /ctx broken/);
+    await run.end(null);
+  });
+
+  it("read_concept and load_skill are linked to the traced run", async () => {
+    const kf$ = fakeSupaknowledge((name) => {
+      if (name === "read_concept") return { path: "metrics/arr", kind: "domain", type: "Metric", title: "ARR", description: "", body: "b" };
+      if (name === "load_skill") return { skill: { path: "skills/r", kind: "skill", type: "Skill", title: "R", description: "", body: "s" } };
+      throw new Error("unexpected");
+    });
+    const kf = new Supaknowledge({ url: "http://kf.test", space: "a/b", apiKey: KEY, fetch: kf$.fetch });
+    const run = traceRun(kf, { flushIntervalMs: 0 });
+    const tools = supaknowledgeTools(kf);
+    await (tools.read_concept as any).execute({ path: "metrics/arr" }, { requestContext: run.requestContext });
+    await (tools.load_skill as any).execute({ name: "r" }, { requestContext: run.requestContext });
+    const byName = Object.fromEntries(kf$.toolCalls().map((c) => [c.name, c.arguments]));
+    assert.equal(byName.read_concept.trace_id, "t-1");
+    assert.equal(byName.load_skill.trace_id, "t-1");
+    await run.end(null);
+  });
+});

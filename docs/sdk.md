@@ -17,8 +17,8 @@ The TypeScript and Python clients cover the same ground:
 | | TypeScript | Python |
 |---|---|---|
 | Search knowledge | `kf.search(query, { kinds, limit })` | `kf.search(query, kinds=, limit=)` |
-| Read a concept | `kf.read(path)` | `kf.read(path)` |
-| Skills | `kf.listSkills()`, `kf.loadSkill(name)` | `kf.list_skills()`, `kf.load_skill(name)` |
+| Read a concept | `kf.read(path, { traceId })` | `kf.read(path, trace_id=)` |
+| Skills | `kf.listSkills()`, `kf.loadSkill(name, { traceId })` | `kf.list_skills()`, `kf.load_skill(name, trace_id=)` |
 | Report a problem | `kf.flag({ kind, observation, conceptPath, suggestedFix })` | `kf.flag(kind, observation, concept_path=, suggested_fix=)` |
 | Record a trace | `kf.trace({ name, externalId })` | `kf.trace(name=, external_id=)` |
 | Tools for any LLM loop | `kf.knowledgeTools()`, `kf.handleToolCalls()`, `kf.handleToolCall()` | `kf.knowledge_tools()`, `kf.handle_tool_calls()`, `kf.handle_tool_call()` |
@@ -75,7 +75,7 @@ Options (`new Supaknowledge({...})`):
 | `publishableKey` | Sent as `apikey`; required for the `rest` transport. |
 | `transport` | `"auto"` (default), `"mcp"` or `"rest"` (see below). |
 | `fetch`, `headers`, `timeoutMs` | Custom fetch (tests, proxies), extra headers, per-request timeout (default 30 s). |
-| `onError` | Receives background errors (trace flushes). Defaults to `console.warn`. |
+| `onError` | Receives background errors (trace flushes). Defaults to `console.warn`. `kf.reportError(err)` sends an error there (used by `@supaknowledge/mastra`). |
 
 **Transports.** Knowledge calls go to the `mcp` Edge Function by default: it embeds the query with gte-small
 and runs hybrid (vector + full-text) search, and it logs usage. With a user `accessToken` **and** a
@@ -84,7 +84,10 @@ query embedding, so `search` is **full-text only**. `"auto"` uses MCP and switch
 function is not deployed (404/501). Agent keys always use MCP (they are not JWTs).
 
 `read` and `loadSkill` over MCP return the parsed fields plus `markdown`: the server's model-ready
-rendering, which is what the tool helpers hand back to the model.
+rendering, which is what the tool helpers hand back to the model. Pass `{ traceId }` to attribute the read to a
+trace (its concept usage then shows on the trace); the tool helpers do this for you. Over the REST transport,
+`loadSkill` only returns `stable` skills and both calls wait for the usage log to be written (so it is not lost when
+a serverless function freezes right after the call).
 
 Errors are `SupaknowledgeError` with `status` (HTTP) and `code` (Postgres / JSON-RPC / `"tool_error"`).
 
@@ -93,8 +96,10 @@ Errors are `SupaknowledgeError` with `status` (HTTP) and `code` (Postgres / JSON
 Traces are how the curator learns from real work: tool errors, backtracking and human corrections become
 flags and then knowledge fixes. The recorder buffers events and sends them to the `traces` function.
 **It never throws into your app**: recording methods are synchronous, `flush()` and `end()` never reject,
-and failures go to `onError`. Transient failures (network, 5xx, 429) are retried on the next flush; a batch
-the server rejects as invalid (4xx) is dropped.
+and failures go to `onError`. Transient failures (network, 5xx, 429) are retried with exponential backoff
+(`retryBaseMs` doubling up to `retryMaxMs`; automatic flushes wait, explicit `flush()` / `end()` always try); a
+batch the server rejects as invalid (4xx) is dropped. `trace.ensureId()` creates the trace on the server if needed
+and returns its id (or null), so a first knowledge call can already be linked to it.
 
 ```ts
 const trace = kf.trace({ name: "weekly revenue report", externalId: requestId });
@@ -112,8 +117,29 @@ await trace.end({ outcome: "corrected" });   // unknown | success | failure | co
 |---|---|---|
 | `flushIntervalMs` | 2000 | Flush this long after the first buffered event (0 = only on `maxBatch`, `flush()`, `end()`). The timer is `unref`ed in Node. |
 | `maxBatch` | 50 | Flush as soon as this many events are buffered. |
-| `maxBuffer` | 1000 | Cap while the server is unreachable (oldest dropped). |
+| `maxBuffer` | 1000 | Cap while the server is unreachable (oldest dropped, also after a failed batch is put back). |
+| `retryBaseMs`, `retryMaxMs` | 1000, 60000 | Backoff after a failed flush. |
 | `externalId` | | Your id for the run. The server is idempotent on it, and MCP tools accept it as `trace_id`. |
+
+#### OpenTelemetry (OTLP) export
+
+Any OpenTelemetry exporter that speaks OTLP/HTTP **JSON** can send traces without the SDK. The `traces` function
+accepts `POST /functions/v1/traces/otlp` (also `/traces/otlp/v1/traces` and `/traces/v1/traces`), maps spans with
+the GenAI semantic conventions to trace events, and groups them by OTLP trace id (idempotent: re-sending a trace
+appends only new spans).
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://<project>.supabase.co/functions/v1/traces/otlp?space=acme/revenue&audience=finance"
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer skn_..."
+```
+
+| Parameter | Header alternative | |
+|---|---|---|
+| `space` | `x-supaknowledge-space` | Required: `<workspace>/<space>` or the space id |
+| `audience` | `x-supaknowledge-audience` | Optional group slugs (or ids) restricting every trace in the export, e.g. `?audience=finance`; repeat the parameter or separate with commas. The query parameter wins over the header. Unknown groups are refused with 400. Without it, traces have no audience restriction (readable by the sender and the space's reviewers) |
+
+Protobuf is not supported (415); set `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/json`.
 
 ### Mastra agents
 
@@ -123,6 +149,8 @@ and `zod`.
 ```bash
 npm install @supaknowledge/mastra @supaknowledge/sdk @mastra/core zod
 ```
+
+`@supaknowledge/sdk` is a peer dependency (`^0.1.0`), so your app and the Mastra tools share one client version.
 
 | Export | What |
 |---|---|
@@ -135,9 +163,9 @@ npm install @supaknowledge/mastra @supaknowledge/sdk @mastra/core zod
 A traced run records the user input, every step's assistant text, every tool call (Supaknowledge's and yours) with its
 input and result or error, and, when it ends, the outcome plus `model`, `steps` and token `usage` in the trace
 metadata. Steps are recorded as they finish (Mastra's `onStepFinish`), so a run that crashes still leaves a
-useful trace. The run's `RequestContext` carries the trace, so `search_knowledge` attributes concept usage to it
-and `flag_knowledge` links each flag to it. Recording never throws into the agent: errors go to the client's
-`onError`.
+useful trace. The run's `RequestContext` carries the trace, so `search_knowledge`, `read_concept` and `load_skill`
+attribute concept usage to it and `flag_knowledge` links each flag to it. Recording never throws into the agent:
+errors go to the run's `onError`, else the client's `onError`.
 
 With your own OpenAI-compatible endpoint (`{ id, url, apiKey }` is Mastra's custom-endpoint model config; the part
 of the id after the first `/` is sent as the model name):
@@ -363,7 +391,8 @@ kf.flag("incorrect", "revenue_usd does not exist; found revenue_usd_net",
 ```
 
 Constructor: `Supaknowledge(url, space, *, api_key=None, access_token=None, publishable_key=None, transport="auto",
-timeout=30.0, http_client=None, headers=None, on_error=None)`. `access_token` may be a callable. Pass your own
+timeout=30.0, http_client=None, headers=None, on_error=None)`. `on_error` defaults to a warning on the
+`supaknowledge` logger (like `console.warn` in TypeScript). `access_token` may be a callable. Pass your own
 `httpx.Client` to share connection pools or to test with `httpx.MockTransport`. The client is a context manager
 (`with Supaknowledge(...) as kf:`). Results are plain dicts typed with `TypedDict`s (`SearchResult`, `Concept`, `Skill`).
 The transports behave as in TypeScript.
@@ -380,7 +409,11 @@ with kf.trace(name="weekly revenue", external_id=request_id) as trace:
 ```
 
 Like the TypeScript recorder it never raises into your code (errors go to `on_error`). It flushes when
-`max_batch` events are buffered, on `flush()` and on `end()`; there is no background thread.
+`max_batch` events are buffered, on `flush()` and on `end()`; there is no background thread. `kf.trace(...)` also
+takes `max_batch`, `max_buffer` (cap while the server is unreachable, oldest dropped) and `on_error` (overrides the
+client's). After a failed flush, automatic flushes back off (`retry_base` seconds doubling up to `retry_max`);
+recording is thread-safe and the lock is never held during HTTP. `trace.ensure_id()` returns the server id,
+creating the trace if needed.
 
 ### Tool loops
 
@@ -423,8 +456,10 @@ def answer(question: str) -> str:
 ```
 
 `kf.handle_tool_call(name, input)` runs a single call and returns `{"content": ..., "is_error"?: True}`, or
-`None` for tools that are not Supaknowledge's. `kf.mcp_server_config("cursor")` and `build_mcp_config(...)` produce
-the same MCP configs as the TypeScript SDK.
+`None` for tools that are not Supaknowledge's. Invalid JSON tool arguments come back as an error result and are
+recorded on the trace. `kf.mcp_server_config("cursor", api_key=None, api_key_env="SUPAKNOWLEDGE_API_KEY")` and
+`build_mcp_config(...)` produce the same MCP configs as the TypeScript SDK (`api_key=""` writes an environment
+variable placeholder instead of inlining the key).
 
 ### Development
 

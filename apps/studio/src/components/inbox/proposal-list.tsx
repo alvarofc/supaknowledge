@@ -2,8 +2,9 @@ import { ChevronRight, FileDiff } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { EscalationBadge, ProposalStatusBadge, RiskBadge } from "@/components/kf/badges";
 import type { Database } from "@/lib/database.types";
-import { actorLabel, pluralize, timeAgo } from "@/lib/format";
+import { actorLabel, pluralize } from "@/lib/format";
 import type { ProfileMap } from "@/lib/format";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export type ProposalRow = Pick<
   Database["public"]["Tables"]["proposals"]["Row"],
@@ -31,9 +32,7 @@ export function ProposalItem({ p, base, profiles, history }: { p: ProposalRow; b
             </span>
           </div>
         </div>
-        <time className="shrink-0 text-xs text-subtle" dateTime={when} title={new Date(when).toLocaleString()}>
-          {timeAgo(when)}
-        </time>
+        <Timestamp iso={when} className="shrink-0 text-xs text-subtle" />
         <ChevronRight className="mt-0.5 size-4 shrink-0 text-subtle" aria-hidden="true" />
       </Link>
     </li>

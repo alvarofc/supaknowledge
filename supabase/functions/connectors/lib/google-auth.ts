@@ -4,11 +4,14 @@
 //     domain-wide delegation)
 //   * an OAuth "authorized_user" JSON ({"client_id", "client_secret", "refresh_token"}) -> refresh grant
 //   * a bare access token (anything that is not JSON) -> used as-is (handy for tests / short-lived runs)
-import { ensureOk, request } from "./http.ts";
+import { ensureOk, readJson, readText, request } from "./http.ts";
 import { AuthError, ConfigError, type SyncContext } from "./types.ts";
 
 export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
+// Locked: a `token_uri` inside the stored secret is ignored. Otherwise anyone able to set the secret could
+// make the connector POST signed assertions / refresh tokens to an arbitrary (internal) URL.
+export const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const ACCEPTED_TOKEN_URIS = new Set([TOKEN_URL, "https://accounts.google.com/o/oauth2/token", "https://www.googleapis.com/oauth2/v4/token"]);
 
 function b64url(bytes: Uint8Array | string): string {
   const b = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
@@ -65,8 +68,11 @@ export async function googleAccessToken(ctx: Ctx, secret: string, opts: { scope?
   }
   if (cred.access_token && !cred.refresh_token && !cred.private_key) return cred.access_token;
 
+  if (cred.token_uri && !ACCEPTED_TOKEN_URIS.has(cred.token_uri)) {
+    throw new ConfigError(`gdrive secret: unsupported token_uri (only ${TOKEN_URL} is allowed)`);
+  }
+  const tokenUrl = TOKEN_URL;
   let body: URLSearchParams;
-  let tokenUrl = cred.token_uri ?? TOKEN_URL;
   if (cred.type === "service_account" || (cred.private_key && cred.client_email)) {
     const iat = Math.floor(ctx.now().getTime() / 1000);
     const claims: Record<string, unknown> = {
@@ -80,7 +86,6 @@ export async function googleAccessToken(ctx: Ctx, secret: string, opts: { scope?
     const assertion = await signJwtRS256(claims, cred.private_key!, cred.private_key_id);
     body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion });
   } else if (cred.refresh_token && cred.client_id) {
-    tokenUrl = cred.token_uri ?? TOKEN_URL;
     body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: cred.refresh_token,
@@ -96,10 +101,17 @@ export async function googleAccessToken(ctx: Ctx, secret: string, opts: { scope?
     body: body.toString(),
   });
   if (res.status === 400 || res.status === 401) {
-    const t = await res.text();
-    throw new AuthError(`google token exchange failed: ${t.slice(0, 200)}`);
+    // surface only the OAuth error code (RFC 6749 §5.2), never the raw body
+    let code = "invalid_request";
+    try {
+      const e = JSON.parse(await readText(res, 16 * 1024)) as { error?: unknown };
+      if (typeof e.error === "string" && /^[a-z_]{1,64}$/.test(e.error)) code = e.error;
+    } catch {
+      // not JSON
+    }
+    throw new AuthError(`google token exchange failed (${res.status} ${code})`);
   }
-  const json = (await (await ensureOk(res, "google token")).json()) as { access_token?: string };
+  const json = await readJson<{ access_token?: string }>(await ensureOk(res, "google token"), 1024 * 1024);
   if (!json.access_token) throw new AuthError("google token endpoint returned no access_token");
   return json.access_token;
 }

@@ -11,7 +11,7 @@
 // Definitions are plain objects (no provider SDK dependency).
 import type { TraceRecorder } from "./trace.ts";
 import { CONCEPT_KINDS, FLAG_KINDS } from "./types.ts";
-import type { Concept, ConceptKind, FlagInput, FlagKind, FlagResult, SearchOptions, SearchResult, Skill, SkillSummary } from "./types.ts";
+import type { Concept, ConceptKind, FlagInput, FlagKind, FlagResult, ReadOptions, SearchOptions, SearchResult, Skill, SkillSummary } from "./types.ts";
 
 export const KNOWLEDGE_TOOL_NAMES = ["search_knowledge", "read_concept", "list_skills", "load_skill", "flag_knowledge"] as const;
 export type KnowledgeToolName = (typeof KNOWLEDGE_TOOL_NAMES)[number];
@@ -68,9 +68,9 @@ export interface ToolCallOutput extends ToolCallResult {
 
 export interface KnowledgeBackend {
   search(query: string, opts?: SearchOptions): Promise<SearchResult[]>;
-  read(path: string): Promise<Concept | null>;
+  read(path: string, opts?: ReadOptions): Promise<Concept | null>;
   listSkills(): Promise<SkillSummary[]>;
-  loadSkill(name: string): Promise<Skill | null>;
+  loadSkill(name: string, opts?: ReadOptions): Promise<Skill | null>;
   flag(input: FlagInput): Promise<FlagResult>;
 }
 
@@ -210,19 +210,24 @@ export async function handleToolCall(
   if (!KNOWLEDGE_TOOL_NAMES.includes(tool)) return null;
   const args = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
 
+  // searches, reads and skill loads are attributed to the trace: make sure it exists on the server first
+  // (one request the first time; none while the recorder is backing off after failures)
+  const traceIdFor = async (): Promise<string | undefined> => (opts.trace ? ((await opts.trace.ensureId()) ?? undefined) : undefined);
   let result: ToolCallResult;
   try {
     switch (tool) {
       case "search_knowledge": {
         const kinds = Array.isArray(args.kinds) ? (args.kinds.filter((k) => CONCEPT_KINDS.includes(k as ConceptKind)) as ConceptKind[]) : undefined;
         const limit = typeof args.limit === "number" ? Math.max(1, Math.min(20, Math.floor(args.limit))) : undefined;
-        const rs = await kf.search(str(args.query, "query")!, { kinds: kinds?.length ? kinds : undefined, limit, traceId: opts.trace?.id ?? undefined });
+        const query = str(args.query, "query")!;
+        const rs = await kf.search(query, { kinds: kinds?.length ? kinds : undefined, limit, traceId: await traceIdFor() });
         result = { content: formatSearchResults(rs) };
         break;
       }
       case "read_concept": {
         const path = str(args.path, "path")!;
-        const c = await kf.read(path);
+        const traceId = await traceIdFor();
+        const c = await kf.read(path, traceId ? { traceId } : undefined);
         result = c ? { content: formatConcept(c) } : { content: `No concept at "${path}". Use search_knowledge to find the right path.`, is_error: true };
         break;
       }
@@ -233,7 +238,8 @@ export async function handleToolCall(
       }
       case "load_skill": {
         const n = str(args.name, "name")!;
-        const s = await kf.loadSkill(n);
+        const traceId = await traceIdFor();
+        const s = await kf.loadSkill(n, traceId ? { traceId } : undefined);
         result = s ? { content: formatConcept(s) } : { content: `No skill named "${n}".`, is_error: true };
         break;
       }
@@ -288,7 +294,9 @@ export async function handleToolCalls(
       if (args && typeof args === "object" && "__invalid_json__" in args) {
         const bare = name.slice((opts.prefix ?? "").length);
         if (!name.startsWith(opts.prefix ?? "") || !KNOWLEDGE_TOOL_NAMES.includes(bare as KnowledgeToolName)) return null;
-        return { tool_call_id: c.id, name, content: `Supaknowledge ${bare} failed: arguments are not valid JSON`, is_error: true } as ToolCallOutput;
+        const content = `Supaknowledge ${bare} failed: arguments are not valid JSON`;
+        opts.trace?.tool({ name: bare, input: raw, output: content, isError: true });
+        return { tool_call_id: c.id, name, content, is_error: true } as ToolCallOutput;
       }
       const r = await handleToolCall(kf, name, args, opts);
       return r ? ({ tool_call_id: c.id, name, ...r } as ToolCallOutput) : null;

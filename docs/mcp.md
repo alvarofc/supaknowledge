@@ -20,7 +20,7 @@ several spaces and none is chosen, the tool fails with the list; `list_spaces` r
 
 | Mode | Header | Acts as | Use it for |
 |---|---|---|---|
-| **OAuth** (default for people) | none at setup; the client signs in through Supabase Auth's OAuth 2.1 server | the signed-in person, with all their spaces, roles and groups | Claude Code, Cursor, Claude Desktop on someone's machine |
+| **OAuth** (default for people) | none at setup; the client signs in through Supabase Auth's OAuth 2.1 server | the signed-in person, with all their spaces and groups, limited to reading, searching, usage, flags and traces | Claude Code, Cursor, Claude Desktop on someone's machine |
 | **Agent key** | `Authorization: Bearer skn_<agent-id>_<secret>` | the agent's own Auth user (usually a `reader` of one space) | CI, services, bots, shared agents |
 | Supabase session | `Authorization: Bearer <access token>` | the person | apps that already have a Supabase session |
 
@@ -28,6 +28,11 @@ Requests without a valid token get `401` with
 `WWW-Authenticate: Bearer resource_metadata="<project-url>/functions/v1/mcp/.well-known/oauth-protected-resource"`,
 which is how MCP clients discover the authorization server. Details, and how keys are revoked, are in
 [access control](access-control.md#oauth-21-for-mcp-clients).
+
+An OAuth token covers everything the tools below do, whatever the person's role, but nothing more: it cannot be
+used to administer the workspace, create, approve or reject proposals (bundle import included), or verify and
+revert knowledge, even through the REST API or the other functions. See
+[what OAuth clients can do](access-control.md#what-oauth-clients-can-do).
 
 ## Tools
 

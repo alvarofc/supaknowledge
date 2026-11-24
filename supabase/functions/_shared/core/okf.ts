@@ -129,8 +129,11 @@ export function importBundle(files: BundleFile[], audienceMap: AudienceMap = ide
     return ids;
   };
 
-  // 1. skills: every SKILL.md owns its directory
+  // 1. skills: every SKILL.md owns its directory. A SKILL.md at the bundle root (a bundle that *is* one skill)
+  // owns only the Agent Skills resource folders next to it, so OKF concepts in the same bundle still import.
   const skillDirs = new Set<string>();
+  const ROOT_SKILL_DIRS = ["scripts/", "references/", "assets/"];
+  const ownedByRootSkill = (p: string) => ROOT_SKILL_DIRS.some((d) => p.startsWith(d));
   for (const [path, f] of byPath) {
     if (!/(^|\/)SKILL\.md$/.test(path) || (f.encoding ?? "utf8") !== "utf8") continue;
     const dir = path.replace(/\/?SKILL\.md$/, "");
@@ -153,8 +156,9 @@ export function importBundle(files: BundleFile[], audienceMap: AudienceMap = ide
     const conceptPath = dir || `skills/${name}`;
     const skillFiles: ConceptFile[] = [];
     for (const [p, other] of byPath) {
-      if (p !== path && dir && p.startsWith(dir + "/")) {
-        skillFiles.push({ path: p.slice(dir.length + 1), content: other.content, encoding: other.encoding ?? "utf8" });
+      if (p === path) continue;
+      if (dir ? p.startsWith(dir + "/") : ownedByRootSkill(p)) {
+        skillFiles.push({ path: dir ? p.slice(dir.length + 1) : p, content: other.content, encoding: other.encoding ?? "utf8" });
       }
     }
     concepts.push({
@@ -180,7 +184,7 @@ export function importBundle(files: BundleFile[], audienceMap: AudienceMap = ide
   // 2. OKF concepts
   for (const [path, f] of byPath) {
     if (!path.endsWith(".md") || (f.encoding ?? "utf8") !== "utf8") continue;
-    if ([...skillDirs].some((d) => d === "" || path.startsWith(d + "/") || path === `${d}/SKILL.md`)) continue;
+    if (path === "SKILL.md" || [...skillDirs].some((d) => (d === "" ? ownedByRootSkill(path) : path.startsWith(d + "/")))) continue;
     if (path === "index.md") {
       try {
         const fm = parseMarkdown(f.content).frontmatter ?? {};
@@ -230,8 +234,20 @@ export function importBundle(files: BundleFile[], audienceMap: AudienceMap = ide
   if (bundle.okf_version && bundle.okf_version !== OKF_VERSION) {
     warnings.push(`bundle declares okf_version ${bundle.okf_version}; read on a best-effort basis (Supaknowledge writes ${OKF_VERSION})`);
   }
-  concepts.sort((a, b) => a.draft.path.localeCompare(b.draft.path));
-  return { bundle, concepts, warnings };
+  // one concept per path: skills/foo/SKILL.md and skills/foo.md would both become "skills/foo"
+  const seen = new Map<string, string>();
+  const unique: ImportedConcept[] = [];
+  for (const c of concepts) {
+    const first = seen.get(c.draft.path);
+    if (first) {
+      warnings.push(`${c.sourcePath}: skipped, concept path "${c.draft.path}" is already defined by ${first}`);
+      continue;
+    }
+    seen.set(c.draft.path, c.sourcePath);
+    unique.push(c);
+  }
+  unique.sort((a, b) => a.draft.path.localeCompare(b.draft.path));
+  return { bundle, concepts: unique, warnings };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -261,14 +277,20 @@ export function skillName(path: string): string {
   return path.split("/").pop()!;
 }
 
+/** x-supaknowledge-* keys (and export-only keys) are re-derived from columns on export, never copied. */
+function withoutDerivedKeys(fm: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(fm).filter(([k]) => !k.startsWith("x-supaknowledge-") && !(EXPORT_ONLY_KEYS as readonly string[]).includes(k)));
+}
+
 export function conceptToFiles(c: ExportConcept, audienceMap: AudienceMap = identityMap): BundleFile[] {
   const audience = c.audience.map((id) => audienceMap.toSlug(id) ?? id);
   if (c.kind === "skill") {
     const name = skillName(c.path);
-    const prevMeta = (c.frontmatter.metadata && typeof c.frontmatter.metadata === "object"
+    const prevMeta = (c.frontmatter.metadata && typeof c.frontmatter.metadata === "object" && !Array.isArray(c.frontmatter.metadata)
       ? c.frontmatter.metadata
       : {}) as Record<string, unknown>;
-    const metadata: Record<string, unknown> = { ...prevMeta };
+    // supaknowledge-* metadata is always derived from the columns below, never carried over (stale audiences!)
+    const metadata: Record<string, unknown> = Object.fromEntries(Object.entries(prevMeta).filter(([k]) => !k.startsWith("supaknowledge-")));
     if (c.type !== "Skill") metadata["supaknowledge-type"] = c.type;
     if (c.title !== (firstHeading(c.body) ?? name)) metadata["supaknowledge-title"] = c.title;
     if (c.tags.length) metadata["supaknowledge-tags"] = c.tags;
@@ -276,7 +298,7 @@ export function conceptToFiles(c: ExportConcept, audienceMap: AudienceMap = iden
     if (c.stale_after) metadata["supaknowledge-stale-after"] = c.stale_after;
     if (audience.length) metadata["supaknowledge-audience"] = audience;
     if (c.revision) metadata["supaknowledge-revision"] = String(c.revision);
-    const fm: Record<string, unknown> = { ...c.frontmatter, name, description: c.description.slice(0, 1024) };
+    const fm: Record<string, unknown> = { ...withoutDerivedKeys(c.frontmatter), name, description: c.description.slice(0, 1024) };
     if (Object.keys(metadata).length) fm.metadata = metadata;
     else delete fm.metadata;
     const dir = c.path;
@@ -287,7 +309,7 @@ export function conceptToFiles(c: ExportConcept, audienceMap: AudienceMap = iden
   }
 
   const fm: Record<string, unknown> = {
-    ...c.frontmatter,
+    ...withoutDerivedKeys(c.frontmatter),
     type: c.type,
     title: c.title,
     description: c.description || undefined,
@@ -315,7 +337,8 @@ export function exportBundle(concepts: ExportConcept[], opts: ExportOptions): Bu
   const map = opts.audienceMap ?? identityMap;
   const visible = opts.publicOnly ? concepts.filter((c) => c.audience.length === 0) : concepts;
   const out: BundleFile[] = [];
-  const byDir = new Map<string, { title: string; href: string; description: string }[]>();
+  // the root index.md always exists (it carries okf_version and the bundle title), even for an empty bundle
+  const byDir = new Map<string, { title: string; href: string; description: string }[]>([["", []]]);
 
   for (const c of visible) {
     out.push(...conceptToFiles(c, map));

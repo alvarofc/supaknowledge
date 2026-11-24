@@ -28,7 +28,7 @@ const result = await build({
   external: Object.keys(pkg.dependencies),
   banner: { js: "#!/usr/bin/env node" },
   define: { __KF_VERSION__: JSON.stringify(pkg.version) },
-  sourcemap: true,
+  sourcemap: false,
   metafile: true,
   plugins: [coreFormatsOnly],
   legalComments: "none",

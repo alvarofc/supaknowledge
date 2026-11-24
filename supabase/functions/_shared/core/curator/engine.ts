@@ -1,23 +1,27 @@
 // The curator: a queue-driven state machine. Each task is small enough for one Edge Function invocation.
 //
-//   gather  mine correction lessons from new traces (continues itself until done), then triage:
-//           collect open flags + changed documents, cluster them, enqueue one `draft` per cluster
+//   gather  mine correction lessons from new traces (continues itself until done or max_traces_per_run),
+//           then triage (inline when there is time left, else as its own task)
+//   triage  collect open flags + changed documents, cluster them, enqueue one `draft` per cluster
 //   sweep   find concepts past stale_after and enqueue a re-validation `draft` for each
 //   draft   research one cluster, write a changeset, self-review it, persist a proposal, and apply it
 //           when the space policy allows (never for access escalations)
 //
-// When the last task of a run finishes, the run is closed with its stats.
-import { narrowestSafeAudience } from "../access.ts";
+// Every task runs against a wall-clock budget (each model call gets an AbortSignal for what is left) and the
+// run against a token budget. Tasks are idempotent: retries never duplicate flags, tasks or dismissals.
+// When the last task of a run finishes, the database closes the run (failed if any task failed).
+import { isEscalation, narrowestSafeAudience } from "../access.ts";
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type { GenerateRequest, GenerateResult, LLM, Usage } from "../llm.ts";
+import { type GenerateRequest, type GenerateResult, type LLM, LLMBudgetError, LLMConfigError, type Usage } from "../llm.ts";
 import { lintConcept } from "../okf.ts";
 import { decideAutoApply, type SpaceSettings } from "../settings.ts";
-import type { Audience, Citation, Concept, ConceptDraft, Flag, ProposalDraft, ProposalOp, SourceDocument, Trace } from "../types.ts";
+import type { Audience, Citation, CitationKind, Concept, ConceptDraft, Flag, ProposalDraft, ProposalOp, SourceDocument, Trace } from "../types.ts";
 import { extractLessons, lessonsToFlags, renderTrace, scoreTrace } from "./corrections.ts";
-import { CLUSTER_SYSTEM, DRAFT_SYSTEM, REVIEW_SYSTEM, withHouseRules } from "./prompts.ts";
+import { stableHash } from "./hash.ts";
+import { CLUSTER_SYSTEM, DRAFT_SYSTEM, REVIEW_SYSTEM, UNTRUSTED_DATA_RULE, untrusted, withHouseRules } from "./prompts.ts";
 import { ClusterSchema, DraftSchema, ReviewSchema, type DraftOutput, type ReviewOutput } from "./schemas.ts";
-import type { ConceptHit, CuratorStore, CuratorTask, SourceHit } from "./store.ts";
+import type { ConceptHit, CuratorRun, CuratorStore, CuratorTask, SourceHit } from "./store.ts";
 
 export interface CuratorDeps {
   store: CuratorStore;
@@ -38,107 +42,186 @@ export interface ClusterInput {
   stale?: boolean;
 }
 
-const MAX_ATTEMPTS = 3;
+/** A task ran out of wall-clock budget; a retry gets a fresh budget. */
+export class TaskTimeoutError extends Error {}
 
-/** Counts tokens of every model call a task makes (pi-style cost accounting, stored in run stats). */
+const DEFAULT_BUDGET_MS = 100_000;
+/** time kept back after the last model call to persist results */
+const RESERVE_MS = 8_000;
+/** never start a model call with less time than this */
+const MIN_CALL_MS = 10_000;
+/** skip the repair round when less than this is left (the proposal keeps its problems -> no auto-apply) */
+const MIN_REPAIR_MS = 40_000;
+/** skip the self-review when less than this is left (recorded as a problem -> no auto-apply) */
+const MIN_REVIEW_MS = 20_000;
+/** traces per gather task */
+const TRACE_BATCH = 50;
+/** concurrency of triage's candidate-concept searches */
+const SEARCH_CONCURRENCY = 4;
+
+const tokensOf = (stats: Record<string, unknown> | undefined | void): number =>
+  Number(stats?.input_tokens ?? 0) + Number(stats?.output_tokens ?? 0);
+
+/**
+ * Counts tokens of every model call a task makes (stored in run stats right after each call), enforces the
+ * per-run token budget, and gives every call an AbortSignal for the task's remaining wall-clock budget.
+ */
 class MeteredLLM implements LLM {
   usage: Usage & { calls: number } = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, calls: 0 };
   private inner: LLM;
-  constructor(inner: LLM) {
+  private deadline: number;
+  private tokenBudget: number;
+  private runTokens: number;
+  private record: (delta: Record<string, number>) => Promise<Record<string, unknown> | void>;
+
+  constructor(inner: LLM, opts: { deadline: number; tokenBudget: number; runTokens: number; record: (delta: Record<string, number>) => Promise<Record<string, unknown> | void> }) {
     this.inner = inner;
+    this.deadline = opts.deadline;
+    this.tokenBudget = opts.tokenBudget;
+    this.runTokens = opts.runTokens;
+    this.record = opts.record;
   }
+
+  remainingMs(): number {
+    return this.deadline - Date.now();
+  }
+
   async generate<T>(req: GenerateRequest<T>): Promise<GenerateResult<T>> {
-    const res = await this.inner.generate(req);
+    const left = this.remainingMs() - RESERVE_MS;
+    if (left < MIN_CALL_MS) throw new TaskTimeoutError(`task time budget exhausted (${Math.max(0, Math.round(this.remainingMs() / 1000))}s left)`);
+    if (this.tokenBudget > 0 && this.runTokens >= this.tokenBudget) {
+      throw new LLMBudgetError(`run token budget exhausted (${this.runTokens} of curator.max_tokens_per_run=${this.tokenBudget} tokens used)`);
+    }
+    const timeout = AbortSignal.timeout(left);
+    const signal = req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
+    let res: GenerateResult<T>;
+    try {
+      res = await this.inner.generate({ ...req, signal });
+    } catch (e) {
+      if (timeout.aborted) throw new TaskTimeoutError(`model call aborted: task time budget exhausted (${(e as Error).message})`);
+      throw e;
+    }
+    const delta = {
+      model_calls: 1,
+      input_tokens: res.usage.input_tokens,
+      output_tokens: res.usage.output_tokens,
+      cached_input_tokens: res.usage.cached_input_tokens ?? 0,
+    };
     this.usage.calls++;
-    this.usage.input_tokens += res.usage.input_tokens;
-    this.usage.output_tokens += res.usage.output_tokens;
-    this.usage.cached_input_tokens! += res.usage.cached_input_tokens ?? 0;
+    this.usage.input_tokens += delta.input_tokens;
+    this.usage.output_tokens += delta.output_tokens;
+    this.usage.cached_input_tokens! += delta.cached_input_tokens;
+    // record right away: a task killed by the platform later still accounts for what it spent
+    const stats = await this.record(delta).catch(() => undefined);
+    this.runTokens = stats ? Math.max(tokensOf(stats), this.runTokens + delta.input_tokens + delta.output_tokens) : this.runTokens + delta.input_tokens + delta.output_tokens;
     return res;
   }
 }
 
+interface TaskContext {
+  store: CuratorStore;
+  llm: MeteredLLM;
+  run: CuratorRun;
+  settings: SpaceSettings;
+  now: () => Date;
+  log: (msg: string, data?: Record<string, unknown>) => void;
+  budgetMs: number;
+  remainingMs: () => number;
+}
+
+/**
+ * Run one task. On success the task is finished and the run closed when it was the last one. A failure that
+ * can be retried is recorded and rethrown (the queue redelivers the task); a final failure (no attempts left,
+ * token budget exhausted, configuration error) is recorded and returned as `{ failed: true }`.
+ */
 export async function runTask(deps: CuratorDeps, task: CuratorTask): Promise<Record<string, unknown>> {
-  const metered = new MeteredLLM(deps.llm);
-  deps = { ...deps, llm: metered };
   const { store } = deps;
   const log = deps.log ?? (() => {});
-  const recordUsage = async () => {
-    const u = metered.usage;
-    if (u.calls) {
-      await store.addRunStats(task.run_id, { model_calls: u.calls, input_tokens: u.input_tokens, output_tokens: u.output_tokens, cached_input_tokens: u.cached_input_tokens ?? 0 });
-    }
-  };
+  const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
   try {
+    const run = await store.getRun(task.run_id);
+    const settings = await store.getSettings(run.space_id);
+    const llm = new MeteredLLM(deps.llm, {
+      deadline,
+      tokenBudget: settings.curator.max_tokens_per_run,
+      runTokens: tokensOf(run.stats),
+      record: (delta) => store.addRunStats(run.id, delta),
+    });
+    const ctx: TaskContext = { store, llm, run, settings, log, budgetMs, now: deps.now ?? (() => new Date()), remainingMs: () => deadline - Date.now() };
+
     let output: Record<string, unknown>;
-    if (task.step === "gather") output = await gather(deps, task);
-    else if (task.step === "sweep") output = await sweep(deps, task);
-    else if (task.step === "draft") output = await draft(deps, task);
-    else throw new Error(`unknown curator step "${task.step}"`);
-    await recordUsage();
+    if (task.step === "gather") output = await gather(ctx, task);
+    else if (task.step === "triage") output = await triage(ctx, task);
+    else if (task.step === "sweep") output = await sweep(ctx);
+    else if (task.step === "draft") output = await draft(ctx, task);
+    else throw new LLMConfigError(`unknown curator step "${task.step}"`);
     await store.finishTask(task.id, output);
-    await maybeFinishRun(deps, task.run_id);
+    await store.maybeFinishRun(task.run_id);
     return output;
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    log("curator task failed", { task: task.id, step: task.step, error: msg, attempts: task.attempts });
-    await recordUsage().catch(() => {});
-    await store.failTask(task.id, msg);
-    if (task.attempts + 1 >= MAX_ATTEMPTS) await maybeFinishRun(deps, task.run_id, msg);
-    throw e;
+    const permanent = e instanceof LLMBudgetError || e instanceof LLMConfigError;
+    log("curator task failed", { task: task.id, step: task.step, error: msg, attempts: task.attempts, permanent });
+    const { final } = await store.failTask(task.id, msg, { permanent });
+    if (!final) throw e;
+    await store.maybeFinishRun(task.run_id);
+    return { failed: true, error: msg };
   }
-}
-
-async function maybeFinishRun(deps: CuratorDeps, runId: string, error?: string) {
-  if ((await deps.store.outstandingTasks(runId)) > 0) return;
-  await deps.store.finishRun(runId, error ? "failed" : "succeeded", {}, error);
-}
-
-function deadline(deps: CuratorDeps): () => boolean {
-  const start = Date.now();
-  const budget = deps.budgetMs ?? 100_000;
-  return () => Date.now() - start > budget;
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // gather
 // ---------------------------------------------------------------------------------------------------------
 
-async function gather(deps: CuratorDeps, task: CuratorTask): Promise<Record<string, unknown>> {
-  const { store, llm } = deps;
-  const run = await store.getRun(task.run_id);
+async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<string, unknown>> {
+  const { store, llm, run, settings } = ctx;
   if (task.input.continued !== true) await store.startRun(run.id);
-  const settings = await store.getSettings(run.space_id);
-  const overBudget = deadline(deps);
 
-  // 1. mine traces, a slice at a time
-  const traces = await store.listUncuratedTraces(run.space_id, Math.min(settings.curator.max_traces_per_run, 50));
+  // 1. mine traces, a slice at a time, never more than max_traces_per_run across continuations
+  const scannedBefore = Number(task.input.scanned ?? 0) || 0;
+  const batch = Math.max(0, Math.min(TRACE_BATCH, settings.curator.max_traces_per_run - scannedBefore));
+  const traces = batch > 0 ? await store.listUncuratedTraces(run.space_id, batch) : [];
   let mined = 0;
   let lessons = 0;
-  const done: string[] = [];
+  let done = 0;
   for (const trace of traces) {
-    if (overBudget()) break;
+    if (ctx.remainingMs() < RESERVE_MS + MIN_CALL_MS + 5_000) break;
     const { score } = scoreTrace(trace);
     if (score >= 2) {
       const out = await extractLessons(llm, trace, { instructions: settings.curator.instructions });
       const flags = lessonsToFlags(trace, out);
+      // idempotent (dedupe key per trace + lesson), then the trace is marked right away: a failure on the
+      // next trace never re-mines this one
       if (flags.length) await store.createSyntheticFlags(flags);
       lessons += flags.length;
       mined++;
     }
-    done.push(trace.id);
+    await store.markTracesCurated([trace.id]);
+    done++;
   }
-  if (done.length) await store.markTracesCurated(done);
-  await store.addRunStats(run.id, { traces_scanned: done.length, traces_mined: mined, lessons });
+  if (traces.length) await store.addRunStats(run.id, { traces_scanned: done, traces_mined: mined, lessons });
+  const scanned = scannedBefore + done;
 
-  if (done.length < traces.length || traces.length === 50) {
-    // more traces left: continue in a fresh task (fresh time budget)
-    await store.enqueueTask(run.id, "gather", { continued: true });
-    return { traces_scanned: done.length, continued: true };
+  const more = done < traces.length || (traces.length === batch && batch > 0 && scanned < settings.curator.max_traces_per_run);
+  if (more) {
+    // more traces left: continue in a fresh task (fresh time budget). Keyed by this task so a retry of this
+    // task does not enqueue a second continuation.
+    await store.enqueueTask(run.id, "gather", { continued: true, scanned }, { dedupeKey: `gather-after:${task.id}` });
+    return { traces_scanned: done, continued: true };
   }
 
-  // 2. triage
-  return await triage(deps, run.id, run.space_id, run.since, run.until, settings);
+  // 2. triage: inline when at least half the budget is left, else in its own task (fresh budget)
+  if (ctx.remainingMs() < ctx.budgetMs / 2) {
+    await store.enqueueTask(run.id, "triage", {}, { dedupeKey: "triage" });
+    return { traces_scanned: done, triage: "queued" };
+  }
+  return { traces_scanned: done, ...(await triage(ctx, task)) };
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// triage
+// ---------------------------------------------------------------------------------------------------------
 
 interface Signal {
   id: string; // "f:<flag>" | "d:<doc>"
@@ -146,19 +229,60 @@ interface Signal {
   conceptPath: string | null;
 }
 
-async function triage(
-  deps: CuratorDeps,
-  runId: string,
-  spaceId: string,
-  since: string | null,
-  until: string | null,
-  settings: SpaceSettings,
-): Promise<Record<string, unknown>> {
-  const { store, llm } = deps;
-  const flags = await store.listOpenFlags(spaceId, 200);
-  const docs = await store.listChangedDocuments(spaceId, since, until, 100);
+/** "/skills/foo/SKILL.md" -> "skills/foo"; "metrics/arr.md" -> "metrics/arr" */
+export function normalizeConceptPath(p: string): string {
+  return p.trim().replace(/^\/+/, "").replace(/\/SKILL\.md$/i, "").replace(/\.md$/i, "").replace(/\/SKILL$/i, "").replace(/\/+$/, "");
+}
 
-  const clusters: ClusterInput[] = [];
+async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i]!);
+    }),
+  );
+  return out;
+}
+
+const PRIORITY = { high: 0, medium: 1, low: 2 } as const;
+
+/** Clusters that touch the same concept are one draft (two drafts on one concept would conflict). */
+export function mergeClusters(list: ClusterInput[]): ClusterInput[] {
+  const out: ClusterInput[] = [];
+  const union = (a: string[], b: string[]) => [...new Set([...a, ...b])];
+  for (const c of list) {
+    const copy: ClusterInput = { ...c, flag_ids: [...c.flag_ids], document_ids: [...c.document_ids], concept_paths: [...new Set(c.concept_paths)] };
+    const overlapping = out.filter((o) => o.concept_paths.some((p) => copy.concept_paths.includes(p)));
+    if (!overlapping.length) {
+      out.push(copy);
+      continue;
+    }
+    const target = overlapping[0]!;
+    for (const o of [...overlapping.slice(1), copy]) {
+      target.flag_ids = union(target.flag_ids, o.flag_ids);
+      target.document_ids = union(target.document_ids, o.document_ids);
+      target.concept_paths = union(target.concept_paths, o.concept_paths);
+      if (o.topic && !target.topic.includes(o.topic)) target.topic = `${target.topic}; ${o.topic}`.slice(0, 300);
+      if (PRIORITY[o.priority] < PRIORITY[target.priority]) target.priority = o.priority;
+      if (o.stale) target.stale = true;
+      if (o !== copy) out.splice(out.indexOf(o), 1);
+    }
+  }
+  return out;
+}
+
+function clusterKey(c: ClusterInput): string {
+  return stableHash([[...c.flag_ids].sort().join(","), [...c.document_ids].sort().join(","), [...c.concept_paths].sort().join(","), c.stale ? "stale" : ""].join("|"));
+}
+
+async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<string, unknown>> {
+  const { store, llm, run, settings } = ctx;
+  const spaceId = run.space_id;
+  if (task.step === "triage") await store.startRun(run.id);
+  const flags = await store.listOpenFlags(spaceId, 200);
+  const docs = await store.listChangedDocuments(spaceId, run.since, run.until, 100);
+
   const byConcept = new Map<string, ClusterInput>();
   const loose: Signal[] = [];
 
@@ -174,37 +298,41 @@ async function triage(
   // deterministic grouping first: flags already attached to a concept
   for (const f of flags) {
     if (f.concept_id && f.concept_path) {
-      const c = clusterFor(f.concept_path);
+      const c = clusterFor(normalizeConceptPath(f.concept_path));
       c.flag_ids.push(f.id);
       if (f.kind === "incorrect" || f.kind === "outdated") c.priority = "high";
     } else {
       loose.push({ id: `f:${f.id}`, conceptPath: f.concept_path, text: `[flag ${f.kind}${f.synthetic ? ", from trace correction" : ""}] ${f.concept_path ? `about "${f.concept_path}": ` : ""}${f.observation}${f.suggested_fix ? ` | suggested: ${f.suggested_fix}` : ""}${f.query ? ` | was looking for: ${f.query}` : ""}` });
     }
   }
-  // documents cited by concepts go to those concepts
+  // documents cited by concepts go to those concepts (one batched lookup)
+  const citing = await store.conceptsCitingDocuments(spaceId, docs.map((d) => ({ id: d.id, url: d.url })));
   for (const d of docs) {
-    const citing = await store.conceptsCitingDocument(spaceId, d.id);
-    if (citing.length) {
-      for (const p of citing) clusterFor(p).document_ids.push(d.id);
+    const paths = citing.get(d.id) ?? [];
+    if (paths.length) {
+      for (const p of paths) clusterFor(p).document_ids.push(d.id);
     } else {
       loose.push({ id: `d:${d.id}`, conceptPath: null, text: `[document changed] "${d.title ?? d.external_id}" ${d.url ?? ""}\n${d.content.slice(0, 600)}` });
     }
   }
 
+  const llmClusters: ClusterInput[] = [];
   let ignored = 0;
+  let dismissed = 0;
   if (loose.length) {
-    // candidate concepts for the model to anchor on
+    // candidate concepts for the model to anchor on: deduplicated queries, bounded concurrency
+    const queries = [...new Set(loose.slice(0, 60).map((s) => s.text.slice(0, 300)))];
     const candidates = new Map<string, ConceptHit>();
-    for (const s of loose.slice(0, 60)) {
-      for (const h of await store.searchConcepts(spaceId, s.text.slice(0, 300), 3)) candidates.set(h.path, h);
+    for (const hits of await mapLimit(queries, SEARCH_CONCURRENCY, (q) => store.searchConcepts(spaceId, q, 3))) {
+      for (const h of hits) candidates.set(h.path, h);
     }
     const input = [
       "Existing concepts that may be relevant:\n" +
         ([...candidates.values()].map((h) => `- ${h.path} (${h.kind}, ${h.type}): ${h.title} — ${h.description}`).join("\n") || "(none)"),
-      "Signals:\n" + loose.slice(0, 120).map((s) => `${s.id}: ${s.text}`).join("\n\n"),
+      "Signals:\n" + loose.slice(0, 120).map((s) => `${s.id}:\n${untrusted(s.id, s.text)}`).join("\n\n"),
     ];
     const res = await llm.generate({
-      system: withHouseRules(CLUSTER_SYSTEM, settings.curator.instructions),
+      system: withHouseRules(CLUSTER_SYSTEM + UNTRUSTED_DATA_RULE, settings.curator.instructions),
       input,
       schema: ClusterSchema,
       maxTokens: 8000,
@@ -213,38 +341,41 @@ async function triage(
     for (const c of res.output.clusters) {
       const ids = c.signal_ids.filter((id) => known.has(id));
       if (!ids.length) continue;
-      clusters.push({
+      llmClusters.push({
         topic: c.topic,
         flag_ids: ids.filter((i) => i.startsWith("f:")).map((i) => i.slice(2)),
         document_ids: ids.filter((i) => i.startsWith("d:")).map((i) => i.slice(2)),
-        concept_paths: c.concept_paths,
+        concept_paths: [...new Set(c.concept_paths.map(normalizeConceptPath).filter(Boolean))],
         research_query: c.research_query,
         priority: c.priority,
       });
     }
-    const dismiss = res.output.ignored.filter((i) => i.signal_id.startsWith("f:") && known.has(i.signal_id));
-    for (const i of dismiss) await store.dismissFlags([i.signal_id.slice(2)], `curator triage: ${i.reason}`);
+    const clustered = new Set(llmClusters.flatMap((c) => [...c.flag_ids.map((i) => `f:${i}`), ...c.document_ids.map((i) => `d:${i}`)]));
+    // a flag the model both clusters and ignores stays open (it is handled by the cluster)
+    const dismiss = res.output.ignored.filter((i) => i.signal_id.startsWith("f:") && known.has(i.signal_id) && !clustered.has(i.signal_id));
+    if (settings.curator.auto_dismiss_flags) {
+      for (const i of dismiss) await store.dismissFlags([i.signal_id.slice(2)], `curator triage: ${i.reason}`);
+      dismissed = dismiss.length;
+    }
     ignored = res.output.ignored.length;
   }
 
-  clusters.unshift(...byConcept.values());
-  const order = { high: 0, medium: 1, low: 2 } as const;
-  clusters.sort((a, b) => order[a.priority] - order[b.priority]);
+  const clusters = mergeClusters([...byConcept.values(), ...llmClusters]);
+  clusters.sort((a, b) => PRIORITY[a.priority] - PRIORITY[b.priority]);
   const selected = clusters.slice(0, settings.curator.max_clusters_per_run);
-  for (const c of selected) await store.enqueueTask(runId, "draft", c as unknown as Record<string, unknown>);
-  await store.addRunStats(runId, { flags: flags.length, documents: docs.length, clusters: selected.length, ignored });
-  return { flags: flags.length, documents: docs.length, clusters: selected.length, deferred: clusters.length - selected.length, ignored };
+  // keyed by content: a retried triage never enqueues the same draft twice
+  for (const c of selected) await store.enqueueTask(run.id, "draft", c as unknown as Record<string, unknown>, { dedupeKey: `draft:${clusterKey(c)}` });
+  await store.addRunStats(run.id, { flags: flags.length, documents: docs.length, clusters: selected.length, ignored, flags_dismissed: dismissed });
+  return { flags: flags.length, documents: docs.length, clusters: selected.length, deferred: clusters.length - selected.length, ignored, dismissed };
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // sweep
 // ---------------------------------------------------------------------------------------------------------
 
-async function sweep(deps: CuratorDeps, task: CuratorTask): Promise<Record<string, unknown>> {
-  const { store } = deps;
-  const run = await store.getRun(task.run_id);
+async function sweep(ctx: TaskContext): Promise<Record<string, unknown>> {
+  const { store, run, settings } = ctx;
   await store.startRun(run.id);
-  const settings = await store.getSettings(run.space_id);
   const stale = await store.listStaleConcepts(run.space_id, settings.curator.max_clusters_per_run);
   for (const c of stale) {
     const input: ClusterInput = {
@@ -256,7 +387,7 @@ async function sweep(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
       priority: "medium",
       stale: true,
     };
-    await store.enqueueTask(run.id, "draft", input as unknown as Record<string, unknown>);
+    await store.enqueueTask(run.id, "draft", input as unknown as Record<string, unknown>, { dedupeKey: `stale:${c.path}` });
   }
   await store.addRunStats(run.id, { stale: stale.length });
   return { stale: stale.length };
@@ -266,7 +397,7 @@ async function sweep(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
 // draft
 // ---------------------------------------------------------------------------------------------------------
 
-interface Evidence {
+export interface Evidence {
   flags: Map<string, Flag>;
   traces: Map<string, Trace>;
   documents: Map<string, SourceDocument>;
@@ -290,7 +421,18 @@ function renderConcept(c: Concept): string {
   ].join("\n");
 }
 
-function renderEvidence(ev: Evidence, cluster: ClusterInput, rejections: { title: string; review_note: string | null }[]): string[] {
+function renderFlag(f: Flag): string {
+  return `### flag:${f.id}\n${untrusted(
+    `flag:${f.id}`,
+    `kind: ${f.kind}${f.synthetic ? " (mined from a trace correction)" : ""}${f.concept_path ? ` | about: ${f.concept_path}` : ""}\nobservation: ${f.observation}${f.query ? `\nlooking for: ${f.query}` : ""}${f.suggested_fix ? `\nsuggested fix: ${f.suggested_fix}` : ""}${f.evidence && Object.keys(f.evidence).length ? `\nevidence: ${JSON.stringify(f.evidence).slice(0, 1500)}` : ""}${f.trace_id ? `\ntrace: trace:${f.trace_id}` : ""}`,
+  )}`;
+}
+
+function renderDocument(d: SourceDocument, max = 6000): string {
+  return `### doc:${d.id}\ntitle: ${d.title ?? d.external_id}${d.url ? `\nurl: ${d.url}` : ""}${d.source_kind ? `\nsource: ${d.source_kind}` : ""}\nchanged: ${d.changed_at}\n${untrusted(`doc:${d.id}`, clip(d.content, max))}`;
+}
+
+export function renderEvidence(ev: Evidence, cluster: ClusterInput, rejections: { title: string; review_note: string | null }[]): string[] {
   const stable: string[] = [];
   stable.push(
     "## Concepts this change may touch\n" + ([...ev.targets.values()].map(renderConcept).join("\n\n") || "(none of the suggested paths exist yet)"),
@@ -303,18 +445,12 @@ function renderEvidence(ev: Evidence, cluster: ClusterInput, rejections: { title
         .join("\n") || "(none)"),
   );
   const evidence: string[] = ["## Evidence"];
-  for (const f of ev.flags.values()) {
-    evidence.push(
-      `### flag:${f.id}\nkind: ${f.kind}${f.synthetic ? " (mined from a trace correction)" : ""}${f.concept_path ? ` | about: ${f.concept_path}` : ""}\nobservation: ${f.observation}${f.query ? `\nlooking for: ${f.query}` : ""}${f.suggested_fix ? `\nsuggested fix: ${f.suggested_fix}` : ""}${f.evidence && Object.keys(f.evidence).length ? `\nevidence: ${JSON.stringify(f.evidence).slice(0, 1500)}` : ""}${f.trace_id ? `\ntrace: trace:${f.trace_id}` : ""}`,
-    );
-  }
-  for (const t of ev.traces.values()) evidence.push(`### trace:${t.id}\n${renderTrace(t, 8000)}`);
-  for (const d of ev.documents.values()) {
-    evidence.push(`### doc:${d.id}\ntitle: ${d.title ?? d.external_id}${d.url ? `\nurl: ${d.url}` : ""}\nchanged: ${d.changed_at}\n${clip(d.content, 6000)}`);
-  }
+  for (const f of ev.flags.values()) evidence.push(renderFlag(f));
+  for (const t of ev.traces.values()) evidence.push(`### trace:${t.id}\n${untrusted(`trace:${t.id}`, renderTrace(t, 8000))}`);
+  for (const d of ev.documents.values()) evidence.push(renderDocument(d));
   for (const h of ev.sourceHits) {
     if (ev.documents.has(h.document_id)) continue;
-    evidence.push(`### doc:${h.document_id} (search excerpt)\ntitle: ${h.title ?? ""}${h.url ? `\nurl: ${h.url}` : ""}\n${clip(h.snippet, 1500)}`);
+    evidence.push(`### doc:${h.document_id} (search excerpt)\ntitle: ${h.title ?? ""}${h.url ? `\nurl: ${h.url}` : ""}\n${untrusted(`doc:${h.document_id}`, clip(h.snippet, 1500))}`);
   }
   if (rejections.length) {
     evidence.push(
@@ -332,29 +468,67 @@ function renderEvidence(ev: Evidence, cluster: ClusterInput, rejections: { title
   return [...stable, evidence.join("\n\n"), taskText];
 }
 
-async function loadEvidence(deps: CuratorDeps, spaceId: string, cluster: ClusterInput): Promise<Evidence> {
-  const { store } = deps;
-  const flags = await store.getFlags(cluster.flag_ids);
+/**
+ * Which audiences research may draw from. Material is "in scope" when publishing it into the concepts being
+ * changed (or, for brand-new knowledge, next to the signals that asked for it) would not widen its access.
+ * Out-of-scope material is never shown to the drafting model, so it cannot leak into the changeset.
+ */
+interface ResearchScope {
+  allows(audience: Audience): boolean;
+}
+
+function researchScope(settings: SpaceSettings, targets: Concept[], signals: Audience[]): ResearchScope {
+  if (settings.curator.research_scope === "all") return { allows: () => true };
+  const scope = targets.length ? targets.map((t) => t.audience) : signals.length ? signals : [[]];
+  return { allows: (a) => scope.every((t) => !isEscalation(a, t)) };
+}
+
+async function loadEvidence(ctx: TaskContext, cluster: ClusterInput): Promise<{ ev: Evidence; scope: ResearchScope }> {
+  const { store, run, settings } = ctx;
+  const spaceId = run.space_id;
+  const flags = (await store.getFlags(cluster.flag_ids)).filter((f) => f.space_id === spaceId);
   const traceIds = [...new Set(flags.map((f) => f.trace_id).filter((x): x is string => !!x))].slice(0, 5);
-  const [traces, documents, targets, related, sourceHits] = await Promise.all([
+  const paths = [...new Set([...cluster.concept_paths, ...flags.map((f) => f.concept_path).filter((p): p is string => !!p)].map(normalizeConceptPath))];
+  const [traces, documents, targets] = await Promise.all([
     store.getTraces(traceIds),
     store.getDocuments(cluster.document_ids),
-    store.getConcepts(spaceId, [...new Set([...cluster.concept_paths, ...flags.map((f) => f.concept_path).filter((p): p is string => !!p)])]),
+    store.getConcepts(spaceId, paths),
+  ]);
+  const docs = documents.filter((d) => d.space_id === spaceId);
+  const scope = researchScope(settings, targets, [...flags.map((f) => f.audience), ...docs.map((d) => d.audience)]);
+  const [related, sourceHits] = await Promise.all([
     store.searchConcepts(spaceId, cluster.research_query, 8),
     store.searchSources(spaceId, cluster.research_query, 8),
   ]);
   return {
-    flags: new Map(flags.map((f) => [f.id, f])),
-    traces: new Map(traces.map((t) => [t.id, t])),
-    documents: new Map(documents.map((d) => [d.id, d])),
-    sourceHits,
-    targets: new Map(targets.map((c) => [c.path, c])),
-    related,
+    ev: {
+      flags: new Map(flags.map((f) => [f.id, f])),
+      traces: new Map(traces.filter((t) => t.space_id === spaceId).map((t) => [t.id, t])),
+      documents: new Map(docs.map((d) => [d.id, d])),
+      sourceHits: sourceHits.filter((h) => scope.allows(h.audience)),
+      targets: new Map(targets.map((c) => [c.path, c])),
+      related: related.filter((h) => scope.allows(h.audience)),
+    },
+    scope,
   };
 }
 
+function sameUrl(a: string, b: string): boolean {
+  const norm = (u: string) => u.trim().replace(/#.*$/, "").replace(/\/+$/, "");
+  return norm(a) === norm(b);
+}
+
+type ResolvedCitation = Omit<Citation, "label" | "quote"> & { problem?: string };
+
 /** Map a model citation ref ("doc:<id>", "trace:<id>", "flag:<id>", "concept:<path>", URL) to a stored citation. */
-function resolveCitation(ref: string, ev: Evidence, relatedByPath: Map<string, ConceptHit>): Omit<Citation, "label" | "quote"> | null {
+function resolveCitation(ref: string, ev: Evidence, relatedByPath: Map<string, ConceptHit>): ResolvedCitation | null {
+  if (/^https?:\/\//i.test(ref)) {
+    // A URL is only as good as the evidence it belongs to: resolve it to that document (and its audience).
+    for (const d of ev.documents.values()) if (d.url && sameUrl(d.url, ref)) return { ref_kind: "source_document", ref_id: d.id, url: d.url, audience: d.audience };
+    const h = ev.sourceHits.find((x) => x.url && sameUrl(x.url, ref));
+    if (h) return { ref_kind: "source_document", ref_id: h.document_id, url: h.url, audience: h.audience };
+    return { ref_kind: "url", url: ref, audience: [], problem: `cites the URL ${ref}, which is not part of the evidence; a human must check it` };
+  }
   const [kind, ...rest] = ref.split(":");
   const id = rest.join(":").trim();
   if (kind === "flag" && ev.flags.has(id)) return { ref_kind: "flag", ref_id: id, audience: ev.flags.get(id)!.audience };
@@ -367,16 +541,17 @@ function resolveCitation(ref: string, ev: Evidence, relatedByPath: Map<string, C
     return null;
   }
   if (kind === "concept") {
-    const c = ev.targets.get(id);
+    const p = normalizeConceptPath(id);
+    const c = ev.targets.get(p);
     if (c) return { ref_kind: "concept", ref_id: c.id, audience: c.audience };
-    const r = relatedByPath.get(id);
+    const r = relatedByPath.get(p);
     if (r) return { ref_kind: "concept", ref_id: r.id, audience: r.audience };
     return null;
   }
-  if (/^https?:\/\//.test(ref)) return { ref_kind: "url", url: ref, audience: [] };
   return null;
 }
 
+/** OKF `sources[]` entry. Source documents always carry their id, so changes route back here even with a URL. */
 function okfSourceEntry(c: Citation, ev: Evidence): Record<string, unknown> {
   const doc = c.ref_kind === "source_document" && c.ref_id ? ev.documents.get(c.ref_id) : undefined;
   const resource =
@@ -385,10 +560,20 @@ function okfSourceEntry(c: Citation, ev: Evidence): Record<string, unknown> {
   return {
     id: c.label,
     resource,
+    ...(c.ref_kind === "source_document" && c.ref_id ? { "x-supaknowledge-document": c.ref_id } : {}),
     ...(doc?.title ? { title: doc.title } : {}),
     ...(doc?.author ? { author: doc.author } : {}),
     ...(doc?.changed_at ? { last_modified: doc.changed_at } : {}),
   };
+}
+
+export interface BuiltProposal {
+  draft: ProposalDraft;
+  problems: string[];
+  /** problems the model can fix in a repair round (others need a human, e.g. disjoint audiences) */
+  repairable: number;
+  /** a repair round would need research tools (unresolved evidence ids) */
+  needsResearch: boolean;
 }
 
 export function buildProposal(
@@ -397,25 +582,30 @@ export function buildProposal(
   relatedByPath: Map<string, ConceptHit>,
   settings: SpaceSettings,
   now: Date,
-): { draft: ProposalDraft; problems: string[] } {
+): BuiltProposal {
   const problems: string[] = [];
+  let unrepairable = 0;
+  let needsResearch = false;
   const citations: Citation[] = [];
   const labelSet = new Set<string>();
   for (const c of out.citations) {
     const resolved = resolveCitation(c.ref.trim(), ev, relatedByPath);
     if (!resolved) {
       problems.push(`citation "${c.label}" points at unknown evidence "${c.ref}" and was dropped`);
+      needsResearch = true;
       continue;
     }
     if (labelSet.has(c.label)) continue;
     labelSet.add(c.label);
-    citations.push({ label: c.label, quote: c.quote.slice(0, 1000), ...resolved });
+    const { problem, ...citation } = resolved;
+    if (problem) problems.push(`citation "${c.label}" ${problem}`);
+    citations.push({ label: c.label, quote: c.quote.slice(0, 1000), ...citation });
   }
   const citationByLabel = new Map(citations.map((c) => [c.label, c]));
 
   const ops: ProposalOp[] = [];
   out.ops.forEach((o) => {
-    const path = o.path.replace(/^\/+/, "").replace(/\.md$/, "").replace(/\/SKILL$/, "");
+    const path = normalizeConceptPath(o.path);
     const existing = ev.targets.get(path);
     let opKind = o.op;
     if (opKind === "create" && existing) opKind = "update";
@@ -430,6 +620,11 @@ export function buildProposal(
       problems.push(`${opKind} of unknown concept "${path}" dropped`);
       return;
     }
+    const newPath = opKind === "move" && o.new_path ? normalizeConceptPath(o.new_path) : null;
+    if (opKind === "move" && (!newPath || newPath === path)) {
+      problems.push(`move of "${path}" has no new_path and was dropped`);
+      return;
+    }
 
     const opCitations = o.citation_labels.map((l) => citationByLabel.get(l)).filter((c): c is Citation => !!c);
     const after: Partial<ConceptDraft> = {};
@@ -439,23 +634,33 @@ export function buildProposal(
     if (o.description !== null) after.description = o.description;
     if (o.body !== null) after.body = o.body.trim() + "\n";
     if (o.tags) after.tags = o.tags;
-    if (o.superseded_by) after.superseded_by = o.superseded_by;
+    if (o.superseded_by) after.superseded_by = normalizeConceptPath(o.superseded_by);
     const staleAt = o.stale_after ? Date.parse(o.stale_after) : Number.NaN;
-    if (o.stale_after && (Number.isNaN(staleAt) || staleAt <= now.getTime())) {
-      // a review date that is invalid or already past would mark the concept stale on arrival
-      problems.push(`${path}: stale_after "${o.stale_after}" is not a future date and was replaced with the default`);
-    }
+    const replaced = !!o.stale_after && (Number.isNaN(staleAt) || staleAt <= now.getTime());
     if (!Number.isNaN(staleAt) && staleAt > now.getTime()) after.stale_after = new Date(staleAt).toISOString();
-    else if ((o.kind ?? existing?.kind) === "data_access" && opKind !== "deprecate" && settings.staleness.data_access_days > 0 && !existing?.stale_after) {
-      after.stale_after = new Date(now.getTime() + settings.staleness.data_access_days * 86_400_000).toISOString();
+    else {
+      // no usable date from the model: keep a future review date, otherwise (missing or already expired, as in
+      // a staleness sweep) move it to the default so the concept is not stale on arrival
+      const existingStale = existing?.stale_after ? Date.parse(existing.stale_after) : Number.NaN;
+      const existingFuture = !Number.isNaN(existingStale) && existingStale > now.getTime();
+      const kind = o.kind ?? existing?.kind;
+      if (opKind !== "deprecate" && !existingFuture && (kind === "data_access" || !!existing?.stale_after) && settings.staleness.data_access_days > 0) {
+        after.stale_after = new Date(now.getTime() + settings.staleness.data_access_days * 86_400_000).toISOString();
+      }
+      if (replaced) {
+        // a review date that is invalid or already past would mark the concept stale on arrival
+        problems.push(`${path}: stale_after "${o.stale_after}" is not a future date and was ${after.stale_after ? "replaced with the default" : "ignored (the current review date is kept)"}`);
+      }
     }
 
-    // OKF provenance: merge cited sources into frontmatter.sources
+    // OKF provenance: merge cited sources into frontmatter.sources (a label now cited replaces an older entry
+    // with the same label: the body's footnote refers to the new evidence)
     if (opCitations.length && opKind !== "deprecate" && opKind !== "move") {
       const fm = { ...(existing?.frontmatter ?? {}) };
       const prev = Array.isArray(fm.sources) ? (fm.sources as Record<string, unknown>[]) : [];
-      const ids = new Set(prev.map((s) => s.id));
-      fm.sources = [...prev, ...opCitations.filter((c) => !ids.has(c.label)).map((c) => okfSourceEntry(c, ev))];
+      const fresh = opCitations.map((c) => okfSourceEntry(c, ev));
+      const freshIds = new Set(fresh.map((s) => s.id));
+      fm.sources = [...prev.filter((s) => !freshIds.has(s?.id)), ...fresh];
       after.frontmatter = fm;
     }
 
@@ -468,22 +673,25 @@ export function buildProposal(
       // the widest audience that does not leak any cited material
       const safe = narrowestSafeAudience(opCitations.map((c) => c.audience));
       after.audience = safe ?? (opCitations.find((c) => c.audience.length)?.audience as Audience) ?? [];
-      if (safe === null) problems.push(`"${path}" combines evidence from audiences that do not overlap; a space admin must decide who can read it`);
+      if (safe === null) {
+        problems.push(`"${path}" combines evidence from audiences that do not overlap; a space admin must decide who can read it`);
+        unrepairable++;
+      }
     }
 
-    const lint = lintConcept({ ...(existing ?? {}), ...after, path: opKind === "move" ? o.new_path ?? path : path } as ConceptDraft);
+    const lint = lintConcept({ ...(existing ?? {}), ...after, path: newPath ?? path } as ConceptDraft);
     if (lint.length) problems.push(...lint.map((p) => `${path}: ${p}`));
 
     ops.push({
       op: opKind,
       path,
-      new_path: opKind === "move" ? o.new_path : null,
+      new_path: newPath,
       concept_id: existing?.id ?? null,
       base_revision: existing?.revision ?? null,
       after,
       rationale: o.rationale,
     });
-    // citations stay proposal-wide (op_id null): the database checks each one against every op's
+    // citations stay proposal-wide (op_index unset): the database checks each one against every op's
     // target audience, which is the conservative choice for access escalation.
   });
 
@@ -491,28 +699,65 @@ export function buildProposal(
   return {
     draft: { title: out.title, rationale: out.rationale, risk: out.risk, ops, citations, flag_ids: flagIds },
     problems,
+    repairable: problems.length - unrepairable,
+    needsResearch,
   };
+}
+
+/**
+ * Taint tracking: every restricted item the drafting model saw (pre-fetched or via research tools) and did
+ * not cite is attached as `consulted` evidence. The database counts it for escalation and visibility exactly
+ * like a citation, so nothing the model read can reach a wider audience without a space admin.
+ */
+export function consultedCitations(ev: Evidence, cited: Citation[]): Citation[] {
+  const seen = new Set(cited.filter((c) => c.ref_id).map((c) => `${c.ref_kind}:${c.ref_id}`));
+  const out: Citation[] = [];
+  const add = (ref_kind: CitationKind, ref_id: string, audience: Audience, label: string) => {
+    if (!audience.length || seen.has(`${ref_kind}:${ref_id}`)) return;
+    seen.add(`${ref_kind}:${ref_id}`);
+    out.push({ label: `consulted:${label}`, ref_kind, ref_id, audience, consulted: true });
+  };
+  for (const f of ev.flags.values()) add("flag", f.id, f.audience, `flag:${f.id}`);
+  for (const t of ev.traces.values()) add("trace", t.id, t.audience, `trace:${t.id}`);
+  for (const d of ev.documents.values()) add("source_document", d.id, d.audience, `doc:${d.id}`);
+  for (const h of ev.sourceHits) add("source_document", h.document_id, h.audience, `doc:${h.document_id}`);
+  for (const c of ev.targets.values()) add("concept", c.id, c.audience, `concept:${c.path}`);
+  for (const r of ev.related) add("concept", r.id, r.audience, `concept:${r.path}`);
+  return out;
+}
+
+/** Connector kinds of every document the model saw (for the untrusted-source auto-apply rule). */
+function evidenceSourceKinds(ev: Evidence): string[] {
+  const kinds = new Set<string>();
+  for (const d of ev.documents.values()) if (d.source_kind) kinds.add(d.source_kind);
+  for (const h of ev.sourceHits) if (h.source_kind) kinds.add(h.source_kind);
+  return [...kinds];
 }
 
 const RESEARCH_GUIDE = `
 
 You have research tools. The evidence above is a starting point: when a claim needs support you don't have yet,
 search the knowledge base or the sources, open the documents or traces you need, then answer. Only cite evidence
-ids you have actually seen (in the evidence above or in a tool result). Stop researching once you can decide.`;
+ids you have actually seen (in the evidence above or in a tool result). Stop researching once you can decide.
+Some material is outside the audience of the concepts you are changing and is not available to you; never try to
+work around that.`;
 
 /**
  * Tools the drafting model may call. Everything they return is added to the evidence maps, so citations to
- * material found during research resolve (and carry their audience) exactly like the pre-fetched evidence.
+ * material found during research resolve (and carry their audience) exactly like the pre-fetched evidence,
+ * and everything read is tainted as consulted. Results outside the research scope are withheld.
  */
-function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, relatedByPath: Map<string, ConceptHit>) {
-  const { store } = deps;
+function researchTools(ctx: TaskContext, ev: Evidence, relatedByPath: Map<string, ConceptHit>, scope: ResearchScope) {
+  const { store } = ctx;
+  const spaceId = ctx.run.space_id;
+  const withheld = { error: "not available: outside the audience of the knowledge being changed" };
   return {
     search_knowledge: createTool({
       id: "search_knowledge",
       description: "Search existing concepts in this knowledge base. Returns paths, titles and descriptions.",
       inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => {
-        const hits = await store.searchConcepts(spaceId, query, 8);
+        const hits = (await store.searchConcepts(spaceId, query, 8)).filter((h) => scope.allows(h.audience));
         for (const h of hits) if (!relatedByPath.has(h.path)) { relatedByPath.set(h.path, h); ev.related.push(h); }
         return { results: hits.map((h) => ({ ref: `concept:${h.path}`, kind: h.kind, type: h.type, title: h.title, description: h.description })) };
       },
@@ -522,8 +767,9 @@ function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, related
       description: "Read the full current body of an existing concept by path. Read a concept before updating it.",
       inputSchema: z.object({ path: z.string() }),
       execute: async ({ path }) => {
-        const [c] = await store.getConcepts(spaceId, [path]);
+        const [c] = await store.getConcepts(spaceId, [normalizeConceptPath(path)]);
         if (!c) return { error: `no concept at ${path}` };
+        if (!ev.targets.has(c.path) && !scope.allows(c.audience)) return withheld;
         ev.targets.set(c.path, c);
         return { ref: `concept:${c.path}`, content: renderConcept(c) };
       },
@@ -533,9 +779,9 @@ function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, related
       description: "Search raw source documents (Notion, Slack, GitHub, Drive, web, uploads) for evidence.",
       inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => {
-        const hits = await store.searchSources(spaceId, query, 8);
+        const hits = (await store.searchSources(spaceId, query, 8)).filter((h) => scope.allows(h.audience));
         for (const h of hits) if (!ev.sourceHits.some((x) => x.document_id === h.document_id)) ev.sourceHits.push(h);
-        return { results: hits.map((h) => ({ ref: `doc:${h.document_id}`, title: h.title, url: h.url, snippet: clip(h.snippet, 800) })) };
+        return { results: hits.map((h) => ({ ref: `doc:${h.document_id}`, title: h.title, url: h.url, snippet: untrusted(`doc:${h.document_id}`, clip(h.snippet, 800)) })) };
       },
     }),
     read_document: createTool({
@@ -543,10 +789,12 @@ function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, related
       description: "Read a source document in full by its id (from search_sources or the evidence list, without the doc: prefix).",
       inputSchema: z.object({ id: z.string() }),
       execute: async ({ id }) => {
-        const [d] = await store.getDocuments([id.replace(/^doc:/, "")]);
+        const docId = id.replace(/^doc:/, "").trim();
+        const [d] = await store.getDocuments([docId]);
         if (!d || d.space_id !== spaceId) return { error: "document not found" };
+        if (!ev.documents.has(d.id) && !scope.allows(d.audience)) return withheld;
         ev.documents.set(d.id, d);
-        return { ref: `doc:${d.id}`, title: d.title, url: d.url, content: clip(d.content, 12_000) };
+        return { ref: `doc:${d.id}`, title: d.title, url: d.url, content: untrusted(`doc:${d.id}`, clip(d.content, 12_000)) };
       },
     }),
     read_trace: createTool({
@@ -554,10 +802,11 @@ function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, related
       description: "Read an agent trace (transcript) by id, e.g. one referenced by a flag.",
       inputSchema: z.object({ id: z.string() }),
       execute: async ({ id }) => {
-        const [t] = await store.getTraces([id.replace(/^trace:/, "")]);
+        const [t] = await store.getTraces([id.replace(/^trace:/, "").trim()]);
         if (!t || t.space_id !== spaceId) return { error: "trace not found" };
+        if (!ev.traces.has(t.id) && !scope.allows(t.audience)) return withheld;
         ev.traces.set(t.id, t);
-        return { ref: `trace:${t.id}`, transcript: renderTrace(t, 12_000) };
+        return { ref: `trace:${t.id}`, transcript: untrusted(`trace:${t.id}`, renderTrace(t, 12_000)) };
       },
     }),
   };
@@ -566,21 +815,19 @@ function researchTools(deps: CuratorDeps, spaceId: string, ev: Evidence, related
 const RISK = { low: 0, medium: 1, high: 2 } as const;
 const maxRisk = (...r: ("low" | "medium" | "high")[]) => r.reduce((a, b) => (RISK[b] > RISK[a] ? b : a), "low" as "low" | "medium" | "high");
 
-async function draft(deps: CuratorDeps, task: CuratorTask): Promise<Record<string, unknown>> {
-  const { store, llm } = deps;
-  const now = deps.now?.() ?? new Date();
-  const run = await store.getRun(task.run_id);
-  const settings = await store.getSettings(run.space_id);
+async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string, unknown>> {
+  const { store, llm, run, settings, log } = ctx;
+  const now = ctx.now();
   const cluster = task.input as unknown as ClusterInput;
 
-  const ev = await loadEvidence(deps, run.space_id, cluster);
+  const { ev, scope } = await loadEvidence(ctx, cluster);
   const relatedByPath = new Map(ev.related.map((r) => [r.path, r]));
-  const rejections = await store.recentRejections(run.space_id, [...ev.targets.keys(), ...cluster.concept_paths], 5);
+  const rejections = await store.recentRejections(run.space_id, [...new Set([...ev.targets.keys(), ...cluster.concept_paths.map(normalizeConceptPath)])], 5);
   const input = renderEvidence(ev, cluster, rejections);
 
   // Deep-agent style: the drafting model starts from the evidence above and can pull more on demand.
-  const tools = researchTools(deps, run.space_id, ev, relatedByPath);
-  const system = withHouseRules(DRAFT_SYSTEM + RESEARCH_GUIDE, settings.curator.instructions);
+  const tools = researchTools(ctx, ev, relatedByPath, scope);
+  const system = withHouseRules(DRAFT_SYSTEM + UNTRUSTED_DATA_RULE + RESEARCH_GUIDE, settings.curator.instructions);
   const drafted = await llm.generate({
     system,
     input,
@@ -592,40 +839,50 @@ async function draft(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
   let out = drafted.output;
   const author = `curator/${drafted.model}`;
 
-  const dismiss = out.dismiss_flags.filter((d) => ev.flags.has(d.flag_id));
-  for (const d of dismiss) await store.dismissFlags([d.flag_id], `curator: ${d.reason}`);
+  const dismissable = (o: DraftOutput, keep: string[] = []) =>
+    settings.curator.auto_dismiss_flags ? o.dismiss_flags.filter((d) => ev.flags.has(d.flag_id) && !keep.includes(d.flag_id)) : [];
 
   if (out.decision === "no_change" || out.ops.length === 0) {
+    // the decision is final, so the model's dismissals can be applied now
+    const dismiss = dismissable(out);
+    for (const d of dismiss) await store.dismissFlags([d.flag_id], `curator: ${d.reason}`);
     await store.addRunStats(run.id, { no_change: 1, flags_dismissed: dismiss.length });
     return { decision: "no_change", rationale: out.rationale, dismissed: dismiss.length };
   }
 
-  let { draft: proposal, problems } = buildProposal(out, ev, relatedByPath, settings, now);
+  let built = buildProposal(out, ev, relatedByPath, settings, now);
+  let { draft: proposal, problems } = built;
 
-  // Repair round: show the model what failed validation and let it fix its own changeset once.
-  if (problems.length) {
-    try {
-      const repaired = await llm.generate({
-        system,
-        input: [
-          ...input,
-          "## Your previous changeset\n" + JSON.stringify(out, null, 1),
-          "## Validation problems (fix all of them and return the corrected changeset)\n" + problems.map((p) => `- ${p}`).join("\n"),
-        ],
-        schema: DraftSchema,
-        tools,
-        maxSteps: Math.min(3, settings.curator.max_research_steps),
-        maxTokens: 32000,
-      });
-      const rebuilt = buildProposal(repaired.output, ev, relatedByPath, settings, now);
-      if (repaired.output.decision === "propose" && rebuilt.draft.ops.length && rebuilt.problems.length < problems.length) {
-        out = repaired.output;
-        proposal = rebuilt.draft;
-        problems = rebuilt.problems;
-        await store.addRunStats(run.id, { repaired: 1 });
+  // Repair round: show the model what failed validation and let it fix its own changeset once. Only when the
+  // problems are fixable by the model, and with research tools only when evidence ids failed to resolve.
+  if (built.repairable > 0) {
+    if (ctx.remainingMs() < MIN_REPAIR_MS) {
+      problems = [...problems, "repair round skipped: not enough time left in this task"];
+    } else {
+      try {
+        const repaired = await llm.generate({
+          system,
+          input: [
+            ...input,
+            "## Your previous changeset\n" + JSON.stringify(out, null, 1),
+            "## Validation problems (fix all of them and return the corrected changeset)\n" + problems.map((p) => `- ${p}`).join("\n"),
+          ],
+          schema: DraftSchema,
+          ...(built.needsResearch ? { tools, maxSteps: Math.min(3, settings.curator.max_research_steps) } : {}),
+          maxTokens: 32000,
+        });
+        const rebuilt = buildProposal(repaired.output, ev, relatedByPath, settings, now);
+        if (repaired.output.decision === "propose" && rebuilt.draft.ops.length && rebuilt.problems.length < problems.length) {
+          out = repaired.output;
+          built = rebuilt;
+          proposal = rebuilt.draft;
+          problems = rebuilt.problems;
+          await store.addRunStats(run.id, { repaired: 1 });
+        }
+      } catch (e) {
+        if (e instanceof LLMBudgetError) throw e;
+        problems = [...problems, `repair round failed: ${(e as Error).message}`];
       }
-    } catch (e) {
-      problems.push(`repair round failed: ${(e as Error).message}`);
     }
   }
   if (proposal.ops.length === 0) {
@@ -633,22 +890,30 @@ async function draft(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
     return { decision: "invalid", problems };
   }
 
-  // second opinion: contradictions, unsupported claims, lost information
-  let review: ReviewOutput = { ok: true, issues: [], risk: proposal.risk };
-  try {
-    const res = await llm.generate({
-      system: REVIEW_SYSTEM,
-      input: [
-        input[0]!,
-        input[1]!,
-        "## Proposed changeset\n" + JSON.stringify({ title: proposal.title, rationale: proposal.rationale, ops: proposal.ops, citations: proposal.citations.map(({ label, ref_kind, ref_id, quote }) => ({ label, ref_kind, ref_id, quote })) }, null, 1),
-      ],
-      schema: ReviewSchema,
-      maxTokens: 8000,
-    });
-    review = res.output;
-  } catch (e) {
-    problems.push(`self-review failed: ${(e as Error).message}`);
+  // second opinion against the same evidence (including what research found) and the same house rules
+  let review: ReviewOutput = { ok: false, issues: [], risk: proposal.risk };
+  let reviewed = false;
+  if (ctx.remainingMs() < MIN_REVIEW_MS) {
+    problems.push("self-review skipped: not enough time left in this task");
+  } else {
+    try {
+      const evidence = renderEvidence(ev, cluster, rejections);
+      const res = await llm.generate({
+        system: withHouseRules(REVIEW_SYSTEM + UNTRUSTED_DATA_RULE, settings.curator.instructions),
+        input: [
+          ...evidence,
+          "## Proposed changeset\n" +
+            JSON.stringify({ title: proposal.title, rationale: proposal.rationale, ops: proposal.ops, citations: proposal.citations.map(({ label, ref_kind, ref_id, url, quote }) => ({ label, ref_kind, ref_id, url, quote })) }, null, 1),
+        ],
+        schema: ReviewSchema,
+        maxTokens: 8000,
+      });
+      review = res.output;
+      reviewed = true;
+    } catch (e) {
+      if (e instanceof LLMBudgetError) throw e;
+      problems.push(`self-review failed: ${(e as Error).message}`);
+    }
   }
 
   const blockers = review.issues.filter((i) => i.severity === "blocker");
@@ -659,23 +924,40 @@ async function draft(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
   ];
   if (notes.length) proposal.rationale += `\n\n**Curator self-review**\n${notes.join("\n")}`;
 
-  const persisted = await store.createProposal(run.space_id, run.id, author, proposal);
-  if (proposal.flag_ids.length) await store.setFlagsInProposal(proposal.flag_ids, persisted.id);
+  // taint: everything restricted the model saw travels with the proposal as consulted evidence
+  const cited = proposal.citations;
+  const consulted = consultedCitations(ev, cited);
+  const persisted = await store.createProposal(run.space_id, run.id, author, { ...proposal, citations: [...cited, ...consulted] });
 
+  // After this point the proposal exists: a failure must not make the task retry (that would duplicate it).
+  const sourceKinds = evidenceSourceKinds(ev);
   const decision = decideAutoApply(settings, {
     risk: persisted.risk,
     escalation: persisted.escalation,
     opKinds: proposal.ops.map((o) => o.op),
     conceptKinds: proposal.ops.map((o) => (o.after.kind ?? ev.targets.get(o.path)?.kind ?? "domain")),
-    citationKinds: proposal.citations.map((c) => c.ref_kind),
+    citationKinds: cited.map((c) => c.ref_kind),
+    sourceKinds,
   });
   let applied = false;
-  if (decision.autoApply && blockers.length === 0 && problems.length === 0) {
-    const res = await store.applyProposal(persisted.id, author);
-    applied = res.status === "applied";
+  let dismissed = 0;
+  const followUp: string[] = [];
+  try {
+    if (proposal.flag_ids.length) await store.setFlagsInProposal(proposal.flag_ids, persisted.id);
+    if (decision.autoApply && reviewed && blockers.length === 0 && problems.length === 0) {
+      const res = await store.applyProposal(persisted.id, author);
+      applied = res.status === "applied";
+    }
+    // dismissals only once the proposal is persisted, from the final (post-repair) changeset
+    const dismiss = dismissable(out, proposal.flag_ids);
+    for (const d of dismiss) await store.dismissFlags([d.flag_id], `curator: ${d.reason}`);
+    dismissed = dismiss.length;
+  } catch (e) {
+    followUp.push((e as Error).message);
+    log("curator draft follow-up failed", { task: task.id, proposal: persisted.id, error: (e as Error).message });
   }
 
-  await store.addRunStats(run.id, { proposals: 1, auto_applied: applied ? 1 : 0, escalations: persisted.escalation ? 1 : 0, flags_dismissed: dismiss.length });
+  await store.addRunStats(run.id, { proposals: 1, auto_applied: applied ? 1 : 0, escalations: persisted.escalation ? 1 : 0, flags_dismissed: dismissed });
   return {
     decision: "proposed",
     proposal_id: persisted.id,
@@ -684,5 +966,7 @@ async function draft(deps: CuratorDeps, task: CuratorTask): Promise<Record<strin
     auto_applied: applied,
     policy: decision.reason,
     issues: notes.length,
+    consulted: consulted.length,
+    ...(followUp.length ? { follow_up_errors: followUp } : {}),
   };
 }

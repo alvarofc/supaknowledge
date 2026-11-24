@@ -54,14 +54,12 @@ function parseTags(s: string): string[] {
 export function SuggestEditor({
   concept,
   spaceId,
-  userId,
   base,
   groups,
   myGroupIds,
 }: {
   concept: EditableConcept | null;
   spaceId: string;
-  userId: string;
   base: string;
   groups: { id: string; name: string; description: string | null }[];
   myGroupIds: string[];
@@ -149,38 +147,25 @@ export function SuggestEditor({
         stale_after: staleIso,
         audience,
       };
-      const { data: proposal, error: pErr } = await supabase
-        .from("proposals")
-        .insert({
-          space_id: spaceId,
-          author: `human:${userId}`,
-          created_by: userId,
-          title: proposalTitle.trim() || `${isCreate ? "Create" : "Update"} ${finalPath}`,
-          rationale: rationale.trim(),
-          risk: isCreate || audienceChanged ? "medium" : "low",
-        })
-        .select("id")
-        .single();
+      // one atomic RPC: the proposal, its op and citations commit together (author is forced to human:<you>)
+      const { data: proposal, error: pErr } = await supabase.rpc("create_proposal", {
+        p_space: spaceId,
+        p_title: proposalTitle.trim() || `${isCreate ? "Create" : "Update"} ${finalPath}`,
+        p_rationale: rationale.trim(),
+        p_risk: isCreate || audienceChanged ? "medium" : "low",
+        p_ops: [
+          {
+            op: isCreate ? "create" : "update",
+            path: finalPath,
+            concept_id: isCreate ? null : concept.id,
+            base_revision: isCreate ? null : concept.revision,
+            after,
+            rationale: rationale.trim() || null,
+          },
+        ],
+      });
       if (pErr || !proposal) {
         toast.error(`Could not create the proposal: ${errorMessage(pErr)}`);
-        return;
-      }
-      const { error: oErr } = await supabase.from("proposal_ops").insert({
-        proposal_id: proposal.id,
-        space_id: spaceId,
-        ord: 0,
-        op: isCreate ? "create" : "update",
-        concept_id: isCreate ? null : concept.id,
-        path: finalPath,
-        base_revision: isCreate ? null : concept.revision,
-        after,
-        rationale: rationale.trim() || null,
-      });
-      if (oErr) {
-        toast.error(
-          `The proposal was created but its change could not be saved (${errorMessage(oErr)}). It has no effect; a reviewer can reject it from the inbox.`,
-        );
-        void router.navigate({ href: `${base}/proposals/${proposal.id}` });
         return;
       }
       toast.success("Proposal created — a reviewer will take it from here");

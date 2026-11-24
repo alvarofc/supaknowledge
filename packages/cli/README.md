@@ -20,6 +20,7 @@ kf import ./knowledge --apply                  # OKF concepts and/or skills/<nam
 kf pull                                        # .claude/skills/<name>/ + .supaknowledge/knowledge/
 kf proposals                                   # review what the curator proposes
 kf mcp-config --client claude-code             # connect an agent over MCP
+kf members invite ana@acme.com --role member   # they run `kf invitations accept <id>` (or accept in Studio)
 ```
 
 Configuration lives in `~/.config/supaknowledge/config.json` (profiles) and `.supaknowledge.json` (the default space

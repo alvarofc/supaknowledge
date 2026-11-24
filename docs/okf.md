@@ -93,7 +93,10 @@ source document's URL, with `title`, `author` and `last_modified` when known. Se
 Every `SKILL.md` owns its folder: the concept path is the folder (`skills/revenue-report`), its kind is `skill`,
 and every other file under the folder (scripts, templates, references, binaries) becomes a **concept file**,
 stored in the `concept-files` Storage bucket once the import is applied. Text files travel as UTF-8, others as
-base64.
+base64, inside the proposal's ops (`after.files`) so reviewers approve exactly those files. When the proposal is
+applied, `bundle/sync-files` copies them into Storage and then strips the inline content from the proposal: the
+ops keep each file's path, encoding, content type, size and sha256 (`"stripped": true`), so applied proposals do
+not keep megabytes of base64 around, and Studio and `kf show` still list the files by name.
 
 ```markdown
 ---
@@ -118,8 +121,8 @@ metadata:
 Supaknowledge state that the Agent Skills spec has no field for lives under `metadata`, with an `supaknowledge-` prefix:
 `supaknowledge-type` (when not `Skill`), `supaknowledge-title`, `supaknowledge-tags`, `supaknowledge-status`, `supaknowledge-stale-after`,
 `supaknowledge-audience` and, on export, `supaknowledge-revision`. The title defaults to the first `# heading`;
-`supaknowledge-title` is read on import but not written on export yet, so keep a skill's title equal to its first
-heading if you round-trip it.
+`supaknowledge-title` is written on export only when the title differs from that heading, so the title survives a
+round trip either way.
 
 ## Audiences
 
@@ -127,8 +130,9 @@ heading if you round-trip it.
 groups of the workspace. Group slugs, not ids, are written, so a bundle moves between workspaces that use the same
 slugs. On import:
 
-- the slugs are resolved in the target workspace. **Create the groups before importing**: an unknown slug is
-  dropped with a warning (`unknown audience group "finance" ignored`), and the concept is imported without it;
+- the slugs are resolved in the target workspace. **Create the groups before importing**: a concept that names
+  a slug that does not exist is skipped with a warning (`audience group(s) "finance" do not exist in this
+  workspace`), never imported without its restriction (fail-closed);
 - you cannot import a concept into an audience you are not part of: it is skipped with a warning;
 - updating an existing restricted concept from a bundle that names no audience keeps the restriction.
 
@@ -153,8 +157,7 @@ you edited or did not write (see [CLI](cli.md#knowledge-in-and-out)).
 ## Round-trip guarantees
 
 - **Import of an export changes nothing.** `generated`, `verified` and `metadata.supaknowledge-*` are derived again
-  rather than stored, so re-importing an export reports every concept as unchanged (except a skill whose title
-  differs from its first heading, see [skills](#skills)).
+  rather than stored, so re-importing an export reports every concept as unchanged.
 - **Unknown frontmatter survives** import → storage → export as data: same keys, same values.
 - **Formatting may change**: YAML is re-serialised (key order, quoting, list style; comments are not kept), and
   bodies are trimmed to end with one newline.

@@ -66,7 +66,8 @@ query it). What Supaknowledge adds to the post:
   OKF footnote and `sources` entry.
 - **Access control.** Humans, OAuth-connected MCP clients and headless agents are all Supabase Auth users, so
   row level security decides what everyone sees, including audience-restricted knowledge such as finance-only
-  concepts. See [access control](docs/access-control.md).
+  concepts. MCP clients signed in with OAuth can read, search and flag, but never review or administer; agents
+  never count as human reviewers. See [access control](docs/access-control.md).
 
 ## Built from Supabase primitives
 
@@ -142,11 +143,12 @@ More: [getting started](docs/getting-started.md).
 
 ## Repository
 
+
 | Path | What |
 |---|---|
 | `supabase/migrations` | Schema, RLS, RPCs, queues, cron jobs, Storage buckets, Realtime |
-| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors` |
-| `supabase/tests/database` | 329 pgTAP tests of the access model |
+| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance` |
+| `supabase/tests/database` | 537 pgTAP tests of the access model |
 | `packages/core` | `@supaknowledge/core` (internal, not published): OKF + Agent Skills formats, chunking, access rules, policy, the curator engine |
 | `packages/cli` | `@supaknowledge/cli`: the `supaknowledge` command, alias `kf` |
 | `packages/sdk`, `sdks/python` | `@supaknowledge/sdk` (TypeScript) and `supaknowledge` (Python): search, flag, traces, OpenAI-compatible / JSON Schema tool helpers |

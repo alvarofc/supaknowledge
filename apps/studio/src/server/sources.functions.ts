@@ -14,19 +14,18 @@ export const loadSources = createServerFn({ method: "GET" })
     const ctx = await getSpaceContext(data.workspace, data.space);
     if (!atLeast(ctx.role, "editor")) return { sources: [], docCount: {} };
     const supabase = getSupabase();
-    const { data: sources } = await supabase.from("sources").select(SOURCE_COLUMNS).eq("space_id", ctx.space.id).order("created_at");
-    const list = sources ?? [];
-    const counts = await Promise.all(
-      list.map(async (s) => {
-        const { count } = await supabase
-          .from("source_documents")
-          .select("id", { count: "exact", head: true })
-          .eq("source_id", s.id)
-          .is("deleted_at", null);
-        return [s.id, count ?? 0] as const;
-      }),
-    );
-    return { sources: list, docCount: Object.fromEntries(counts) };
+    // one query: each source with the number of its live documents (embedded aggregate, RLS-filtered)
+    const { data: sources } = await supabase
+      .from("sources")
+      .select(`${SOURCE_COLUMNS}, source_documents(count)`)
+      .eq("space_id", ctx.space.id)
+      .is("source_documents.deleted_at", null)
+      .order("created_at");
+    const list = (sources ?? []).map(({ source_documents, ...s }) => ({
+      source: s,
+      count: (source_documents as unknown as { count: number }[] | null)?.[0]?.count ?? 0,
+    }));
+    return { sources: list.map((x) => x.source), docCount: Object.fromEntries(list.map((x) => [x.source.id, x.count])) };
   });
 
 /** One source: details and a page of its documents. */

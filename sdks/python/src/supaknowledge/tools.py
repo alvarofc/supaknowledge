@@ -125,17 +125,23 @@ def format_concept(c: Concept) -> str:
     if c.get("markdown"):
         return c["markdown"]
     meta = [f"path: {c.get('path')}", f"kind: {c.get('kind')}"]
-    for k in ("type", "trust", "revision"):
+    for k in ("type", "trust"):
         if c.get(k):
             meta.append(f"{k}: {c.get(k)}")
     if c.get("stale"):
         meta.append("stale: true (verify before relying on it)")
+    status = c.get("status")
+    if status and status != "stable":
+        sup = c.get("superseded_by")
+        meta.append(f"status: {status}" + (f" (superseded by {sup})" if sup else ""))
+    if c.get("revision"):
+        meta.append(f"revision: {c.get('revision')}")
     parts = [f"# {c.get('title', '')}", "", *meta, ""]
     if c.get("description"):
         parts += [f"> {c['description']}", ""]
     parts.append((c.get("body") or "").strip())
     if c.get("links"):
-        parts += ["", "Links:", *[f"- {l['path']}" for l in c["links"]]]
+        parts += ["", "Links:", *[f"- {l['path']}" + (" (missing)" if l.get("exists") is False else "") for l in c["links"]]]
     if c.get("files"):
         parts += ["", "Files:", *[f"- {f['path']}" for f in c["files"]]]
     return "\n".join(parts)
@@ -160,23 +166,30 @@ def handle_tool_call(kf: "Supaknowledge", name: str, input: Any, *, prefix: str 
     if tool not in KNOWLEDGE_TOOL_NAMES:
         return None
     args: dict[str, Any] = input if isinstance(input, dict) else {}
+
+    def trace_id() -> str | None:
+        # searches, reads and skill loads are attributed to the trace: make sure it exists on the server first
+        # (one request the first time; none while the recorder is backing off after failures)
+        return trace.ensure_id() if trace else None
+
     result: ToolCallResult
     try:
         if tool == "search_knowledge":
             kinds = [k for k in (args.get("kinds") or []) if k in CONCEPT_KINDS] or None
             limit = args.get("limit")
             limit = max(1, min(20, int(limit))) if isinstance(limit, (int, float)) else None
-            rs = kf.search(_str(args, "query") or "", kinds=kinds, limit=limit, trace_id=trace.id if trace else None)
+            query = _str(args, "query") or ""
+            rs = kf.search(query, kinds=kinds, limit=limit, trace_id=trace_id())
             result = {"content": format_search_results(rs)}
         elif tool == "read_concept":
             path = _str(args, "path") or ""
-            c = kf.read(path)
+            c = kf.read(path, trace_id=trace_id())
             result = {"content": format_concept(c)} if c else {"content": f'No concept at "{path}". Use search_knowledge to find the right path.', "is_error": True}
         elif tool == "list_skills":
             result = {"content": format_skill_list(kf.list_skills())}
         elif tool == "load_skill":
             n = _str(args, "name") or ""
-            s = kf.load_skill(n)
+            s = kf.load_skill(n, trace_id=trace_id())
             result = {"content": format_concept(s)} if s else {"content": f'No skill named "{n}".', "is_error": True}
         else:
             kind = _str(args, "kind") or ""
@@ -223,7 +236,10 @@ def handle_tool_calls(kf: "Supaknowledge", calls: Iterable[Any], *, prefix: str 
             except ValueError:
                 bare = name[len(prefix):]
                 if name.startswith(prefix) and bare in KNOWLEDGE_TOOL_NAMES:
-                    out.append({"tool_call_id": cid, "name": name, "content": f"Supaknowledge {bare} failed: arguments are not valid JSON", "is_error": True})
+                    content = f"Supaknowledge {bare} failed: arguments are not valid JSON"
+                    if trace:
+                        trace.tool(bare, input=raw, output=content, is_error=True)
+                    out.append({"tool_call_id": cid, "name": name, "content": content, "is_error": True})
                 continue
         r = handle_tool_call(kf, name, raw, prefix=prefix, trace=trace)
         if r is not None:

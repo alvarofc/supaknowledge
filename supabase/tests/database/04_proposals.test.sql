@@ -1,33 +1,28 @@
--- Proposals: authoring rules, escalation guard, apply/reject/verify/revert, trust tiers.
+-- Proposals: authoring rules (create_proposal), escalation guard, apply/reject/verify/revert, trust tiers.
 begin;
 \ir _fixture.psql
-select plan(78);
+select plan(124);
 
 grant insert on tests.ids to authenticated, service_role;
 
--- helpers run as the CURRENT role, so RLS applies to them
-create function tests.new_prop(p_name text, p_space text default 's1') returns uuid language plpgsql as $$
+-- helpers run as the CURRENT role, so the RPC's own checks apply to them
+create function tests.op(p_op text, p_path text, p_after jsonb default '{}', p_concept uuid default null, p_base int default null,
+                         p_new_path text default null) returns jsonb language sql immutable as $$
+  select jsonb_strip_nulls(jsonb_build_object('op', p_op, 'path', p_path, 'after', p_after, 'concept_id', p_concept,
+                                              'base_revision', p_base, 'new_path', p_new_path));
+$$;
+create function tests.cit(p_ref uuid, p_kind text default 'source_document', p_op_index int default null,
+                          p_audience uuid[] default null, p_consulted boolean default null) returns jsonb language sql immutable as $$
+  select jsonb_strip_nulls(jsonb_build_object('label', 'cite-' || coalesce(p_ref::text, 'x'), 'ref_kind', p_kind, 'ref_id', p_ref,
+                                              'op_index', p_op_index, 'audience', to_jsonb(p_audience), 'consulted', p_consulted));
+$$;
+create function tests.mk(p_name text, p_ops jsonb, p_cits jsonb default '[]', p_space text default 's1', p_author text default null)
+returns uuid language plpgsql as $$
 declare v uuid;
 begin
-  insert into public.proposals (space_id, author, title)
-  values (tests.id(p_space), 'human:' || auth.uid(), p_name) returning id into v;
+  v := (public.create_proposal(tests.id(p_space), p_name, 'because', 'medium', p_ops, p_cits, null, p_author)).id;
   perform tests.put(p_name, v);
   return v;
-end;
-$$;
-create function tests.add_op(p_prop text, p_ord int, p_op public.proposal_op_kind, p_path text, p_after jsonb default '{}',
-                             p_concept uuid default null, p_base int default null) returns uuid language plpgsql as $$
-declare v uuid;
-begin
-  insert into public.proposal_ops (proposal_id, ord, op, path, after, concept_id, base_revision)
-  values (tests.id(p_prop), p_ord, p_op, p_path, p_after, p_concept, p_base) returning id into v;
-  return v;
-end;
-$$;
-create function tests.add_cit(p_prop text, p_ref uuid, p_audience uuid[], p_op uuid default null) returns void language plpgsql as $$
-begin
-  insert into public.proposal_citations (proposal_id, op_id, label, ref_kind, ref_id, audience)
-  values (tests.id(p_prop), p_op, 'cite-' || p_prop, 'source_document', p_ref, p_audience);
 end;
 $$;
 create function tests.esc(p_name text) returns boolean language sql security definer as $$
@@ -36,31 +31,49 @@ $$;
 create function tests.status(p_name text) returns public.proposal_status language sql security definer as $$
   select status from public.proposals where id = tests.id(p_name);
 $$;
-create function tests.concept(p_name text) returns public.concepts language sql security definer as $$
-  select * from public.concepts where id = tests.id(p_name);
-$$;
 create function tests.trust(p_name text) returns public.trust_tier language sql security definer as $$
   select public.trust(c) from public.concepts c where c.id = tests.id(p_name);
+$$;
+create function tests.as_oauth(p text) returns void language plpgsql as $$
+begin
+  perform tests.as_user(p);
+  perform set_config('request.jwt.claims', json_build_object('sub', tests.id(p), 'role', 'authenticated', 'client_id', 'mcp-client-123')::text, true);
+end;
 $$;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- A. authoring rules
 -- ---------------------------------------------------------------------------------------------------------
 select tests.as_user('s_editor');
-select tests.new_prop('ed1');
-select results_eq($$select created_by, author, status, escalation, auto_applied from public.proposals where id = tests.id('ed1')$$,
-  $$select tests.id('s_editor'), 'human:' || tests.id('s_editor'), 'pending'::public.proposal_status, false, false$$, 'editor creates a human proposal as themselves');
-select throws_ok($$insert into public.proposals (space_id, author, title) values (tests.id('s1'), 'curator/gpt', 'x')$$, '42501', null, 'cannot impersonate the curator');
-select throws_ok($$insert into public.proposals (space_id, author, title) values (tests.id('s1'), 'human:' || tests.id('s_admin'), 'x')$$, '42501', null, 'author must be yourself');
-select throws_ok($$insert into public.proposals (space_id, author, created_by, title) values (tests.id('s1'), 'human:' || auth.uid(), tests.id('s_admin'), 'x')$$, '42501', null, 'created_by must be yourself');
-select throws_ok($$insert into public.proposals (space_id, author, title, escalation) values (tests.id('s1'), 'human:' || auth.uid(), 'x', true)$$, '42501', null, 'cannot set escalation');
-select throws_ok($$insert into public.proposals (space_id, author, title, status) values (tests.id('s1'), 'human:' || auth.uid(), 'x', 'approved')$$, '42501', null, 'cannot set status');
-select throws_ok($$insert into public.proposals (space_id, author, title, auto_applied) values (tests.id('s1'), 'human:' || auth.uid(), 'x', true)$$, '42501', null, 'cannot set auto_applied');
-select throws_ok($$insert into public.proposals (space_id, author, title) values (tests.id('s2'), 'human:' || auth.uid(), 'x')$$, '42501', null, 'cannot propose in a foreign space');
-select throws_ok($$select tests.add_op('ed1', 0, 'create', 'x/fin', jsonb_build_object('audience', array[tests.id('g_fin')]))$$, '42501', null,
-  'cannot write to an audience you are not in');
-select throws_ok($$insert into public.proposal_ops (proposal_id, ord, op, path) values (tests.id('prop_pub'), 5, 'create', 'x/y')$$, '42501', null, 'cannot add ops to someone else''s proposal');
-select throws_ok($$insert into public.proposal_citations (proposal_id, label, ref_kind) values (tests.id('prop_pub'), 'x', 'url')$$, '42501', null, 'cannot add citations to someone else''s proposal');
+select tests.mk('ed1', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"edited"}')), '[]', 's1', 'curator/gpt');
+select results_eq($$select created_by, author, status, escalation, auto_applied, run_id from public.proposals where id = tests.id('ed1')$$,
+  $$select tests.id('s_editor'), 'human:' || tests.id('s_editor'), 'pending'::public.proposal_status, false, false, null::uuid$$,
+  'editor creates a human proposal as themselves (p_author ignored: cannot impersonate the curator)');
+select is((select count(*)::int from public.proposal_ops where proposal_id = tests.id('ed1')), 1, 'ops are created with the proposal');
+select throws_ok($$insert into public.proposals (space_id, author, title) values (tests.id('s1'), 'human:' || auth.uid(), 'x')$$,
+  '42501', null, 'no direct proposal inserts (create_proposal only)');
+select throws_ok($$insert into public.proposal_ops (proposal_id, ord, op, path) values (tests.id('ed1'), 5, 'create', 'x/y')$$,
+  '42501', null, 'no direct op inserts, even on your own proposal');
+select throws_ok($$insert into public.proposal_citations (proposal_id, label, ref_kind) values (tests.id('ed1'), 'x', 'url')$$,
+  '42501', null, 'no direct citation inserts');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')), '[]', 's2')$$, '42501', null, 'cannot propose in a foreign space');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/fin', jsonb_build_object('audience', array[tests.id('g_fin')]))))$$,
+  '42501', null, 'cannot write to an audience you are not in');
+select throws_ok($$select tests.mk('x', '[]'::jsonb)$$, '22023', null, 'a proposal needs at least one op');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', '../evil')))$$, '22023', null, 'invalid paths are refused');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('move', 'metrics/active-users', '{}', null, null, 'a/../b')))$$,
+  '22023', null, 'invalid move targets are refused');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/t', '{"tags":"not-an-array"}')))$$, '22023', null,
+  'after.tags must be an array');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/t', '{"frontmatter":[1]}')))$$, '22023', null,
+  'after.frontmatter must be an object');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/t', '{"kind":"nope"}')))$$, '22023', null, 'after.kind must be valid');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('explode', 'x/t')))$$, '22023', null, 'unknown op kinds are refused');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/t', jsonb_build_object('audience', array[tests.id('g_b')]))))$$,
+  '22023', null, 'audience groups must belong to the workspace');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/t')), jsonb_build_array(tests.cit(tests.id('doc_pub'), 'source_document', 3)))$$,
+  '22023', null, 'citation op_index must point at an op');
+select is_empty($$select 1 from public.proposals where title = 'x'$$, 'failed create_proposal calls leave nothing behind');
 select throws_ok($$insert into public.proposal_reviews (proposal_id, decision) values (tests.id('prop_pub'), 'approve')$$, '42501', null, 'cannot insert an approve review');
 insert into public.proposal_reviews (proposal_id, decision, note) values (tests.id('prop_pub'), 'comment', 'lgtm?');
 select ok(exists (select 1 from public.proposal_reviews where proposal_id = tests.id('prop_pub') and reviewer = tests.id('s_editor')), 'editors can comment');
@@ -70,44 +83,50 @@ select tests.as_postgres();
 select results_eq($$select status, escalation from public.proposals where id = tests.id('ed1')$$, $$values ('pending'::public.proposal_status, false)$$,
   'proposals cannot be updated or deleted directly');
 select tests.as_user('agent');
-select throws_ok($$insert into public.proposals (space_id, author, title) values (tests.id('s1'), 'human:' || auth.uid(), 'x')$$, '42501', null, 'readers (agents) cannot propose');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')))$$, '42501', null, 'readers (agents) cannot propose');
+select tests.as_postgres();
+update public.space_members set role = 'editor' where space_id = tests.id('s1') and user_id = tests.id('agent');
+select tests.as_user('agent');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')))$$, '42501', null, 'agents cannot propose even as editors');
+select tests.as_oauth('s_editor');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')))$$, '42501', null, 'OAuth client tokens cannot propose');
+select tests.as_service();
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')))$$, '22023', null, 'service role must name the author');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/y')), '[]', 's1', 'human:' || gen_random_uuid())$$, '22023', null,
+  'service role cannot author as a human');
+select tests.mk('svc1', jsonb_build_array(tests.op('create', 'x/svc')), '[]', 's1', 'curator/test');
+select results_eq($$select author, created_by from public.proposals where id = tests.id('svc1')$$, $$values ('curator/test', null::uuid)$$,
+  'service role authors curator proposals');
+select tests.as_postgres();
+update public.space_members set role = 'reader' where space_id = tests.id('s1') and user_id = tests.id('agent');
 
 -- ---------------------------------------------------------------------------------------------------------
--- B. escalation is computed, and cannot be bypassed
+-- B. escalation is computed (from live evidence), and cannot be bypassed
 -- ---------------------------------------------------------------------------------------------------------
 select tests.as_user('fin_editor');
-select tests.new_prop('p1');
-select tests.add_op('p1', 0, 'create', 'metrics/new', '{"title":"New","body":"from finance"}');
-select tests.add_cit('p1', tests.id('doc_fin'), array[tests.id('g_fin')]);
+select tests.mk('p1', jsonb_build_array(tests.op('create', 'metrics/new', '{"title":"New","body":"from finance"}')),
+  jsonb_build_array(tests.cit(tests.id('doc_fin'))));
 select results_eq($$select escalation, risk from public.proposals where id = tests.id('p1')$$, $$values (true, 'high'::public.proposal_risk)$$,
-  'restricted citation (op_id null) into a public target escalates and sets risk high');
-
-select tests.new_prop('p2');
-select tests.put('p2_op', tests.add_op('p2', 0, 'create', 'metrics/new2', '{}'));
-select tests.add_cit('p2', tests.id('doc_fin'), array[tests.id('g_fin')], tests.id('p2_op'));
+  'restricted citation (no op_index) into a public target escalates and sets risk high');
+select tests.mk('p2', jsonb_build_array(tests.op('create', 'metrics/new2')), jsonb_build_array(tests.cit(tests.id('doc_fin'), 'source_document', 0)));
 select is(tests.esc('p2'), true, 'restricted citation bound to the op escalates');
-
-select tests.new_prop('p3');
-select tests.add_cit('p3', tests.id('doc_fin'), array[tests.id('g_fin')]);
-select is(tests.esc('p3'), false, 'citation alone (no ops yet) is not an escalation');
-select tests.add_op('p3', 0, 'create', 'metrics/new3', '{}');
-select is(tests.esc('p3'), true, 'adding the op after the citation escalates');
-
-select tests.new_prop('p4');
-select tests.add_op('p4', 0, 'update', 'finance/arr', '{"audience":[]}', null, 1);
+select is((select op_id from public.proposal_citations where proposal_id = tests.id('p2')),
+          (select id from public.proposal_ops where proposal_id = tests.id('p2')), 'op_index maps to the op id');
+select tests.mk('p3', jsonb_build_array(tests.op('create', 'metrics/new3')), jsonb_build_array(tests.cit(tests.id('doc_fin'), 'source_document', null, null, true)));
+select results_eq($$select escalation, (select consulted from public.proposal_citations where proposal_id = tests.id('p3')) from public.proposals where id = tests.id('p3')$$,
+  $$values (true, true)$$, 'consulted (read but not cited) evidence escalates like a citation');
+select tests.mk('p4', jsonb_build_array(tests.op('update', 'finance/arr', '{"audience":[]}', null, 1)));
 select is(tests.esc('p4'), true, 'widening an existing restricted concept escalates');
-
-select tests.new_prop('p5');
-select tests.add_op('p5', 0, 'update', 'metrics/active-users', jsonb_build_object('audience', array[tests.id('g_fin')], 'body', 'narrowed'));
-select tests.add_cit('p5', tests.id('doc_fin'), array[tests.id('g_fin')]);
+select tests.mk('p5', jsonb_build_array(tests.op('update', 'metrics/active-users', jsonb_build_object('audience', array[tests.id('g_fin')], 'body', 'narrowed'))),
+  jsonb_build_array(tests.cit(tests.id('doc_fin'))));
 select is(tests.esc('p5'), false, 'narrowing to the evidence audience is not an escalation');
-
-select tests.new_prop('p6');
-select tests.add_op('p6', 0, 'update', 'finance/arr', '{"body":"ARR is 44M"}', null, 1);
-select tests.add_cit('p6', tests.id('doc_fin'), array[tests.id('g_fin')]);
+select tests.mk('p6', jsonb_build_array(tests.op('update', 'finance/arr', '{"body":"ARR is 44M"}', null, 1)), jsonb_build_array(tests.cit(tests.id('doc_fin'))));
 select is(tests.esc('p6'), false, 'restricted evidence into a same-audience concept is not an escalation');
 select is((select target_audience from public.proposal_ops where proposal_id = tests.id('p6')), array[tests.id('g_fin')],
   'target_audience defaults to the concept audience');
+select tests.mk('p8', jsonb_build_array(tests.op('create', 'metrics/leak2', '{"body":"finance numbers, now public"}')),
+  jsonb_build_array(tests.cit(tests.id('doc_fin'), 'source_document', null, '{}'::uuid[])));
+select is(tests.esc('p8'), true, 'citation audience is derived from the cited evidence, not trusted from the client');
 
 select throws_ok($$update public.proposals set escalation = false where id = tests.id('p1')$$, '42501', null, 'escalation is not writable');
 select throws_ok($$update public.proposal_ops set target_audience = array[tests.id('g_fin')] where proposal_id = tests.id('p1')$$, '42501', null, 'ops are not writable after insert');
@@ -117,22 +136,56 @@ select is(tests.esc('p1'), true, 'escalation cannot be cleared by updating the p
 select tests.as_postgres();
 select is((select count(*)::int from public.proposal_ops where proposal_id = tests.id('p1') and target_audience = '{}'), 1, 'ops are immutable for authors');
 
--- VULNERABILITY: proposal_citations.op_id is not checked to belong to the same proposal; recompute_proposal_access
--- joins on (c.op_id = o.id) within the proposal, so a citation bound to an op of ANOTHER proposal is silently
--- ignored and the escalation guard is skipped.
-select tests.as_user('fin_editor');
-select tests.new_prop('p7');
-select tests.add_op('p7', 0, 'create', 'metrics/leak', '{"body":"finance numbers, now public"}');
-do $$ begin perform tests.add_cit('p7', tests.id('doc_fin'), array[tests.id('g_fin')], tests.id('p2_op')); exception when others then null; end $$;
-select ok(tests.esc('p7') or not exists (select 1 from public.proposal_citations where proposal_id = tests.id('p7')),
-  'VULNERABILITY: a citation bound to another proposal''s op is refused or still escalates');
--- VULNERABILITY: citation audience is whatever the author says; it is not derived from the cited row, so citing a
--- finance document with audience '{}' skips the guard and also makes the proposal visible to reviewers outside
--- finance (can_see_proposal trusts the same column).
-select tests.new_prop('p8');
-select tests.add_op('p8', 0, 'create', 'metrics/leak2', '{"body":"finance numbers, now public"}');
-select tests.add_cit('p8', tests.id('doc_fin'), '{}');
-select is(tests.esc('p8'), true, 'VULNERABILITY: citation audience is derived from the cited evidence, not trusted from the client');
+-- URL citations: a URL that is a document of the space IS that document (curator citing by URL cannot strip
+-- the audience)
+update public.source_documents set url = 'https://acme.slack.com/archives/C0FIN/p1' where id = tests.id('doc_fin');
+select tests.as_service();
+select tests.mk('u1', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"$99.9M"}', null, 1)),
+  '[{"label":"slack","ref_kind":"url","url":"https://acme.slack.com/archives/C0FIN/p1"}]', 's1', 'curator/test');
+select results_eq($$select c.ref_kind, c.ref_id, c.audience, p.escalation from public.proposal_citations c join public.proposals p on p.id = c.proposal_id where p.id = tests.id('u1')$$,
+  $$select 'source_document'::public.citation_kind, tests.id('doc_fin'), array[tests.id('g_fin')], true$$, 'URL citation resolved to the restricted document; escalates');
+select throws_ok($$select public.apply_proposal(tests.id('u1'), null, 'curator/test')$$, '42501', null, 'and cannot be auto-applied');
+select tests.mk('u2', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"x"}', null, 1)),
+  '[{"label":"ext","url":"https://example.com/blog"}]', 's1', 'curator/test');
+select results_eq($$select c.ref_kind, c.ref_id, p.escalation from public.proposal_citations c join public.proposals p on p.id = c.proposal_id where p.id = tests.id('u2')$$,
+  $$values ('url'::public.citation_kind, null::uuid, false)$$, 'external URLs stay URL citations');
+
+-- citations only of evidence the author can see; one error for missing, hidden and foreign
+select tests.as_user('s_editor');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/a')), jsonb_build_array(tests.cit(tests.id('tr_agent'), 'trace')))$$,
+  '42501', 'cited trace not found', 'editors cannot cite other principals'' traces');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/a')), jsonb_build_array(tests.cit(gen_random_uuid(), 'trace')))$$,
+  '42501', 'cited trace not found', 'missing trace: same error');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/a')), jsonb_build_array(tests.cit(tests.id('doc_fin'))))$$,
+  '42501', 'cited source_document not found', 'restricted document: same error as a missing one (no existence oracle)');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/a')), jsonb_build_array(tests.cit(gen_random_uuid())))$$,
+  '42501', 'cited source_document not found', 'missing document');
+select throws_ok($$select tests.mk('x', jsonb_build_array(tests.op('create', 'x/a')), jsonb_build_array(tests.cit(tests.id('doc_b'))))$$,
+  '42501', 'cited source_document not found', 'foreign document');
+select tests.mk('own_tr', jsonb_build_array(tests.op('create', 'x/own')), jsonb_build_array(tests.cit(tests.id('tr_editor'), 'trace')));
+select ok(tests.id('own_tr') is not null, 'editors can cite their own traces');
+
+-- live evidence audience: reclassifying evidence after drafting is seen by visibility, escalation and apply
+select tests.mk('live1', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"from general"}', null, 1)),
+  jsonb_build_array(tests.cit(tests.id('doc_pub'))));
+select tests.as_postgres();
+update public.source_documents set audience = array[tests.id('g_fin')] where id = tests.id('doc_pub');
+select tests.as_user('s_reviewer');
+select is_empty($$select 1 from public.proposals where id = tests.id('live1')$$, 'a proposal citing reclassified evidence is hidden from reviewers outside its audience');
+select throws_ok($$select public.apply_proposal(tests.id('live1'))$$, '42501', null, 'and they cannot apply it');
+select tests.as_user('fin_reviewer');
+select throws_ok($$select public.apply_proposal(tests.id('live1'))$$, '42501', null, 'it is now an escalation: a reviewer in finance cannot apply it either');
+select is(tests.esc('live1'), true, 'escalation recomputed from the live evidence audience');
+select tests.as_postgres();
+update public.source_documents set audience = '{}' where id = tests.id('doc_pub');
+
+-- a proposal without ops is visible to nobody and never applied (inserted directly by the service role)
+insert into public.proposals (space_id, author, title, rationale) values (tests.id('s1'), 'curator/test', 'SECRET title', 'SECRET rationale')
+returning tests.put('empty', id);
+select tests.as_user('fin_admin');
+select is_empty($$select 1 from public.proposals where id = tests.id('empty')$$, 'proposals without ops are invisible');
+select tests.as_service();
+select throws_ok($$select public.apply_proposal(tests.id('empty'))$$, '22023', null, 'proposals without ops cannot be applied');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- C. apply / reject / verify
@@ -140,8 +193,13 @@ select is(tests.esc('p8'), true, 'VULNERABILITY: citation audience is derived fr
 select tests.as_user('s_editor');
 select throws_ok($$select public.apply_proposal(tests.id('prop_pub'))$$, '42501', null, 'editors cannot apply');
 select throws_ok($$select public.reject_proposal(tests.id('prop_pub'), 'no')$$, '42501', null, 'editors cannot reject');
+select tests.as_oauth('s_reviewer');
+select throws_ok($$select public.apply_proposal(tests.id('prop_pub'))$$, '42501', null, 'OAuth client tokens cannot apply');
+select throws_ok($$select public.reject_proposal(tests.id('prop_pub'), 'no')$$, '42501', null, 'OAuth client tokens cannot reject');
+select throws_ok($$select public.verify_concept(tests.id('c_pub'))$$, '42501', null, 'OAuth client tokens cannot verify');
 select tests.as_user('s_reviewer');
 select is((public.apply_proposal(tests.id('prop_pub'), 'looks right')).status, 'applied', 'reviewer applies a proposal they can fully see');
+select ok(exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()), 'apply holds the per-space advisory lock until commit');
 select tests.as_postgres();
 select results_eq($$select revision, body, generated_by from public.concepts where id = tests.id('c_pub')$$,
   $$select 2, 'Active = logged in within 28 days.', 'human:' || tests.id('s_reviewer')$$, 'concept updated, revision bumped');
@@ -160,14 +218,15 @@ select throws_ok($$select public.apply_proposal(tests.id('p6'))$$, '42501', null
 
 -- escalations need a space admin, and never the service role
 select tests.as_user('fin_reviewer');
-select throws_ok($$select public.apply_proposal(tests.id('p1'))$$, '42501', null, 'reviewer cannot apply an escalation');
+select throws_ok($$select public.apply_proposal(tests.id('p8'))$$, '42501', null, 'reviewer cannot apply an escalation');
 select tests.as_service();
-select throws_ok($$select public.apply_proposal(tests.id('p1'))$$, '42501', null, 'service role cannot apply an escalation');
+select throws_ok($$select public.apply_proposal(tests.id('p8'))$$, '42501', null, 'service role cannot apply an escalation');
 select throws_ok($$select public.apply_proposal(tests.id('p4'))$$, '42501', null, 'service role cannot apply a widening');
+select throws_ok($$select public.apply_proposal(tests.id('p6'), null, 'human:' || gen_random_uuid())$$, '22023', null, 'service role cannot apply as a human');
 select tests.as_user('fin_admin');
-select is((public.apply_proposal(tests.id('p1'))).status, 'applied', 'space admin in audience applies the escalation');
+select is((public.apply_proposal(tests.id('p8'))).status, 'applied', 'space admin in audience applies the escalation');
 select tests.as_postgres();
-select is((select audience from public.concepts where space_id = tests.id('s1') and path = 'metrics/new'), '{}'::uuid[], 'created with the target audience');
+select is((select audience from public.concepts where space_id = tests.id('s1') and path = 'metrics/leak2'), '{}'::uuid[], 'created with the target audience');
 
 -- service role (policy auto-apply)
 select tests.as_service();
@@ -193,25 +252,69 @@ select throws_ok($$select public.verify_concept(tests.id('c_pub'))$$, '42501', n
 select tests.as_postgres();
 select is((select body from public.concepts where id = tests.id('c_fin')), 'ARR is 44M', 'no direct concept updates');
 
--- conflicts: nothing half-applied
+-- agents with the reviewer role: machine trust, never escalations
+update public.space_members set role = 'reviewer' where space_id = tests.id('s1') and user_id = tests.id('agent');
+select tests.as_user('s_editor');
+select tests.mk('ag1', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"agent applied"}', null, 2)));
+select tests.as_user('agent');
+select is((public.apply_proposal(tests.id('ag1'))).status, 'applied', 'an agent reviewer applies a non-escalation');
+select tests.as_postgres();
+select results_eq($$select generated_by from public.concepts where id = tests.id('c_pub')$$, $$select 'agent:' || tests.id('agent')$$,
+  'agents apply as agent:<uid>');
+select is(tests.trust('c_pub'), 'machine_confirmed', 'an agent apply is a machine confirmation, never human_reviewed');
+select tests.as_user('agent');
+select is((public.verify_concept(tests.id('c_pub'))).actor, 'agent:' || tests.id('agent'), 'agents verify as agent:<uid>');
+select is(tests.trust('c_pub'), 'machine_confirmed', 'agent verification stays machine_confirmed');
+select tests.as_user('s_editor');
+select tests.mk('ag2', jsonb_build_array(tests.op('create', 'x/agent-esc')), jsonb_build_array(tests.cit(tests.id('doc_pub'))));
+select tests.as_postgres();
+update public.source_documents set audience = array[tests.id('g_eng')] where id = tests.id('doc_pub');
+insert into public.group_members (group_id, user_id) values (tests.id('g_eng'), tests.id('agent'));
+select tests.as_user('agent');
+select throws_ok($$select public.apply_proposal(tests.id('ag2'))$$, '42501', null, 'agents never approve escalations');
+select tests.as_postgres();
+update public.source_documents set audience = '{}' where id = tests.id('doc_pub');
+delete from public.group_members where group_id = tests.id('g_eng') and user_id = tests.id('agent');
+update public.space_members set role = 'reader' where space_id = tests.id('s1') and user_id = tests.id('agent');
+
+-- conflicts: nothing half-applied; path collisions report the same reason whether visible or not
 select tests.as_user('fin_editor');
-select tests.new_prop('p9');
-select tests.add_op('p9', 0, 'update', 'metrics/active-users', '{"body":"half applied?"}', null, 2);
-select tests.add_op('p9', 1, 'update', 'finance/arr', '{"body":"stale"}', null, 1);
-select tests.new_prop('p10');
-select tests.add_op('p10', 0, 'create', 'metrics/active-users', '{"body":"dup"}');
+select tests.mk('p9', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"body":"half applied?"}', null, 3),
+                                        tests.op('update', 'finance/arr', '{"body":"stale"}', null, 1)));
+select tests.mk('p10', jsonb_build_array(tests.op('create', 'metrics/active-users', '{"body":"dup"}')));
 select tests.as_user('fin_admin');
 select is((public.apply_proposal(tests.id('p9'))).status, 'conflicted', 'base_revision mismatch -> conflicted');
 select is((public.apply_proposal(tests.id('p10'))).status, 'conflicted', 'create on an existing path -> conflicted');
 select tests.as_postgres();
-select results_eq($$select revision, body from public.concepts where id = tests.id('c_pub')$$, $$values (2, 'Active = logged in within 28 days.')$$,
+select results_eq($$select revision, body from public.concepts where id = tests.id('c_pub')$$, $$values (3, 'agent applied')$$,
   'the valid op of a conflicted proposal was not applied');
 select is_empty($$select 1 from public.concept_revisions where proposal_id in (tests.id('p9'), tests.id('p10'))$$, 'no revisions from conflicted proposals');
+select tests.as_user('s_editor');
+select tests.mk('hid', jsonb_build_array(tests.op('create', 'finance/arr', '{"body":"probe"}')));
+select tests.as_user('s_reviewer');
+select results_eq($$select status, review_note::jsonb -> 0 ->> 'reason' from public.apply_proposal(tests.id('hid'))$$,
+  $$values ('conflicted'::public.proposal_status, 'path is not available')$$, 'a hidden path collides with the same reason as a visible one');
 select tests.as_user('fin_reviewer');
 select is((public.reject_proposal(tests.id('p9'), 'stale')).status, 'rejected', 'conflicted proposals can be rejected');
 
--- reject reopens flags
+-- payload edge cases: JSON nulls keep the current value instead of crashing or writing JSON null
+select tests.as_service();
+select tests.mk('nulls', jsonb_build_array(tests.op('update', 'metrics/active-users', '{"frontmatter":null,"tags":null,"title":null}')),
+  '[]', 's1', 'curator/test');
+select is((public.apply_proposal(tests.id('nulls'), null, 'curator/test')).status, 'applied', 'null frontmatter/tags/title apply cleanly');
 select tests.as_postgres();
+select results_eq($$select frontmatter, tags, title from public.concepts where id = tests.id('c_pub')$$,
+  $$values ('{}'::jsonb, '{}'::text[], 'Active users')$$, 'and keep the current values');
+
+-- move clears links that pointed at the old path and binds links to the new path
+select tests.as_service();
+select tests.mk('mv', jsonb_build_array(tests.op('move', 'metrics/active-users', '{}', null, null, 'metrics/users')), '[]', 's1', 'curator/test');
+select is((public.apply_proposal(tests.id('mv'), null, 'curator/test')).status, 'applied', 'move applied');
+select tests.as_postgres();
+select is((select to_concept from public.concept_links where from_concept = tests.id('c_fin') and to_path = 'metrics/active-users'), null::uuid,
+  'links to the old path no longer resolve to the moved concept');
+
+-- reject reopens flags
 update public.flags set status = 'in_proposal', proposal_id = tests.id('ed1') where id = tests.id('flag_pub');
 select tests.as_user('s_reviewer');
 select is((public.reject_proposal(tests.id('ed1'), 'not needed')).status, 'rejected', 'reviewer rejects');
@@ -231,11 +334,9 @@ select tests.as_user('s_editor');
 select throws_ok($$select public.propose_revert(tests.id('c_pub'), 9)$$, 'P0002', null, 'unknown revision');
 select tests.put('rev1', (public.propose_revert(tests.id('c_pub'), 1)).id);
 select results_eq($$select p.author, o.base_revision, o.after ->> 'body' from public.proposals p join public.proposal_ops o on o.proposal_id = p.id where p.id = tests.id('rev1')$$,
-  $$select 'human:' || tests.id('s_editor'), 2, 'Public revenue definition. See [ARR](finance/arr).'$$, 'revert proposal restores the old revision as a normal proposal');
+  $$select 'human:' || tests.id('s_editor'), 5, 'Public revenue definition. See [ARR](finance/arr).'$$, 'revert proposal restores the old revision as a normal proposal');
 
--- VULNERABILITY: propose_revert (SECURITY DEFINER) copies an old revision without checking the caller is in that
--- revision's audience, so an editor can pull the body of a revision that was finance-only before the concept was
--- sanitised and widened. The op target is the CURRENT (public) audience, so there is no escalation either.
+-- reverting cannot copy content out of a revision whose audience you are not in
 select tests.as_postgres();
 do $$
 declare v uuid;
@@ -248,59 +349,49 @@ begin
          (v, tests.id('s1'), 2, 'finance/plan', 'domain', 'Plan', 'Plan', '', 'Sanitised plan', '{}', '{}', 'stable', '{}', 'human:x');
 end $$;
 select tests.as_user('s_editor');
-select throws_ok($$select public.propose_revert(tests.id('c_leak'), 1)$$, '42501', null,
-  'VULNERABILITY: cannot revert to a revision whose audience you are not in');
-select is_empty($$select 1 from public.proposal_ops where after::text like '%SECRET%'$$,
-  'VULNERABILITY: restricted revision content never reaches an editor outside its audience');
+select throws_ok($$select public.propose_revert(tests.id('c_leak'), 1)$$, '42501', null, 'cannot revert to a revision whose audience you are not in');
+select is_empty($$select 1 from public.proposal_ops where after::text like '%SECRET%'$$, 'restricted revision content never reaches an editor outside its audience');
+-- a finance editor reverting restores the revision's audience too (not the current, wider one)
+select tests.as_user('fin_editor');
+select tests.put('rev_fin', (public.propose_revert(tests.id('c_leak'), 1)).id);
+select results_eq($$select o.target_audience, p.escalation from public.proposal_ops o join public.proposals p on p.id = o.proposal_id where p.id = tests.id('rev_fin')$$,
+  $$select array[tests.id('g_fin')], false$$, 'revert target audience is the revision''s audience (narrowing, no escalation)');
+select tests.as_user('fin_admin');
+select is((public.apply_proposal(tests.id('rev_fin'))).status, 'applied', 'finance admin applies the revert');
+select tests.as_user('s_reader');
+select is_empty($$select 1 from public.concepts where id = tests.id('c_leak')$$, 'the reverted restricted content stays restricted');
 
 -- ---------------------------------------------------------------------------------------------------------
 -- E. targeting concepts the author / reviewer cannot see
 -- ---------------------------------------------------------------------------------------------------------
--- VULNERABILITY: an editor outside finance can target a finance concept by path (the op trigger resolves it with
--- definer rights) and widen it; can_see_proposal only looks at the TARGET audience, so a space admin outside
--- finance sees a harmless-looking escalation and applies it. "Audience is never bypassed by role" is violated.
 select tests.as_user('s_editor');
-select tests.new_prop('e1');
-select throws_ok($$select tests.add_op('e1', 0, 'update', 'finance/arr', '{"audience":[]}')$$, '42501', null,
-  'VULNERABILITY: editors cannot target a concept outside their audience');
--- same shape authored by the curator (service role), so the apply check is tested independently of the op check
-select tests.as_postgres();
-insert into public.proposals (space_id, author, title) values (tests.id('s1'), 'curator/test', 'widen') returning tests.put('e1b', id);
-insert into public.proposal_ops (proposal_id, ord, op, path, after) values (tests.id('e1b'), 0, 'update', 'finance/arr', '{"audience":[]}');
+select throws_ok($$select tests.mk('e1', jsonb_build_array(tests.op('update', 'finance/arr', '{"audience":[]}')))$$, '42501', 'concept finance/arr not found',
+  'editors cannot target a concept outside their audience (same error as a missing concept)');
+select throws_ok($$select tests.mk('e1', jsonb_build_array(tests.op('update', 'no/such')))$$, '42501', 'concept no/such not found', 'missing concept');
+select tests.as_service();
+select tests.mk('e1b', jsonb_build_array(tests.op('update', 'finance/arr', '{"audience":[]}')), '[]', 's1', 'curator/test');
 select tests.as_user('s_admin');
 select throws_ok($$select public.apply_proposal(tests.id('e1b'))$$, '42501', null,
-  'VULNERABILITY: an admin outside the audience cannot apply a proposal that touches a restricted concept');
+  'an admin outside the audience cannot apply a proposal that touches a restricted concept');
 select tests.as_postgres();
-select is((select audience from public.concepts where id = tests.id('c_fin')), array[tests.id('g_fin')],
-  'VULNERABILITY: finance concept was not widened by people outside finance');
+select is((select audience from public.concepts where id = tests.id('c_fin')), array[tests.id('g_fin')], 'finance concept was not widened by people outside finance');
 
--- VULNERABILITY: escalation is only recomputed when ops/citations change, and apply_proposal trusts the stored
--- flag. A proposal drafted while a concept was public (no base_revision) re-publishes it after the concept was
--- restricted, applied by a plain reviewer.
+-- a stale proposal cannot widen a concept that was restricted after it was drafted
 select tests.as_user('s_editor');
-select tests.new_prop('e2');
-select tests.add_op('e2', 0, 'update', 'metrics/active-users', '{"body":"edited"}');
+select tests.mk('e2', jsonb_build_array(tests.op('update', 'metrics/users', '{"body":"edited"}')));
 select tests.as_postgres();
 update public.concepts set audience = array[tests.id('g_fin')] where id = tests.id('c_pub');
 select tests.as_user('s_reviewer');
-select throws_ok($$select public.apply_proposal(tests.id('e2'))$$, '42501', null,
-  'VULNERABILITY: a stale proposal cannot widen a concept that was restricted after it was drafted');
+select throws_ok($$select public.apply_proposal(tests.id('e2'))$$, '42501', null, 'a stale proposal cannot widen a concept that was restricted after drafting');
 select tests.as_postgres();
 update public.concepts set audience = '{}' where id = tests.id('c_pub');
 
--- VULNERABILITY: proposal_ops.concept_id is never checked against the proposal's space. Any user can create a
--- workspace, become admin of their own space, and apply a proposal whose op points at another tenant's concept id.
+-- a proposal in workspace B cannot modify a concept in workspace A
 select tests.as_user('owner_b');
-do $$
-begin
-  perform tests.new_prop('x1', 's2');
-  perform tests.add_op('x1', 0, 'update', 'whatever', '{"body":"pwned by B"}', tests.id('c_open'));
-  perform public.apply_proposal(tests.id('x1'));
-exception when others then null;
-end $$;
+select throws_ok($$select tests.mk('x1', jsonb_build_array(tests.op('update', 'whatever', '{"body":"pwned by B"}', tests.id('c_open'))), '[]', 's2')$$,
+  '42501', null, 'ops cannot point at a concept of another space');
 select tests.as_postgres();
-select is((select body from public.concepts where id = tests.id('c_open')), 'Open revenue handbook',
-  'VULNERABILITY: a proposal in workspace B cannot modify a concept in workspace A');
+select is((select body from public.concepts where id = tests.id('c_open')), 'Open revenue handbook', 'a proposal in workspace B cannot modify a concept in workspace A');
 
 select * from finish();
 rollback;

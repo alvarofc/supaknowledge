@@ -270,11 +270,7 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@mastra/core@1.85.0",
-      "npm:@modelcontextprotocol/server@2.4.0",
-      "npm:@supabase/supabase-js@2.119.2",
-      "npm:yaml@2.9.1",
-      "npm:zod@4.6.7"
+      "npm:@supabase/supabase-js@2.119.2"
     ]
   }
 }

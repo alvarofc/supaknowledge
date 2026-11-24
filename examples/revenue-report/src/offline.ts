@@ -103,12 +103,11 @@ function scriptedCurator(store: MemoryStore) {
         ).trimEnd() + "\n[^board-pack]: Board pack revenue adjustments (finance).\n";
         return {
           decision: "propose", title: "ARR: explain why the board pack number differs", risk: "medium",
-          rationale: "An engineer asked why two ARR numbers circulate. The finance-only board pack concept explains it.",
-          ops: [op("metrics/arr", next, ["board-pack", "arr-question"], "Disambiguate ARR and committed ARR")],
-          citations: [
-            { label: "board-pack", ref: `concept:${FINANCE_ONLY_PATH}`, quote: "The board pack reports committed ARR" },
-            { label: "arr-question", ref: `flag:${flagId}`, quote: "Which ARR should reports use?" },
-          ],
+          rationale: "A finance analyst's agent asked why two ARR numbers circulate. The finance-only board pack explains it.",
+          ops: [op("metrics/arr", next, ["board-pack"], "Disambiguate ARR and committed ARR")],
+          // the curator only researches material that metrics/arr's readers may see; the finance-only flag is the
+          // evidence, so publishing this into a concept everyone reads is an escalation
+          citations: [{ label: "board-pack", ref: `flag:${flagId}`, quote: "The board pack (committed ARR, counts signed contracts that are not live yet)" }],
           resolves_flags: flagId ? [flagId] : [], dismiss_flags: [],
         };
       }
@@ -210,15 +209,16 @@ async function story(): Promise<OfflineResult> {
   });
   say.info(`trace "${c.bold("November revenue report")}" with ${events.length} events, outcome = corrected`);
 
-  say.step("An engineer is confused by two different ARR numbers");
+  say.step("A finance analyst's agent is confused by two different ARR numbers");
   store.flags.push({
-    id: "flag-arr-question", space_id: SPACE, created_by: "human:engineer", trace_id: null, kind: "unclear",
+    id: "flag-arr-question", space_id: SPACE, created_by: "agent:finance-analyst", trace_id: null, kind: "unclear",
     concept_id: "concept:metrics/arr", concept_path: "metrics/arr", query: "ARR for the leadership deck",
-    observation: "The leadership deck says ARR is $50.9M but the revenue report says $48.3M. Which ARR should reports use?",
-    suggested_fix: null, evidence: {}, audience: [], status: "open", synthetic: false, created_at: new Date().toISOString(),
+    observation: "The board pack (committed ARR, counts signed contracts that are not live yet) says $50.9M but the revenue report says $48.3M. Which ARR should reports use?",
+    // raised while working on finance-only material, so the flag carries the finance audience
+    suggested_fix: null, evidence: {}, audience: [FINANCE_GROUP], status: "open", synthetic: false, created_at: new Date().toISOString(),
   });
-  say.actor("engineer", "flag_knowledge(kind=unclear, concept_path=metrics/arr)");
-  say.info(`the engineer is not in ${c.bold("finance")}, so ${FINANCE_ONLY_PATH} is invisible to them`);
+  say.actor("finance agent", "flag_knowledge(kind=unclear, concept_path=metrics/arr), quoting the finance-only board pack");
+  say.info(`the flag is finance-only; an engineer outside ${c.bold("finance")} cannot see it, nor ${FINANCE_ONLY_PATH}`);
 
   // ------------------------------------------------------------------------------------------------------
   say.step("The curator runs (same engine as the `curator` Edge Function, scripted model)");
@@ -253,7 +253,7 @@ async function story(): Promise<OfflineResult> {
   }
   const escalation = store.proposals.find((p) => p.escalation);
   if (escalation) {
-    say.actor("engineer", "cannot see the ARR proposal at all: it cites a finance-only concept");
+    say.actor("engineer", "cannot see the ARR proposal at all: it cites finance-only evidence");
     say.info(`"${escalation.title}" waits for a space admin in finance (escalations never auto-apply)`);
   }
 

@@ -22,7 +22,15 @@ export interface Logger {
 export interface AclHint {
   /** the upstream object is not visible to everyone (private channel, private repo, unshared file...) */
   restricted: boolean;
+  /** object-level refs; every group matching any of them is mapped (union) */
   refs: Array<Record<string, string>>;
+  /**
+   * Hierarchical refs, most specific first (e.g. the file's folder, its parent, ..., the root, the shared
+   * drive). Only the FIRST tier that maps to at least one group counts: a mapping on a subfolder overrides
+   * the mapping of a broader ancestor instead of being unioned with it. When both `refs` and a tier match,
+   * the audience is their intersection (or the tier's groups when they are disjoint) - never the union.
+   */
+  tiers?: Array<Array<Record<string, string>>>;
 }
 
 export interface RawExport {

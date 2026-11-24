@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Callout, Card, CardHeader } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
+import { SOURCE_KINDS, SOURCE_KIND_VALUES, numberInputValue, parseIntField, parseOptionalDays, toggleInList } from "@/lib/settings-form";
 import { saveSpaceSettings } from "@/server/settings.functions";
 
 const MODEL_PLACEHOLDER = "vercel/openai/gpt-6.2-sol or acme/your-model (blank = server default)";
@@ -40,7 +41,9 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
   const setCurator = <TKey extends keyof SpaceSettings["curator"]>(k: TKey, v: SpaceSettings["curator"][TKey]) => setS((x) => ({ ...x, curator: { ...x.curator, [k]: v } }));
   const setAuto = <TKey extends keyof SpaceSettings["auto_apply"]>(k: TKey, v: SpaceSettings["auto_apply"][TKey]) =>
     setS((x) => ({ ...x, auto_apply: { ...x.auto_apply, [k]: v } }));
-  const num = (v: string) => (v.trim() === "" ? Number.NaN : Number(v));
+  const setRetention = <TKey extends keyof SpaceSettings["retention"]>(k: TKey, v: SpaceSettings["retention"][TKey]) =>
+    setS((x) => ({ ...x, retention: { ...x.retention, [k]: v } }));
+  const num = parseIntField;
   const err = (k: string) => errors[k] ?? Object.entries(errors).find(([key]) => key.startsWith(`${k}.`))?.[1] ?? null;
   const invalid = (k: string) => (errors[k] ? true : undefined);
 
@@ -146,7 +149,72 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
                 <Input id="max_traces" type="number" min={0} max={5000} value={Number.isNaN(s.curator.max_traces_per_run) ? "" : s.curator.max_traces_per_run} aria-invalid={invalid("curator.max_traces_per_run")} onChange={(e) => setCurator("max_traces_per_run", num(e.target.value))} />
               </Field>
             </div>
+            <Field
+              label="Token budget per run"
+              htmlFor="max_tokens_per_run"
+              error={err("curator.max_tokens_per_run")}
+              hint="Model tokens (input + output) one run may spend across all its tasks. When it runs out, the remaining tasks fail with a clear error instead of spending more. 0 = unlimited."
+            >
+              <Input
+                id="max_tokens_per_run"
+                type="number"
+                min={0}
+                step={100000}
+                value={numberInputValue(s.curator.max_tokens_per_run)}
+                aria-invalid={invalid("curator.max_tokens_per_run")}
+                onChange={(e) => setCurator("max_tokens_per_run", num(e.target.value))}
+              />
+            </Field>
+            <Field
+              label="What the curator may research"
+              htmlFor="research_scope"
+              error={err("curator.research_scope")}
+              hint="“Target audience” only shows the drafting model material that everyone who reads the changed concepts can read, so restricted facts cannot leak into wider knowledge by accident. “Everything” searches all of the space; every restricted item it reads still escalates the proposal to a space admin."
+            >
+              <Select id="research_scope" value={s.curator.research_scope} onChange={(e) => setCurator("research_scope", e.target.value as "target_audience" | "all")}>
+                <option value="target_audience">Target audience only (recommended)</option>
+                <option value="all">Everything in the space</option>
+              </Select>
+            </Field>
+            <Field
+              label="Flag cooldown (minutes)"
+              htmlFor="flag_cooldown_minutes"
+              error={err("curator.flag_cooldown_minutes")}
+              hint="0–10080. Minimum time between two flag-triggered runs, so a misbehaving agent cannot keep the curator busy."
+            >
+              <Input
+                id="flag_cooldown_minutes"
+                type="number"
+                min={0}
+                max={10080}
+                value={numberInputValue(s.curator.flag_cooldown_minutes)}
+                aria-invalid={invalid("curator.flag_cooldown_minutes")}
+                onChange={(e) => setCurator("flag_cooldown_minutes", num(e.target.value))}
+              />
+            </Field>
+            <Field
+              label="Fail stuck runs after (minutes)"
+              htmlFor="stuck_after_minutes"
+              error={err("curator.stuck_after_minutes")}
+              hint="5–1440. A run or task without progress for this long is marked failed, so a new run can start."
+            >
+              <Input
+                id="stuck_after_minutes"
+                type="number"
+                min={5}
+                max={1440}
+                value={numberInputValue(s.curator.stuck_after_minutes)}
+                aria-invalid={invalid("curator.stuck_after_minutes")}
+                onChange={(e) => setCurator("stuck_after_minutes", num(e.target.value))}
+              />
+            </Field>
           </div>
+          <Checkbox
+            label="Let the curator dismiss flags it judges mistaken"
+            description="Dismissed with the curator's reason, visible in the inbox. Off: flags it judges mistaken or noise stay open for a person to dismiss."
+            checked={s.curator.auto_dismiss_flags}
+            onChange={(e) => setCurator("auto_dismiss_flags", e.target.checked)}
+          />
           <p className="text-xs text-subtle">
             Model ids only. Endpoints and API keys (<code className="font-mono">KF_LLM_BASE_URL</code>, <code className="font-mono">KF_LLM_API_KEY</code>,{" "}
             <code className="font-mono">AI_GATEWAY_API_KEY</code>, ...) are configured as Edge Function secrets, not here; a model id must be one those
@@ -218,6 +286,26 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
               checked={s.auto_apply.allow_create}
               onChange={(e) => setAuto("allow_create", e.target.checked)}
             />
+            <fieldset>
+              <legend className="mb-1 text-sm font-medium">Untrusted sources</legend>
+              <p className="mb-2 text-xs text-subtle">
+                A proposal whose research read anything from these kinds of sources always waits for a reviewer, because outsiders can write that
+                content (prompt injection).
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {SOURCE_KINDS.map((k) => (
+                  <Checkbox
+                    key={k.value}
+                    label={k.label}
+                    description={k.hint}
+                    disabled={!s.auto_apply.enabled}
+                    checked={s.auto_apply.untrusted_source_kinds.includes(k.value)}
+                    onChange={(e) => setAuto("untrusted_source_kinds", toggleInList(SOURCE_KIND_VALUES, s.auto_apply.untrusted_source_kinds, k.value, e.target.checked))}
+                  />
+                ))}
+              </div>
+              {err("auto_apply.untrusted_source_kinds") ? <p className="mt-1 text-xs text-danger">{err("auto_apply.untrusted_source_kinds")}</p> : null}
+            </fieldset>
           </div>
           <Callout tone="neutral" icon={<ShieldAlert />}>
             Never auto-applied, whatever this policy says: proposals that widen access to restricted knowledge (they always need a space admin), and moves.
@@ -244,6 +332,47 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
           <p className="text-xs text-subtle">
             Embeddings: <code className="font-mono">{s.embeddings.provider}</code> (384 dimensions, runs inside Supabase Edge Functions).
           </p>
+        </Section>
+
+        <Section title="Retention" description="How long agent activity is kept. A daily cleanup job deletes older rows; blank keeps them forever.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Keep traces for (days)"
+              htmlFor="trace_days"
+              optional
+              error={err("retention.trace_days")}
+              hint="1–36500. Agent traces older than this are deleted with their events."
+            >
+              <Input
+                id="trace_days"
+                type="number"
+                min={1}
+                max={36500}
+                placeholder="Keep forever"
+                value={numberInputValue(s.retention.trace_days)}
+                aria-invalid={invalid("retention.trace_days")}
+                onChange={(e) => setRetention("trace_days", parseOptionalDays(e.target.value))}
+              />
+            </Field>
+            <Field
+              label="Keep usage stats for (days)"
+              htmlFor="usage_days"
+              optional
+              error={err("retention.usage_days")}
+              hint="1–36500. Concept usage rows (which agent read what) older than this are deleted; Health only looks back 365 days."
+            >
+              <Input
+                id="usage_days"
+                type="number"
+                min={1}
+                max={36500}
+                placeholder="Keep forever"
+                value={numberInputValue(s.retention.usage_days)}
+                aria-invalid={invalid("retention.usage_days")}
+                onChange={(e) => setRetention("usage_days", parseOptionalDays(e.target.value))}
+              />
+            </Field>
+          </div>
         </Section>
       </fieldset>
       {canEdit ? (

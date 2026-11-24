@@ -38,6 +38,21 @@ function fileFor(c: ExportConcept | null): { name: string; text: string } {
   return { name: f.path, text: f.content };
 }
 
+/**
+ * One line per skill file carried by an op (`after.files`). After `bundle/sync-files` copied them into Storage,
+ * the content is stripped from the op ({path, size_bytes, sha256, stripped: true}): list names, never content.
+ */
+export function skillFileLines(files: unknown): string[] {
+  if (!Array.isArray(files)) return [];
+  return files
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === "object" && typeof (f as { path?: unknown }).path === "string")
+    .map((f) => {
+      const size = typeof f.size_bytes === "number" ? f.size_bytes : typeof f.content === "string" ? (f.encoding === "base64" ? Math.floor((f.content.length * 3) / 4) : Buffer.byteLength(f.content)) : null;
+      const notes = [f.encoding === "base64" ? "binary" : null, size !== null ? `${size} B` : null, f.stripped ? "synced to Storage" : null].filter(Boolean);
+      return `${f.path as string}${notes.length ? ` (${notes.join(", ")})` : ""}`;
+    });
+}
+
 /** Before/after concept files for one op, as they would be exported (OKF .md or SKILL.md). */
 export function opDocuments(op: ProposalOpRow, current: ConceptRow | null): { before: { name: string; text: string }; after: { name: string; text: string } } {
   const a = op.after ?? {};
@@ -220,6 +235,24 @@ export function registerReview(program: Command, run: Runner): void {
     );
 }
 
+/** For an applied proposal: concept_id -> the revision preceding the one the proposal wrote (null = it created it). */
+async function priorRevisions(ctx: Ctx, proposalId: string): Promise<Map<string, ConceptRow | null>> {
+  const db = await ctx.db();
+  const produced = (await must(db.from("concept_revisions").select("concept_id, revision").eq("proposal_id", proposalId))) as { concept_id: string; revision: number }[];
+  const out = new Map<string, ConceptRow | null>();
+  for (const r of produced) out.set(r.concept_id, null);
+  const prev = produced.filter((r) => r.revision > 1);
+  if (!prev.length) return out;
+  const rows = (await must(
+    db
+      .from("concept_revisions")
+      .select("concept_id, " + CONCEPT_COLS.replace("id, ", ""))
+      .or(prev.map((r) => `and(concept_id.eq.${r.concept_id},revision.eq.${r.revision - 1})`).join(",")),
+  )) as unknown as (Omit<ConceptRow, "id"> & { concept_id: string })[];
+  for (const { concept_id, ...r } of rows) out.set(concept_id, { ...r, id: concept_id } as ConceptRow);
+  return out;
+}
+
 async function showProposal(ctx: Ctx, idArg: string): Promise<void> {
   const id = await resolveId(ctx, "proposals", idArg, "proposal");
   const db = await ctx.db();
@@ -241,7 +274,7 @@ async function showProposal(ctx: Ctx, idArg: string): Promise<void> {
         created_at: string;
         review_note: string | null;
         proposal_ops: ProposalOpRow[];
-        proposal_citations: { label: string; ref_kind: string; ref_id: string | null; url: string | null; quote: string | null; op_id: string | null }[];
+        proposal_citations: { label: string; ref_kind: string; ref_id: string | null; url: string | null; quote: string | null; op_id: string | null; consulted?: boolean }[];
         proposal_reviews: { decision: string; note: string | null; created_at: string }[];
       })
     | null;
@@ -254,16 +287,22 @@ async function showProposal(ctx: Ctx, idArg: string): Promise<void> {
   if (ids.length) current.push(...((await must(db.from("concepts").select(CONCEPT_COLS).in("id", ids))) as ConceptRow[]));
   if (paths.length) current.push(...((await must(db.from("concepts").select(CONCEPT_COLS).eq("space_id", p.space_id as string).in("path", paths))) as ConceptRow[]));
 
+  // an applied proposal is shown against the revision before the one it wrote (not against today's concept)
+  const prior = p.status === "applied" ? await priorRevisions(ctx, p.id) : new Map<string, ConceptRow | null>();
+  // only a proposal that can still be applied can conflict
+  const live = p.status === "pending" || p.status === "approved";
+
   const plain = makeColors(false);
   const rendered = ops.map((o) => {
     const cur = current.find((c) => (o.concept_id ? c.id === o.concept_id : c.path === o.path)) ?? null;
-    const docs = opDocuments(o, o.op === "create" ? null : cur);
-    const stale = cur && o.base_revision !== null && cur.revision !== o.base_revision;
+    const before = o.op === "create" ? null : o.concept_id && prior.has(o.concept_id) ? prior.get(o.concept_id)! : cur;
+    const docs = opDocuments(o, before);
+    const stale = live && cur && o.base_revision !== null && cur.revision !== o.base_revision;
     return {
       op: o,
       current_revision: cur?.revision ?? null,
       stale_base: Boolean(stale),
-      missing: o.op !== "create" && !cur,
+      missing: o.op !== "create" && !before,
       diff: (c: typeof ctx.c) => unifiedDiff(docs.before.name === "/dev/null" ? "/dev/null" : `a/${docs.before.name}`, `b/${docs.after.name}`, docs.before.text, docs.after.text, c),
     };
   });
@@ -283,11 +322,18 @@ async function showProposal(ctx: Ctx, idArg: string): Promise<void> {
       ];
       if (p.rationale) out.push("", p.rationale.trim());
       if (p.review_note) out.push("", `${c.dim("review note:")} ${p.review_note}`);
-      if (p.proposal_citations?.length) {
+      const cited = (p.proposal_citations ?? []).filter((ci) => !ci.consulted);
+      const consulted = (p.proposal_citations ?? []).filter((ci) => ci.consulted);
+      if (cited.length) {
         out.push("", c.bold("Citations"));
-        for (const ci of p.proposal_citations) {
+        for (const ci of cited) {
           out.push(`  [^${ci.label}] ${ci.ref_kind}${ci.ref_id ? ` ${shortId(ci.ref_id)}` : ""}${ci.url ? ` ${ci.url}` : ""}${ci.quote ? c.dim(` "${truncate(ci.quote, 100)}"`) : ""}`);
         }
+      }
+      if (consulted.length) {
+        // read while researching but not cited: still counts for who may see / approve the proposal
+        out.push("", c.bold("Also consulted") + c.dim(" (not cited; counts for visibility and escalation)"));
+        for (const ci of consulted) out.push(`  ${ci.ref_kind}${ci.ref_id ? ` ${shortId(ci.ref_id)}` : ""}${ci.url ? ` ${ci.url}` : ""}`);
       }
       for (const r of rendered) {
         const o = r.op;
@@ -296,10 +342,10 @@ async function showProposal(ctx: Ctx, idArg: string): Promise<void> {
         if (r.stale_base) out.push(c.yellow(`   drafted against revision ${o.base_revision}, concept is now at ${r.current_revision}: applying will conflict`));
         const d = r.diff(c);
         out.push(d || c.dim("   (no content change)"));
-        const files = Array.isArray(o.after?.files) ? (o.after.files as { path: string; content?: string; encoding?: string }[]) : [];
+        const files = skillFileLines(o.after?.files);
         if (files.length) {
           out.push(c.dim(`   skill files (${files.length}):`));
-          for (const f of files) out.push(c.dim(`     ${f.path}${f.encoding === "base64" ? " (binary)" : ""}`));
+          for (const f of files) out.push(c.dim(`     ${f}`));
         }
       }
       if (p.proposal_reviews?.length) {

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { isNarrowerOrEqual, matchGroups, resolveAudience } from "../lib/acl.ts";
+import { isNarrowerOrEqual, matchAcl, matchGroups, resolveAudience } from "../lib/acl.ts";
 import { runSync, type SourceRow, storagePath } from "../lib/engine.ts";
 import type { DocumentChange } from "../lib/types.ts";
 import { MemoryStore, scripted } from "./helpers.ts";
@@ -153,4 +153,19 @@ Deno.test("engine: config errors surface before any write", async () => {
   const bad = { ...scripted([]), parseConfig: () => { throw new Error("config.repo is required"); } };
   await assertRejects(() => runSync({ ...base, source: source(), store, connector: bad }), Error, "config.repo");
   assertEquals(store.docs.size, 0);
+});
+
+Deno.test("acl: tiers - the most specific matching tier wins and object refs narrow it", () => {
+  const gs = [
+    { id: "root", external_ref: { gdrive_folder: "ROOT" } },
+    { id: "sub", external_ref: { gdrive_folder: "SUB" } },
+    { id: "grp", external_ref: { google_group: "g@x" } },
+  ];
+  const tiers = [[{ gdrive_folder: "SUB" }], [{ gdrive_folder: "ROOT" }]];
+  assertEquals(matchAcl({ restricted: true, refs: [], tiers }, gs), ["sub"]);
+  assertEquals(matchAcl({ restricted: true, refs: [], tiers: [[{ gdrive_folder: "NONE" }], [{ gdrive_folder: "ROOT" }]] }, gs), ["root"]);
+  assertEquals(matchAcl({ restricted: true, refs: [{ google_group: "g@x" }], tiers }, gs), ["sub"]); // disjoint -> tier
+  assertEquals(matchAcl({ restricted: true, refs: [{ google_group: "g@x" }], tiers: [[{ gdrive_folder: "NONE" }]] }, gs), ["grp"]);
+  // the old flat-refs union widened to both groups; tiers never do
+  assertEquals(matchGroups([{ gdrive_folder: "SUB" }, { gdrive_folder: "ROOT" }], gs), ["root", "sub"]);
 });

@@ -17,6 +17,7 @@ import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { MAX_READS, processBatch, type QueueBatch, type QueueJob } from "../_shared/queue.ts";
 import type { GroupRef } from "./lib/acl.ts";
 import { type DocumentRow, type DocumentStore, type ExistingDoc, runSync, type SourceRow } from "./lib/engine.ts";
+import { guardedFetch } from "./lib/net-guard.ts";
 import { connectors } from "./lib/registry.ts";
 import { AuthError, ConfigError, type Connector, type Cursor, type RawExport, type SyncedDocument } from "./lib/types.ts";
 import { prepareUpload, UPLOAD_MAX_BYTES, UploadError, type UploadInput } from "./lib/upload.ts";
@@ -30,6 +31,8 @@ interface IngestJob {
 const db = adminClient();
 const TIME_BUDGET_MS = Number(Deno.env.get("CONNECTOR_TIME_BUDGET_MS") ?? 120_000);
 const DOC_LIMIT = Number(Deno.env.get("CONNECTOR_DOC_LIMIT") ?? 200);
+// every outbound connector request goes through the SSRF guard (public destinations only, redirects re-checked)
+const outboundFetch = guardedFetch();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------------------------------------
@@ -119,6 +122,11 @@ async function loadGroups(spaceId: string): Promise<GroupRef[]> {
   return (data ?? []) as GroupRef[];
 }
 
+async function isPaused(id: string): Promise<boolean> {
+  const { data } = await db.from("sources").select("status").eq("id", id).maybeSingle();
+  return data?.status === "paused";
+}
+
 function errorText(e: unknown): string {
   const m = e instanceof Error ? `${e.name !== "Error" ? `${e.name}: ` : ""}${e.message}` : String(e);
   return m.slice(0, 1000);
@@ -158,28 +166,29 @@ async function syncSource(msg: IngestJob, job: QueueJob<IngestJob>): Promise<voi
       groups,
       token: (token as string | null) ?? null,
       full: msg.full === true || !source.cursor || Object.keys(source.cursor).length === 0,
-      fetch,
+      fetch: outboundFetch,
       log,
       limit: DOC_LIMIT,
       deadline: started + TIME_BUDGET_MS,
     });
     const { error: uErr } = await db
       .from("sources")
-      .update({ cursor: result.cursor, last_synced_at: new Date().toISOString(), last_error: null, status: "active" })
+      .update({ cursor: result.cursor, last_synced_at: new Date().toISOString(), last_error: null })
       .eq("id", source.id);
     if (uErr) throw new Error(`update source: ${uErr.message}`);
+    // clear an earlier 'error' state, but never un-pause a source an admin paused while this run was going
+    const { error: sErr } = await db.from("sources").update({ status: "active" }).eq("id", source.id).eq("status", "error");
+    if (sErr) throw new Error(`update source status: ${sErr.message}`);
     log(`synced in ${Date.now() - started} ms`, { upserted: result.upserted, unchanged: result.unchanged, deleted: result.deleted, skipped: result.skipped, more: result.more });
-    if (result.more) {
+    if (result.more && !(await isPaused(source.id))) {
       // continue from the saved cursor soon instead of waiting for the next sync_interval
       await db.rpc("kf_queue_send", { p_queue: "kf_ingest", p_messages: [{ source_id: source.id, space_id: source.space_id }], p_delay: 5 });
     }
   } catch (e) {
     const permanent = e instanceof ConfigError || e instanceof AuthError;
     const giveUp = permanent || job.read_ct >= MAX_READS;
-    await db
-      .from("sources")
-      .update({ last_error: errorText(e), ...(giveUp ? { status: "error" } : {}) })
-      .eq("id", source.id);
+    await db.from("sources").update({ last_error: errorText(e) }).eq("id", source.id);
+    if (giveUp) await db.from("sources").update({ status: "error" }).eq("id", source.id).neq("status", "paused");
     if (permanent) {
       log(`permanent error, source set to 'error': ${errorText(e)}`);
       return; // ack: retrying cannot help until an admin fixes the config/secret (then request_source_sync)
@@ -279,7 +288,7 @@ async function handleUpload(req: Request): Promise<Response> {
     groups: [],
     token: null,
     full: false,
-    fetch,
+    fetch: outboundFetch,
     log: (m) => console.log(`[connectors:upload:${src.id}] ${m}`),
   });
   const { data: row, error: dErr } = await db

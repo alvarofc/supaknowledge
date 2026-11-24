@@ -79,8 +79,9 @@ export function registerSources(program: Command, run: Runner): void {
     .action(
       run(async (ctx: Ctx, ref: string) => {
         const id = await sourceId(ctx, ref);
-        let secret = (await ctx.io.readStdin()).trim();
-        if (!secret && ctx.io.isTTY) secret = (await ctx.io.prompt("Token: ", true)).trim();
+        // prompt only when stdin is a terminal (stdout may be a pipe, e.g. `kf sources secret x | tee log`)
+        let secret = ctx.io.stdinIsTTY ? "" : (await ctx.io.readStdin()).trim();
+        if (!secret && ctx.io.stdinIsTTY) secret = (await ctx.io.prompt("Token: ", true)).trim();
         if (!secret) throw new CliError("no secret on stdin", { exitCode: 2, hint: 'echo "$TOKEN" | kf sources secret <source>' });
         const db = await ctx.db();
         await must(db.rpc("set_source_secret", { p_source: id, p_secret: secret }));

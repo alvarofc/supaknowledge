@@ -2,9 +2,10 @@
 // recovered from an error. A cheap heuristic pass picks candidate traces; a fast model extracts lessons.
 import type { LLM } from "../llm.ts";
 import type { Trace, TraceEvent } from "../types.ts";
-import { CORRECTIONS_SYSTEM, withHouseRules } from "./prompts.ts";
+import { CORRECTIONS_SYSTEM, UNTRUSTED_DATA_RULE, untrusted, withHouseRules } from "./prompts.ts";
 import { CorrectionSchema, type CorrectionOutput } from "./schemas.ts";
 import type { NewSyntheticFlag } from "./store.ts";
+import { stableHash } from "./hash.ts";
 
 const CORRECTION_CUES = [
   /\b(no|nope),?\s/i,
@@ -82,16 +83,22 @@ export function renderTrace(trace: Trace, maxChars = 24_000): string {
 export async function extractLessons(
   llm: LLM,
   trace: Trace,
-  opts: { instructions?: string } = {},
+  opts: { instructions?: string; signal?: AbortSignal } = {},
 ): Promise<CorrectionOutput> {
   const res = await llm.generate({
-    system: withHouseRules(CORRECTIONS_SYSTEM, opts.instructions ?? ""),
-    input: renderTrace(trace),
+    system: withHouseRules(CORRECTIONS_SYSTEM + UNTRUSTED_DATA_RULE, opts.instructions ?? ""),
+    input: untrusted(`trace:${trace.id}`, renderTrace(trace)),
+    signal: opts.signal,
     schema: CorrectionSchema,
     tier: "fast",
     maxTokens: 4000,
   });
   return res.output;
+}
+
+/** Stable key of a lesson: normalized text + the event seqs it cites. */
+export function lessonKey(lesson: string, seqs: number[]): string {
+  return stableHash(`${lesson.toLowerCase().replace(/\s+/g, " ").trim()}|${[...seqs].sort((a, b) => a - b).join(",")}`);
 }
 
 export function lessonsToFlags(trace: Trace, out: CorrectionOutput): NewSyntheticFlag[] {
@@ -105,7 +112,14 @@ export function lessonsToFlags(trace: Trace, out: CorrectionOutput): NewSyntheti
       query: null,
       observation: l.observation,
       suggested_fix: l.lesson,
-      evidence: { seqs: l.seqs, quote: l.evidence_quote, knowledge_kind: l.knowledge_kind, source: "trace-correction" },
+      evidence: {
+        seqs: l.seqs,
+        quote: l.evidence_quote,
+        knowledge_kind: l.knowledge_kind,
+        source: "trace-correction",
+        // same trace + same lesson => same key, so re-mining a trace (retries) never duplicates the flag
+        dedupe_key: lessonKey(l.lesson, l.seqs),
+      },
       audience: trace.audience,
     }));
 }

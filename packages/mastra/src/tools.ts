@@ -56,15 +56,20 @@ const INPUT_SCHEMAS = {
 } satisfies Record<KnowledgeToolName, z.ZodType>;
 
 function backendFor(client: Supaknowledge, trace: TraceRecorder | undefined): KnowledgeBackend {
+  // make sure the trace exists so concept usage is attributed to it (no request once it does, none while the
+  // recorder is backing off after failures)
+  const traceId = async (given?: string): Promise<string | undefined> => given ?? (trace ? ((await trace.ensureId()) ?? undefined) : undefined);
   return {
-    search: async (query, opts) => {
-      // make sure the trace exists so concept usage is attributed to it (no request when it already does)
-      const traceId = trace ? ((await trace.start()) ?? undefined) : opts?.traceId;
-      return client.search(query, { ...opts, traceId });
+    search: async (query, opts) => client.search(query, { ...opts, traceId: await traceId(opts?.traceId) }),
+    read: async (path, opts) => {
+      const id = await traceId(opts?.traceId);
+      return client.read(path, id ? { traceId: id } : {});
     },
-    read: (path) => client.read(path),
     listSkills: () => client.listSkills(),
-    loadSkill: (name) => client.loadSkill(name),
+    loadSkill: async (name, opts) => {
+      const id = await traceId(opts?.traceId);
+      return client.loadSkill(name, id ? { traceId: id } : {});
+    },
     flag: async (input) => {
       if (!trace) return client.flag(input);
       const r = await trace.flag(input); // linked to the trace; null when the server refused it

@@ -1,9 +1,5 @@
 {
   "imports": {
-    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.119.2",
-    "yaml": "npm:yaml@2.9.1",
-    "zod": "npm:zod@4.6.7",
-    "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@2.4.0",
-    "@mastra/core/": "npm:/@mastra/core@1.85.0/"
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.119.2"
   }
 }

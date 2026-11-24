@@ -143,10 +143,20 @@ export class McpClient {
       const msgs: JsonRpcResponse[] = ct.includes("text/event-stream")
         ? parseSse(text)
         : (() => {
-            const parsed = JSON.parse(text) as JsonRpcResponse | JsonRpcResponse[];
+            let parsed: JsonRpcResponse | JsonRpcResponse[];
+            try {
+              parsed = JSON.parse(text) as JsonRpcResponse | JsonRpcResponse[];
+            } catch {
+              // a proxy / login page / misrouted URL answered instead of the MCP server
+              throw new SupaknowledgeError(
+                `MCP ${method}: expected a JSON or SSE response from ${this.o.endpoint}, got ${ct || "no content-type"}: ${text.slice(0, 200)}`,
+                { status: res.status, code: "invalid_response", details: text.slice(0, 2000) },
+              );
+            }
             return Array.isArray(parsed) ? parsed : [parsed];
           })();
-      const msg = msgs.find((m) => m.id === id) ?? msgs.find((m) => m.result !== undefined || m.error !== undefined);
+      const isMsg = (m: unknown): m is JsonRpcResponse => Boolean(m) && typeof m === "object";
+      const msg = msgs.filter(isMsg).find((m) => m.id === id) ?? msgs.filter(isMsg).find((m) => m.result !== undefined || m.error !== undefined);
       if (!msg) throw new SupaknowledgeError(`MCP ${method}: no response`, { status: res.status });
       if (msg.error) throw new SupaknowledgeError(msg.error.message, { code: msg.error.code, details: msg.error.data });
       return msg.result;

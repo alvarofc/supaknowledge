@@ -35,6 +35,7 @@ const io: Io = {
   readStdin,
   prompt,
   isTTY: Boolean(process.stdout.isTTY),
+  stdinIsTTY: Boolean(process.stdin.isTTY),
   env: process.env,
   cwd: process.cwd(),
   fetch: (input, init) => fetch(input, init),

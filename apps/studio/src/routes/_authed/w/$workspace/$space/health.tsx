@@ -7,11 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, EmptyState, PageHeader, Stat } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
 import { Link } from "@/components/ui/link";
-import { formatDate, timeAgo } from "@/lib/format";
+
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { HEALTH_DAYS, loadHealth } from "@/server/health.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/health")({
   validateSearch: (search: Record<string, unknown>): { days?: number } => ({
@@ -184,8 +185,14 @@ function HealthPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={h.last_run.status === "succeeded" ? "ok" : h.last_run.status === "failed" ? "danger" : "info"}>{h.last_run.status}</Badge>
               <span className="text-muted">triggered by {h.last_run.trigger.replace("_", " ")}</span>
-              <span className="text-subtle" title={formatDate(h.last_run.finished_at)}>
-                {h.last_run.finished_at ? `finished ${timeAgo(h.last_run.finished_at)}` : "not finished"}
+              <span className="text-subtle">
+                {h.last_run.finished_at ? (
+                  <>
+                    finished <Timestamp iso={h.last_run.finished_at} />
+                  </>
+                ) : (
+                  "not finished"
+                )}
               </span>
             </div>
             {h.last_run.stats && Object.keys(h.last_run.stats).length ? (

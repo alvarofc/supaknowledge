@@ -98,12 +98,13 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
 | `issue_labels` | string[] (only issues carrying any of these) | all |
 | `include_discussions` | boolean (GraphQL, needs a token) | `false` |
 | `max_file_bytes` | number | `1000000` |
-| `api_url` | GitHub Enterprise API base | `https://api.github.com` |
+| `api_url` | GitHub Enterprise API base (https only, public address, no query or fragment) | `https://api.github.com` |
 
 - **Token:** fine-grained PAT or GitHub App installation token with *Contents: read*, *Metadata: read*;
   *Issues/Pull requests: read* for issues, *Discussions: read* for discussions, *Administration: read* to map
-  teams of private repos. Falls back to the `GITHUB_TOKEN` function secret, then unauthenticated (public repos,
-  60 requests/hour).
+  teams of private repos. Without a source token it falls back to the `GITHUB_TOKEN` function secret **only when
+  `api_url` is `https://api.github.com`** (the deployment's token is never sent to an admin-chosen host), then
+  unauthenticated (public repos, 60 requests/hour). Credentials only ever go to the `api_url` origin.
 - First/full sync lists the git tree; later runs call `compare/<cursor.sha>...<head>` and fetch only
   added/modified/renamed files, deleting removed ones (falls back to the tree on force-push, >300 files, or a
   missing base). Blob shas are stored as versions, so unchanged files are never downloaded again. Binary files and
@@ -122,7 +123,14 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
 - **Secret:** a service-account key JSON (share the folders with its `client_email`, or enable domain-wide
   delegation for scope `https://www.googleapis.com/auth/drive.readonly` and set `subject`), or an OAuth
   `authorized_user` JSON (`client_id`, `client_secret`, `refresh_token`) with the same scope. The JWT is signed
-  in the function with WebCrypto (RS256).
+  in the function with WebCrypto (RS256). Tokens are always requested from `https://oauth2.googleapis.com/token`:
+  a `token_uri` in the JSON is accepted only if it is one of Google's own token endpoints and is otherwise
+  rejected as a config error, so whoever can set the secret cannot make the connector post credentials to another
+  URL.
+- **Folder mappings are hierarchical:** the most specific mapped folder wins. A file in `finance/q3` where
+  `finance` maps to group `finance` and the synced root maps to `all-staff` gets only `finance`, not both. The
+  shared drive (`gdrive_drive`) counts only when no folder matched, and Google groups the file is shared with
+  directly (`google_group`) narrow that result (intersection; if it is empty, the folder mapping is kept).
 - Lists files with `modifiedTime >= cursor.since` (ascending) and applies the `changes` feed for deletions,
   trashing and moves out of the synced folders. Google Docs export as `text/markdown` (fallback `text/plain`),
   Sheets as CSV (first sheet), Slides as text; `.md`/`.txt`/`.html`/`.pdf` files are downloaded.
@@ -183,7 +191,7 @@ array of strings):
 |---|---|---|
 | slack | private channel / DM | `{"slack_channel": "C0123"}` |
 | github | private or internal repo | `{"github_repo": "acme/handbook"}`, `{"github_team": "acme/finance"}` (teams with repo access) |
-| gdrive | not shared with "anyone" / the whole domain | `{"gdrive_folder": "<folder id or any ancestor up to the configured root>"}`, `{"google_group": "sales@acme.com"}`, `{"gdrive_drive": "<shared drive id>"}` |
+| gdrive | not shared with "anyone" / the whole domain | `{"gdrive_folder": "<folder id or any ancestor up to the configured root>"}` (the most specific mapped folder wins), `{"google_group": "sales@acme.com"}`, `{"gdrive_drive": "<shared drive id>"}` (only when no folder matched) |
 | notion | never (the API has no permissions) | `{"notion_database": "<id>"}`, `{"notion_page": "<root page id>"}` |
 | web, upload | never | – |
 
@@ -212,12 +220,30 @@ are re-applied on the next sync even when the content did not change.
 - `metadata.version` holds the cheap upstream version (blob sha, `last_edited_time`, `modifiedTime:md5`, ETag) that
   lets connectors skip downloads.
 
+## Outbound requests (SSRF guard)
+
+Source configs come from space admins, so every outbound connector request goes through a guard
+(`lib/net-guard.ts`):
+
+- only `http(s)`, and `https` whenever credentials (`Authorization`, `Cookie`) are attached;
+- no loopback, private, CGNAT, link-local / cloud-metadata, multicast or reserved addresses (IPv4 and IPv6,
+  including IPv4-mapped, NAT64 and 6to4 forms), and no internal host names (single-label names such as `kong` or
+  `db`, `localhost`, `*.internal`, `*.local`, `*.svc`, `*.home.arpa`…);
+- host names are resolved (A + AAAA) and refused when any address is not public;
+- redirects are followed by hand (at most 5 hops), each hop is checked again, and credentials are dropped when a
+  hop changes origin.
+
+A refused URL is a config error (the sync fails with a message and is not retried until the config changes).
+Self-hosted setups that need to sync intranet sites can set the function secret
+`KF_CONNECTORS_ALLOW_PRIVATE_NETWORK=true`, which disables the private-network checks for every source.
+
 ## Limits and tuning
 
 | Limit | Value | Override |
 |---|---|---|
 | documents fetched per run | 200 | env `CONNECTOR_DOC_LIMIT` |
 | time budget per run | 120 s | env `CONNECTOR_TIME_BUDGET_MS` (keep below the platform wall-clock limit) |
+| upstream response body | 20 MiB, read as a stream and cut off past the limit; an oversized file or page is skipped, an oversized API response fails the run | env `KF_CONNECTOR_MAX_BYTES` (bytes) |
 | stored content per document | 2,000,000 chars (`metadata.truncated`) | – |
 | upload size | 20 MB (bucket limit 50 MB) | – |
 | chunks embedded per document | 400 (embed worker) | – |

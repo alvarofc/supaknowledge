@@ -19,6 +19,7 @@ import type {
   FetchLike,
   FlagInput,
   FlagResult,
+  ReadOptions,
   SupaknowledgeOptions,
   SearchOptions,
   SearchResult,
@@ -116,18 +117,18 @@ export class Supaknowledge {
           p_limit: opts.limit ?? 8,
         });
         const ids = (rows ?? []).map((r) => r.concept_id).filter(Boolean);
-        if (ids.length) void this.logUsage(space, ids as string[], "search", query, opts.traceId);
+        if (ids.length) await this.logUsage(space, ids as string[], "search", query, opts.traceId);
         return rows ?? [];
       },
     );
   }
 
   /** Read one concept by path. Resolves to null when it does not exist (or you cannot see it). */
-  async read(path: string): Promise<Concept | null> {
+  async read(path: string, opts: ReadOptions = {}): Promise<Concept | null> {
     return this.route(
       async () => {
         try {
-          const r = await this.mcp.callTool("read_concept", { path });
+          const r = await this.mcp.callTool("read_concept", { path, ...(opts.traceId ? { trace_id: opts.traceId } : {}) });
           if (!r) return null;
           return typeof r === "string" ? parseConceptMarkdown(r) : unwrap<Concept>(r, "concept");
         } catch (e) {
@@ -138,7 +139,7 @@ export class Supaknowledge {
       async () => {
         const space = await this.spaceId();
         const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path });
-        if (c && typeof c.id === "string") void this.logUsage(space, [c.id], "read", path);
+        if (c && typeof c.id === "string") await this.logUsage(space, [c.id], "read", path, opts.traceId);
         return c ?? null;
       },
     );
@@ -162,11 +163,11 @@ export class Supaknowledge {
   }
 
   /** Full skill: instructions plus attached files. */
-  async loadSkill(name: string): Promise<Skill | null> {
+  async loadSkill(name: string, opts: ReadOptions = {}): Promise<Skill | null> {
     return this.route(
       async () => {
         try {
-          const r = await this.mcp.callTool("load_skill", { name });
+          const r = await this.mcp.callTool("load_skill", { name, ...(opts.traceId ? { trace_id: opts.traceId } : {}) });
           if (!r) return null;
           const s = typeof r === "string" ? parseSkillMarkdown(r) : unwrap<Skill>(r, "skill");
           return { ...s, name: s.name ?? skillNameOf(String(s.path ?? name)) };
@@ -178,14 +179,15 @@ export class Supaknowledge {
       async () => {
         if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return null;
         const space = await this.spaceId();
+        // same set list_skills shows (stable skills only); an exact path wins over a "<dir>/<name>" match
         const rows = await this.restGet<{ path: string }[]>(
-          `concepts?select=path&space_id=eq.${space}&kind=eq.skill&or=(path.eq.${name},path.like.*/${name})&limit=1`,
+          `concepts?select=path&space_id=eq.${space}&kind=eq.skill&status=eq.stable&or=(path.eq.${name},path.like.*/${name})&order=path&limit=5`,
         );
-        const path = rows[0]?.path;
+        const path = (rows.find((r) => r.path === name) ?? rows.find((r) => skillNameOf(r.path) === name))?.path;
         if (!path) return null;
         const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path });
         if (!c) return null;
-        if (typeof c.id === "string") void this.logUsage(space, [c.id], "load_skill", name);
+        if (typeof c.id === "string") await this.logUsage(space, [c.id], "load_skill", name, opts.traceId);
         return { ...c, name: skillNameOf(c.path) };
       },
     );
@@ -222,6 +224,15 @@ export class Supaknowledge {
         return { id: id ?? null };
       },
     );
+  }
+
+  /** Report a background error the way trace recording does: to `onError`, else console.warn. Never throws. */
+  reportError(error: unknown): void {
+    try {
+      (this.o.onError ?? ((err: unknown) => console.warn("[supaknowledge] trace:", err)))(error);
+    } catch {
+      /* never throw into the host app */
+    }
   }
 
   /** Call any tool on the Supaknowledge MCP server. */
@@ -328,7 +339,9 @@ export class Supaknowledge {
 
   private async logUsage(space: string, ids: string[], via: string, query?: string, traceId?: string): Promise<void> {
     try {
-      await this.rpc("log_concept_usage", { p_space: space, p_concepts: ids, p_via: via, p_query: query ?? null, p_trace: traceId ?? null });
+      // p_trace is a uuid: an upstream id (OTel / LangSmith) would make the whole call fail, so it is left out
+      const trace = traceId && UUID_RE.test(traceId) ? traceId : null;
+      await this.rpc("log_concept_usage", { p_space: space, p_concepts: ids, p_via: via, p_query: query ?? null, p_trace: trace });
     } catch {
       /* usage logging is best effort */
     }

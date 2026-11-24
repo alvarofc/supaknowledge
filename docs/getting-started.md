@@ -57,8 +57,9 @@ npx kf import examples/revenue-report/knowledge --apply
 - `kf login` prompts for your password and stores the session in `~/.config/supaknowledge/config.json`.
 - `kf init` makes you the workspace **owner**, which makes you an admin of every space in it.
 - The example bundle has one finance-only concept (`x-supaknowledge-audience: [finance]`), so create the `finance`
-  group first. Import with a missing group logs `unknown audience group "finance" ignored` and the concept
-  becomes readable by everyone in the space; see [access control](access-control.md#audiences).
+  group first. Without it, the import skips that concept with a warning (`audience group(s) "finance" do not
+  exist in this workspace`) instead of publishing it unrestricted; create the group and import again. See
+  [access control](access-control.md#audiences).
 - `kf import` sends the files to the `bundle` function, which turns them into **one proposal**. `--apply`
   approves it on the spot (you need the reviewer role). Every concept gets a revision and your verification, so
   it shows as `human_reviewed`.
@@ -74,7 +75,8 @@ npx kf read skills/revenue-report
 
 ## 5. Connect an agent
 
-**As yourself (OAuth).** The agent acts with your permissions:
+**As yourself (OAuth).** The agent reads and searches what you can read, and can flag knowledge and send traces
+(it cannot administer anything or create, approve or reject proposals):
 
 ```bash
 claude mcp add --transport http supaknowledge 'http://127.0.0.1:54321/functions/v1/mcp?space=acme/revenue'
@@ -165,4 +167,4 @@ model in `supabase/.env`, the demo stops at the curator step and prints how to c
 | Curator tasks fail with `Cannot connect to API` | The functions run in Docker: use `http://host.docker.internal:<port>/v1`, not `127.0.0.1`, for an endpoint on your machine. |
 | `npx kf` asks to install a package | Run `npm run build:cli` first. |
 | Signed in on `localhost` but redirects go to `127.0.0.1` | Use http://127.0.0.1:3000 everywhere; cookies are per host. |
-| Function errors | `docker logs -f supabase_edge_runtime_openkf` |
+| Function errors | `docker logs -f supabase_edge_runtime_supaknowledge` |

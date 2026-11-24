@@ -66,6 +66,7 @@ function splitLong(text: string, max: number, overlap: number): string[] {
         if ((s + " " + sent).length > max && s) {
           out.push(s.trim());
           s = s.slice(Math.max(0, s.length - overlap));
+          if ((s + " " + sent).length > max && sent.length <= max) s = "";
         }
         s += (s ? " " : "") + sent;
         while (s.length > max) {
@@ -79,6 +80,7 @@ function splitLong(text: string, max: number, overlap: number): string[] {
     if ((cur + "\n\n" + p).length > max && cur) {
       push();
       cur = cur.slice(Math.max(0, cur.length - overlap));
+      if ((cur + "\n\n" + p).length > max) cur = ""; // the overlap must not push a chunk past max
     }
     cur += (cur ? "\n\n" : "") + p;
   }
@@ -87,17 +89,26 @@ function splitLong(text: string, max: number, overlap: number): string[] {
 }
 
 export function chunkMarkdown(markdown: string, opts: ChunkOptions = {}): Chunk[] {
-  const max = opts.maxChars ?? 1200;
-  const overlap = opts.overlapChars ?? 150;
+  const max = Math.max(100, opts.maxChars ?? 1200);
   const chunks: Chunk[] = [];
   const sections = splitSections(markdown);
-  if (sections.length === 0 && opts.preamble) {
-    return [{ ord: 0, heading: null, content: opts.preamble.trim() }];
+  // the preamble (title + description) and heading trail are context, not content: each is capped at a third
+  // of the window so the body always keeps at least a third
+  const preambleMax = Math.floor(max / 3);
+  const rawPreamble = opts.preamble?.trim() ?? "";
+  const preamble = rawPreamble.length > preambleMax ? rawPreamble.slice(0, preambleMax - 1).trimEnd() + "…" : rawPreamble;
+  if (sections.length === 0 && preamble) {
+    return [{ ord: 0, heading: null, content: preamble }];
   }
   for (const s of sections) {
     const heading = s.trail.filter(Boolean).join(" > ") || null;
-    for (const piece of splitLong(s.text, max, overlap)) {
-      const prefix = [opts.preamble?.trim(), heading ? `## ${heading}` : null].filter(Boolean).join("\n");
+    const headingLine = heading ? `## ${heading.length > preambleMax ? heading.slice(0, preambleMax - 1) + "…" : heading}` : null;
+    const prefix = [preamble || null, headingLine].filter(Boolean).join("\n");
+    // every chunk (prefix + body) must fit the embedding window, so the body gets what the prefix leaves
+    const bodyMax = Math.max(Math.floor(max / 4), max - (prefix ? prefix.length + 2 : 0));
+    // overlap must stay well below the piece size or splitting would never advance
+    const overlap = Math.max(0, Math.min(opts.overlapChars ?? 150, Math.floor(bodyMax / 2)));
+    for (const piece of splitLong(s.text, bodyMax, overlap)) {
       chunks.push({ ord: chunks.length, heading, content: prefix ? `${prefix}\n\n${piece}` : piece });
     }
   }

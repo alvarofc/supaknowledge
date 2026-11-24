@@ -11,11 +11,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { skillName } from "../_shared/core/index.ts";
+import { skillName } from "../_shared/core/formats.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
 import { embed, toVector } from "../_shared/embed.ts";
 import { corsHeaders, HttpError, json } from "../_shared/http.ts";
 import { isUuid, listSpaces, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import { baseCacheHeaders, escapeLike, normalizeConceptPath, publicBase } from "./urls.ts";
 
 const SERVER_INFO = { name: "supaknowledge", version: "0.1.0" };
 
@@ -30,27 +31,13 @@ How to use it:
 // ---------------------------------------------------------------------------------------------------------
 // URLs
 // ---------------------------------------------------------------------------------------------------------
-/** Public base URL (scheme + host) as clients see it. Inside the local stack SUPABASE_URL is http://kong:8000. */
-function publicBase(req: Request): string {
-  const configured = Deno.env.get("KF_PUBLIC_URL");
-  if (configured) return configured.replace(/\/+$/, "");
-  const url = new URL(req.url);
-  const proto = (req.headers.get("x-forwarded-proto") ?? url.protocol.replace(/:$/, "")).split(",")[0].trim();
-  let host = (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host).split(",")[0].trim();
-  const port = req.headers.get("x-forwarded-port")?.split(",")[0].trim();
-  if (port && !host.includes(":") && !((proto === "https" && port === "443") || (proto === "http" && port === "80"))) {
-    host = `${host}:${port}`;
-  }
-  return `${proto}://${host}`;
-}
-
-const mcpUrl = (req: Request) => `${publicBase(req)}/functions/v1/mcp`;
+const mcpUrl = (req: Request) => `${publicBase(req).base}/functions/v1/mcp`;
 const metadataUrl = (req: Request) => `${mcpUrl(req)}/.well-known/oauth-protected-resource`;
 
 function protectedResourceMetadata(req: Request) {
   return {
     resource: mcpUrl(req),
-    authorization_servers: [`${publicBase(req)}/auth/v1`],
+    authorization_servers: [`${publicBase(req).base}/auth/v1`],
     bearer_methods_supported: ["header"],
     resource_name: "Supaknowledge knowledge factory",
   };
@@ -60,7 +47,7 @@ function unauthorized(req: Request, message: string, invalidToken: boolean): Res
   const challenge = invalidToken
     ? `Bearer error="invalid_token", error_description="${message.replace(/"/g, "'")}", resource_metadata="${metadataUrl(req)}"`
     : `Bearer resource_metadata="${metadataUrl(req)}"`;
-  return json({ error: message }, 401, { "WWW-Authenticate": challenge });
+  return json({ error: message }, 401, { "WWW-Authenticate": challenge, ...(publicBase(req).fromHeaders ? baseCacheHeaders(req) : {}) });
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -255,7 +242,7 @@ function buildServer(ctx: Ctx): McpServer {
     async ({ path, space, trace_id }) => {
       try {
         const sp = await pickSpace(ctx, space);
-        const p = path.trim().replace(/^\/+/, "").replace(/\.md$/, "");
+        const p = normalizeConceptPath(path) ?? "";
         const { data, error } = await caller.db.rpc("read_concept", { p_space: sp.id, p_path: p });
         if (error) return fail(`read_concept failed: ${error.message}`);
         if (!data) {
@@ -363,19 +350,28 @@ function buildServer(ctx: Ctx): McpServer {
     async ({ name, space, trace_id }) => {
       try {
         const sp = await pickSpace(ctx, space);
-        const n = name.trim().replace(/^\/+|\/+$/g, "").replace(/\/SKILL\.md$/, "");
+        const n = normalizeConceptPath(name) ?? "";
         if (!/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(n) || n.includes("..")) return fail(`invalid skill name "${name}"`);
-        const { data, error } = await caller.db
-          .from("concepts")
-          .select("id, path, title, description, body, status, revision, stale_after")
-          .eq("space_id", sp.id)
-          .eq("kind", "skill")
-          .or(`path.eq.${n},path.like.*/${n}`)
-          .order("path")
-          .limit(5);
-        if (error) return fail(`load_skill failed: ${error.message}`);
-        const rows = (data ?? []) as { id: string; path: string; title: string; description: string; body: string; status: string; revision: number; stale_after: string | null }[];
-        const skill = rows.find((r) => r.path === n) ?? rows.find((r) => skillName(r.path) === n);
+        type SkillRow = { id: string; path: string; title: string; description: string; body: string; status: string; revision: number; stale_after: string | null };
+        const base = () =>
+          caller.db
+            .from("concepts")
+            .select("id, path, title, description, body, status, revision, stale_after")
+            .eq("space_id", sp.id)
+            .eq("kind", "skill")
+            .neq("status", "draft");
+        // exact path first; then skills whose last path segment is the name (LIKE wildcards escaped)
+        const exact = await base().eq("path", n).limit(1);
+        if (exact.error) return fail(`load_skill failed: ${exact.error.message}`);
+        let skill = (exact.data ?? [])[0] as SkillRow | undefined;
+        if (!skill) {
+          const suffix = await base().like("path", `%/${escapeLike(n)}`).order("path").limit(50);
+          if (suffix.error) return fail(`load_skill failed: ${suffix.error.message}`);
+          const rows = (suffix.data ?? []) as SkillRow[];
+          // prefer a non-deprecated match
+          const hits = rows.filter((r) => r.path.endsWith(`/${n}`)).sort((a, b) => a.path.length - b.path.length || a.path.localeCompare(b.path));
+          skill = hits.find((r) => r.status !== "deprecated") ?? hits[0];
+        }
         if (!skill) {
           return fail(`No skill named "${n}" in ${sp.ref}. Use list_skills to see what exists; if you needed one, call flag_knowledge with kind="missing".`);
         }
@@ -448,7 +444,7 @@ function buildServer(ctx: Ctx): McpServer {
           p_space: sp.id,
           p_kind: kind,
           p_observation: observation,
-          p_concept_path: concept_path?.trim().replace(/\.md$/, "") || null,
+          p_concept_path: normalizeConceptPath(concept_path),
           p_query: query ?? null,
           p_suggested_fix: suggested_fix ?? null,
           p_trace: trace,
@@ -473,7 +469,15 @@ Deno.serve(async (req) => {
   const path = subpath(req, "mcp");
 
   if (path.endsWith("/.well-known/oauth-protected-resource")) {
-    return json(protectedResourceMetadata(req), 200, { "Cache-Control": "public, max-age=300" });
+    return json(protectedResourceMetadata(req), 200, baseCacheHeaders(req));
+  }
+
+  // space from the path (/mcp/<workspace>/<space> or /mcp/<uuid>); malformed percent-encoding is a 400
+  let fromPath: string | null = null;
+  try {
+    fromPath = path === "/" ? null : decodeURIComponent(path.slice(1));
+  } catch {
+    return json({ error: "malformed URL path" }, 400);
   }
 
   let caller: Caller;
@@ -484,9 +488,8 @@ Deno.serve(async (req) => {
     return unauthorized(req, msg, !!req.headers.get("authorization"));
   }
 
-  // space from ?space= or the path (/mcp/<workspace>/<space> or /mcp/<uuid>)
+  // space from ?space= or the path
   const url = new URL(req.url);
-  const fromPath = path === "/" ? null : decodeURIComponent(path.slice(1));
   const urlSpace = url.searchParams.get("space")?.trim() || fromPath || null;
 
   const ctx: Ctx = { caller, urlSpace, spaceCache: new Map() };

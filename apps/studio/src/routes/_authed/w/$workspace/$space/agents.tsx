@@ -6,11 +6,12 @@ import { RoleBadge } from "@/components/kf/badges";
 import { ConnectedApps } from "@/components/oauth/connected-apps";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, Code, EmptyState, PageHeader } from "@/components/ui/card";
-import { actorLabel, formatDate, timeAgo } from "@/lib/format";
+import { actorLabel } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { isWorkspaceAdmin } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadAgents } from "@/server/agents.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/agents")({
   loader: ({ params }) => loadAgents({ data: { workspace: params.workspace, space: params.space } }),
@@ -20,7 +21,7 @@ export const Route = createFileRoute("/_authed/w/$workspace/$space/agents")({
 
 function AgentsPage() {
   const ctx = useSpace();
-  const { agents: list, roleHere, profiles } = Route.useLoaderData();
+  const { agents: list, roleHere, profiles, statusKnown } = Route.useLoaderData();
   const admin = isWorkspaceAdmin(ctx.workspaceRole);
   const actionCtx = { workspaceId: ctx.workspace.id, wsSlug: ctx.workspace.slug, spaceId: ctx.space.id, spaceSlug: ctx.space.slug, spaceName: ctx.space.name };
 
@@ -60,8 +61,9 @@ function AgentsPage() {
             <li className="flex gap-3">
               <Step n={3} />
               <span>
-                The agent then acts <strong className="font-medium text-fg">with exactly your permissions</strong>: same spaces, same role, same audience
-                groups. Flags it raises are attributed to you, and RLS applies to every call.
+                The agent then reads <strong className="font-medium text-fg">with exactly your permissions</strong>: same spaces, same audience groups.
+                It can search, read, load skills, record traces and flag problems, but never edit, approve or administer anything, whatever your
+                role. Flags it raises are attributed to you, and RLS applies to every call.
               </span>
             </li>
           </ol>
@@ -74,6 +76,11 @@ function AgentsPage() {
           title={`Headless agents in ${ctx.workspace.name}`}
           description="Each is a Supabase Auth user (app_metadata.kind = agent). Its API key is the password the MCP function exchanges for a short-lived session, so RLS applies exactly as for people."
         />
+        {!statusKnown && list.length ? (
+          <p className="border-b border-line px-4 py-2 text-xs text-warn">
+            The revoked state of some agents is unknown, so they may not be marked here.
+          </p>
+        ) : null}
         {list.length === 0 ? (
           <EmptyState
             icon={<Bot />}
@@ -94,7 +101,12 @@ function AgentsPage() {
                 <AgentAvatar />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-fg">{a.name}</span>
+                    <span className={a.revoked ? "text-sm font-medium text-muted line-through" : "text-sm font-medium text-fg"}>{a.name}</span>
+                    {a.revoked ? (
+                      <Badge tone="danger" title="Its key no longer works. Restore it from the actions menu.">
+                        Revoked
+                      </Badge>
+                    ) : null}
                     {roleHere[a.id] ? <RoleBadge role={roleHere[a.id]} /> : <Badge title="This agent has no direct role in this space">Not in this space</Badge>}
                     {a.key_prefix ? (
                       <code className="rounded border border-line bg-surface-2 px-1.5 py-px font-mono text-[11px] text-muted" title="Start of the current key">
@@ -104,16 +116,22 @@ function AgentsPage() {
                   </div>
                   {a.description ? <p className="mt-0.5 text-sm text-muted">{a.description}</p> : null}
                   <p className="mt-1 flex flex-wrap gap-x-3 text-xs text-subtle">
-                    <span title={a.last_seen_at ? formatDate(a.last_seen_at) : undefined}>
-                      {a.last_seen_at ? `Last active ${timeAgo(a.last_seen_at)}` : "Never used"}
+                    <span>
+                      {a.last_seen_at ? (
+                        <>
+                          Last active <Timestamp iso={a.last_seen_at} />
+                        </>
+                      ) : (
+                        "Never used"
+                      )}
                     </span>
                     <span>
-                      Created {timeAgo(a.created_at)}
+                      Created <Timestamp iso={a.created_at} />
                       {a.created_by ? ` by ${actorLabel(`human:${a.created_by}`, profiles)}` : ""}
                     </span>
                   </p>
                 </div>
-                {admin ? <AgentRowActions agent={{ id: a.id, name: a.name }} ctx={actionCtx} /> : null}
+                {admin ? <AgentRowActions agent={{ id: a.id, name: a.name, revoked: a.revoked }} ctx={actionCtx} /> : null}
               </li>
             ))}
           </ul>
@@ -126,7 +144,8 @@ function AgentsPage() {
 
       <p className="mt-4 flex items-start gap-2 text-xs text-subtle">
         <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
-        Keys are shown once and stored only as a hash. Revoking an agent bans its Auth user, so it cannot start new sessions.
+        Keys are shown once and stored only as a hash. Revoking an agent bans its Auth user, so it cannot start new sessions; restoring it
+        lifts the ban. Agents can never be space or workspace admins.
       </p>
     </>
   );

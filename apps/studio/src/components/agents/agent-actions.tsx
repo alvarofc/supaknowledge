@@ -1,4 +1,4 @@
-import { Ban, Bot, KeyRound, MoreHorizontal, Plus, RotateCw, Trash } from "lucide-react";
+import { Ban, Bot, KeyRound, MoreHorizontal, Plus, RotateCcw, RotateCw, Trash } from "lucide-react";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -152,11 +152,11 @@ export function CreateAgentButton({ ctx }: { ctx: Ctx }) {
   );
 }
 
-export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: string }; ctx: Ctx }) {
+export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: string; revoked?: boolean | null }; ctx: Ctx }) {
   const router = useRouter();
   const toast = useToast();
   const [menu, setMenu] = useState(false);
-  const [dialog, setDialog] = useState<null | "rotate" | "revoke" | "delete">(null);
+  const [dialog, setDialog] = useState<null | "rotate" | "revoke" | "restore" | "delete">(null);
   const [pending, setPending] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
@@ -182,7 +182,7 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
     setUnavailable(null);
   }
 
-  async function act(kind: "rotate" | "revoke" | "delete") {
+  async function act(kind: "rotate" | "revoke" | "restore" | "delete") {
     setPending(true);
     setUnavailable(null);
     try {
@@ -192,6 +192,10 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
       } else if (kind === "revoke") {
         await callFunction(`agents/${agent.id}/revoke`, { method: "POST", body: {} });
         toast.success(`${agent.name} revoked`);
+        close();
+      } else if (kind === "restore") {
+        await callFunction(`agents/${agent.id}/restore`, { method: "POST", body: {} });
+        toast.success(`${agent.name} restored`);
         close();
       } else {
         await callFunction(`agents/${agent.id}`, { method: "DELETE" });
@@ -211,15 +215,21 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
   const copy = {
     rotate: {
       title: `Rotate ${agent.name}'s key?`,
-      body: "A new key is issued and the old one stops working immediately. Update every place that uses it.",
+      body: "A new key is issued, the old one stops working within seconds and every session created with it is signed out. Update every place that uses it.",
       cta: "Rotate key",
       tone: "primary" as const,
     },
     revoke: {
       title: `Revoke ${agent.name}?`,
-      body: "Bans the agent's Auth user: its key can no longer be exchanged for a session. Sessions already issued stop working when their token expires (within the JWT expiry, one hour by default). The agent's flags and traces are kept.",
+      body: "Its key stops working within seconds, every session it holds is signed out and its Auth user is banned. Supaknowledge functions (MCP, traces) refuse it right away; an access token it already holds only works against the raw database API until it expires (JWT expiry, one hour by default). The agent's flags and traces are kept.",
       cta: "Revoke agent",
       tone: "danger" as const,
+    },
+    restore: {
+      title: `Restore ${agent.name}?`,
+      body: "Lifts the ban: its current key works again. Rotate the key as well if it may have leaked.",
+      cta: "Restore agent",
+      tone: "primary" as const,
     },
     delete: {
       title: `Delete ${agent.name}?`,
@@ -240,7 +250,9 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
           {(
             [
               ["rotate", <RotateCw key="i" className="size-3.5" />, "Rotate key"],
-              ["revoke", <Ban key="i" className="size-3.5" />, "Revoke"],
+              agent.revoked
+                ? (["restore", <RotateCcw key="i" className="size-3.5" />, "Restore"] as const)
+                : (["revoke", <Ban key="i" className="size-3.5" />, "Revoke"] as const),
               ["delete", <Trash key="i" className="size-3.5" />, "Delete"],
             ] as const
           ).map(([k, icon, label]) => (
@@ -252,7 +264,7 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
                 setMenu(false);
                 setDialog(k);
               }}
-              className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-2", k === "rotate" ? "text-fg" : "text-danger")}
+              className={cn("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-surface-2", k === "rotate" || k === "restore" ? "text-fg" : "text-danger")}
             >
               {icon} {label}
             </button>

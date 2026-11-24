@@ -38,72 +38,72 @@ export const loadProposal = createServerFn({ method: "GET" })
     const supabase = getSupabase();
     if (!/^[0-9a-f-]{36}$/i.test(data.id)) throw notFound();
 
-    const { data: p } = await supabase
-      .from("proposals")
-      .select(
-        "id, space_id, run_id, author, created_by, title, rationale, risk, escalation, status, auto_applied, reviewed_by, reviewed_at, review_note, applied_at, created_at",
-      )
-      .eq("id", data.id)
-      .eq("space_id", ctx.space.id)
-      .maybeSingle();
-    if (!p) throw notFound();
-
-    const [opsRes, citesRes, reviewsRes, linkedFlagsRes, revsRes, runRes] = await Promise.all([
+    // the proposal and everything keyed by its id load in one round trip (RLS hides all of it if the proposal is hidden)
+    const [propRes, opsRes, citesRes, reviewsRes, linkedFlagsRes, revsRes] = await Promise.all([
+      supabase
+        .from("proposals")
+        .select(
+          "id, space_id, run_id, author, created_by, title, rationale, risk, escalation, status, auto_applied, reviewed_by, reviewed_at, review_note, applied_at, created_at",
+        )
+        .eq("id", data.id)
+        .eq("space_id", ctx.space.id)
+        .maybeSingle(),
       supabase
         .from("proposal_ops")
         .select("id, ord, op, concept_id, path, new_path, base_revision, after, target_audience, rationale")
-        .eq("proposal_id", p.id)
+        .eq("proposal_id", data.id)
         .order("ord"),
-      supabase.from("proposal_citations").select("id, op_id, label, ref_kind, ref_id, url, quote, audience").eq("proposal_id", p.id),
-      supabase.from("proposal_reviews").select("id, reviewer, decision, note, created_at").eq("proposal_id", p.id).order("created_at"),
-      supabase.from("flags").select("id, kind, concept_path, observation, status, trace_id").eq("proposal_id", p.id),
+      supabase
+        .from("proposal_citations")
+        .select("id, op_id, label, ref_kind, ref_id, url, quote, audience, consulted")
+        .eq("proposal_id", data.id),
+      supabase.from("proposal_reviews").select("id, reviewer, decision, note, created_at").eq("proposal_id", data.id).order("created_at"),
+      supabase.from("flags").select("id, kind, concept_path, observation, status, trace_id").eq("proposal_id", data.id),
       // revisions this proposal produced (for applied proposals: diff against the revision before)
-      supabase.from("concept_revisions").select("concept_id, revision").eq("proposal_id", p.id),
-      p.run_id
-        ? supabase.from("curator_runs").select("id, trigger, status, created_at").eq("id", p.run_id).maybeSingle()
-        : Promise.resolve({ data: null }),
+      supabase.from("concept_revisions").select("concept_id, revision").eq("proposal_id", data.id),
     ]);
+    // never render a proposal without its changes or evidence: an empty list would read as "no citations"
+    const loadError = propRes.error ?? opsRes.error ?? citesRes.error;
+    if (loadError) throw new Error(`Could not load this proposal: ${loadError.message}`);
+    const p = propRes.data;
+    if (!p) throw notFound();
     const ops = (opsRes.data ?? []) as OpRow[];
     const citations = citesRes.data ?? [];
     const reviews = reviewsRes.data ?? [];
     const applied = p.status === "applied";
 
-    // current state of the target concepts
     const conceptIds = [...new Set(ops.map((o) => o.concept_id).filter((x): x is string => Boolean(x)))];
-    const { data: concepts } = conceptIds.length
-      ? await supabase.from("concepts").select(CONCEPT_COLS).in("id", conceptIds)
-      : { data: [] as never[] };
-    const current: Record<string, ConceptCols> = {};
-    for (const c of concepts ?? []) current[c.id] = c;
-
-    // for applied proposals the "before" is the revision preceding the one this proposal wrote (null = created by it)
-    const before: Record<string, ConceptCols | null> = {};
-    if (applied) {
-      const produced = revsRes.data ?? [];
-      const prev = produced.filter((r) => r.revision > 1);
-      const prevRevs = prev.length
-        ? (
-            await supabase
-              .from("concept_revisions")
-              .select("concept_id, " + CONCEPT_COLS.replace("id, ", ""))
-              .or(prev.map((r) => `and(concept_id.eq.${r.concept_id},revision.eq.${r.revision - 1})`).join(","))
-          ).data
-        : [];
-      for (const r of produced) before[r.concept_id] = null;
-      for (const r of (prevRevs ?? []) as unknown as (ConceptCols & { concept_id: string })[]) before[r.concept_id] = r;
-    }
-
-    // resolve cited material (each lookup is RLS-filtered; proposals are only visible if all of it is)
+    const produced = applied ? (revsRes.data ?? []) : [];
+    const prev = produced.filter((r) => r.revision > 1);
     const idsOf = (k: Enums["citation_kind"]) => citations.filter((c) => c.ref_kind === k && c.ref_id).map((c) => c.ref_id!);
-    const [docsRes, tracesRes, citedFlagsRes, citedConceptsRes] = await Promise.all([
-      idsOf("source_document").length
-        ? supabase.from("source_documents").select("id, title, url, source_id").in("id", idsOf("source_document"))
+    const docIds = idsOf("source_document");
+    const traceIds = idsOf("trace");
+    const flagIds = idsOf("flag");
+    const citedConceptIds = idsOf("concept");
+
+    // everything below depends only on the rows above: fetch it in parallel (each lookup is RLS-filtered; a
+    // proposal is only visible if all of its evidence is)
+    const [conceptsRes, prevRevsRes, runRes, docsRes, tracesRes, citedFlagsRes, citedConceptsRes, profiles] = await Promise.all([
+      // current state of the target concepts
+      conceptIds.length ? supabase.from("concepts").select(CONCEPT_COLS).in("id", conceptIds) : Promise.resolve({ data: [] as never[] }),
+      // for applied proposals the "before" is the revision preceding the one this proposal wrote (null = created by it)
+      prev.length
+        ? supabase
+            .from("concept_revisions")
+            .select("concept_id, " + CONCEPT_COLS.replace("id, ", ""))
+            .or(prev.map((r) => `and(concept_id.eq.${r.concept_id},revision.eq.${r.revision - 1})`).join(","))
+        : Promise.resolve({ data: [] as never[] }),
+      p.run_id
+        ? supabase.from("curator_runs").select("id, trigger, status, created_at").eq("id", p.run_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      docIds.length
+        ? supabase.from("source_documents").select("id, title, url, source_id").in("id", docIds)
         : Promise.resolve({ data: [] as { id: string; title: string | null; url: string | null; source_id: string }[] }),
-      idsOf("trace").length
-        ? supabase.from("traces").select("id, name, outcome, started_at").in("id", idsOf("trace"))
+      traceIds.length
+        ? supabase.from("traces").select("id, name, outcome, started_at").in("id", traceIds)
         : Promise.resolve({ data: [] as { id: string; name: string | null; outcome: Enums["trace_outcome"]; started_at: string }[] }),
-      idsOf("flag").length
-        ? supabase.from("flags").select("id, kind, concept_path, observation, status, trace_id").in("id", idsOf("flag"))
+      flagIds.length
+        ? supabase.from("flags").select("id, kind, concept_path, observation, status, trace_id").in("id", flagIds)
         : Promise.resolve({
             data: [] as {
               id: string;
@@ -114,21 +114,31 @@ export const loadProposal = createServerFn({ method: "GET" })
               trace_id: string | null;
             }[],
           }),
-      idsOf("concept").length
-        ? supabase.from("concepts").select("id, path, title").in("id", idsOf("concept"))
+      citedConceptIds.length
+        ? supabase.from("concepts").select("id, path, title").in("id", citedConceptIds)
         : Promise.resolve({ data: [] as { id: string; path: string; title: string }[] }),
+      getProfiles([
+        p.created_by,
+        p.reviewed_by,
+        p.author.startsWith("human:") ? p.author.slice(6) : null,
+        ...reviews.map((r) => r.reviewer),
+      ]),
     ]);
 
-    const profiles = await getProfiles([
-      p.created_by,
-      p.reviewed_by,
-      p.author.startsWith("human:") ? p.author.slice(6) : null,
-      ...reviews.map((r) => r.reviewer),
-    ]);
+    const current: Record<string, ConceptCols> = {};
+    for (const c of conceptsRes.data ?? []) current[c.id] = c;
+    const before: Record<string, ConceptCols | null> = {};
+    for (const r of produced) before[r.concept_id] = null;
+    for (const r of (prevRevsRes.data ?? []) as unknown as (ConceptCols & { concept_id: string })[]) before[r.concept_id] = r;
 
     return {
       p,
       ops,
+      // whether any op carries skill files (Studio then syncs them into Storage after approving)
+      hasFiles: ops.some((o) => {
+        const after = o.after as { files?: unknown } | null;
+        return Array.isArray(after?.files) && after.files.length > 0;
+      }),
       citations,
       reviews,
       run: runRes.data,

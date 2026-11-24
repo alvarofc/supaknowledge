@@ -289,3 +289,125 @@ describe("MCP markdown parsing", () => {
     assert.deepEqual(s.files, [{ path: "scripts/q.sql" }]);
   });
 });
+
+describe("review fixes", () => {
+  it("handleToolCall creates the trace before the first search and links search, read and load_skill to it", async () => {
+    const seen: Record<string, any> = {};
+    const { fetch, calls } = mockFetch([
+      mcpRoute((name, args) => {
+        seen[name] = args;
+        if (name === "search_knowledge") return [{ path: "metrics/arr", title: "ARR", kind: "domain" }];
+        if (name === "read_concept") return { path: "metrics/arr", kind: "domain", type: "Metric", title: "ARR", description: "", body: "b" };
+        if (name === "load_skill") return { skill: { path: "skills/r", kind: "skill", type: "Skill", title: "R", description: "", body: "s" } };
+        throw new Error("nope");
+      }),
+      (c) => (c.method === "POST" && c.url.endsWith("/traces") ? json({ trace_id: "t-9" }) : undefined),
+      (c) => (c.method === "PATCH" ? json({ ok: true }) : undefined),
+    ]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    const trace = kf.trace({ flushIntervalMs: 0 });
+    await kf.handleToolCall("search_knowledge", { query: "arr" }, { trace });
+    assert.equal(seen.search_knowledge.trace_id, "t-9");
+    const firstSearch = calls.findIndex((c) => c.body?.params?.name === "search_knowledge");
+    const create = calls.findIndex((c) => c.method === "POST" && c.url.endsWith("/traces"));
+    assert.ok(create >= 0 && create < firstSearch, "the trace is created before the search");
+    await kf.handleToolCall("read_concept", { path: "metrics/arr" }, { trace });
+    await kf.handleToolCall("load_skill", { name: "r" }, { trace });
+    assert.equal(seen.read_concept.trace_id, "t-9");
+    assert.equal(seen.load_skill.trace_id, "t-9");
+    assert.equal(calls.filter((c) => c.method === "POST" && c.url.endsWith("/traces")).length, 1, "created once");
+    await trace.end();
+  });
+
+  it("read / loadSkill accept a traceId", async () => {
+    const seen: any[] = [];
+    const { fetch } = mockFetch([mcpRoute((name, args) => (seen.push([name, args]), { path: "x", kind: "skill", title: "X", body: "" }))]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    await kf.read("x", { traceId: "otel-1" });
+    await kf.loadSkill("x", { traceId: "otel-1" });
+    await kf.read("x");
+    assert.deepEqual(seen, [
+      ["read_concept", { path: "x", trace_id: "otel-1" }],
+      ["load_skill", { name: "x", trace_id: "otel-1" }],
+      ["read_concept", { path: "x" }],
+    ]);
+  });
+
+  it("handleToolCalls records invalid-JSON arguments on the trace", async () => {
+    const { fetch } = mockFetch([]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    const events: any[] = [];
+    const trace = new TraceRecorder({ create: async (b) => (events.push(...(b.events as any[])), { trace_id: "t" }), update: async () => {}, flag: async () => ({ id: null }) }, { flushIntervalMs: 0 });
+    const out = await kf.handleToolCalls([{ id: "c1", name: "read_concept", arguments: "{oops" }], { trace });
+    assert.equal(out[0]!.is_error, true);
+    await trace.end();
+    assert.equal(events.length, 1);
+    assert.equal(events[0].tool_name, "read_concept");
+    assert.equal(events[0].is_error, true);
+    assert.equal(events[0].tool_input, "{oops");
+  });
+
+  it("backs off after a failed flush: a full batch does not retry on every event, and maxBuffer holds after requeue", async () => {
+    let attempts = 0;
+    const errors: unknown[] = [];
+    const rec = new TraceRecorder(
+      {
+        create: async () => {
+          attempts++;
+          throw new SupaknowledgeError("down", { status: 503 });
+        },
+        update: async () => {},
+        flag: async () => ({ id: null }),
+      },
+      { flushIntervalMs: 0, maxBatch: 2, maxBuffer: 5, retryBaseMs: 60_000, onError: (e) => errors.push(e) },
+    );
+    rec.user("1").user("2"); // full batch -> one attempt
+    await rec.flush(); // explicit flush always tries
+    const before = attempts;
+    for (let i = 3; i <= 20; i++) rec.user(String(i)); // backing off: no new requests
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(attempts, before, "no retry storm while backing off");
+    assert.equal(await rec.ensureId(), null, "ensureId does not hit the server while backing off");
+    assert.equal(attempts, before);
+    // buffer stays capped (newest kept)
+    const sent: any[] = [];
+    (rec as any).t = { create: async (b: any) => (sent.push(...b.events), { trace_id: "t" }), update: async () => {}, flag: async () => ({ id: null }) };
+    await rec.flush();
+    assert.deepEqual(sent.map((e) => e.content), ["16", "17", "18", "19", "20"]);
+    assert.equal(await rec.ensureId(), "t");
+    await rec.end();
+  });
+
+  it("MCP: a non-JSON 200 body becomes a clear SupaknowledgeError", async () => {
+    const { fetch } = mockFetch([(c) => (c.url.includes("/mcp") ? new Response("<html>login</html>", { status: 200, headers: { "content-type": "text/html" } }) : undefined)]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    await assert.rejects(kf.search("x"), (e: unknown) => e instanceof SupaknowledgeError && e.code === "invalid_response" && /text\/html/.test(e.message));
+  });
+
+  it("buildMcpConfig shell-quotes the server name", () => {
+    const cc = buildMcpConfig({ url: "https://p.supabase.co", space: "a/b", name: "kf; rm -rf ~", auth: "oauth" });
+    assert.match(cc.command!, /add --transport http 'kf; rm -rf ~' /);
+  });
+
+  it("REST fallback: loadSkill only loads stable skills, prefers the exact path, and awaits usage logging", async () => {
+    const { fetch, calls } = mockFetch([
+      (c) => (c.url.includes("/rest/v1/concepts?") ? json([{ path: "a/revenue" }, { path: "revenue" }]) : undefined),
+      (c) => (c.url.endsWith("/rpc/read_concept") ? json({ id: "c1", path: c.body.p_path, kind: "skill", title: "R", body: "" }) : undefined),
+      (c) => (c.url.endsWith("/rpc/log_concept_usage") ? json(1) : undefined),
+    ]);
+    const kf = new Supaknowledge({ url: URL, space: SPACE_ID, accessToken: "jwt", publishableKey: "pk", transport: "rest", fetch });
+    const s = await kf.loadSkill("revenue", { traceId: "not-a-uuid" });
+    assert.equal(s!.path, "revenue");
+    assert.match(calls[0]!.url, /status=eq\.stable/);
+    const usage = calls.find((c) => c.url.endsWith("/rpc/log_concept_usage"));
+    assert.ok(usage, "usage logged before loadSkill resolved");
+    assert.equal(usage!.body.p_trace, null, "non-uuid trace ids are not sent to the uuid parameter");
+  });
+
+  it("reportError routes to the client's onError", () => {
+    const errors: unknown[] = [];
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch: mockFetch([]).fetch, onError: (e) => errors.push(e) });
+    kf.reportError(new Error("x"));
+    assert.equal(errors.length, 1);
+  });
+});

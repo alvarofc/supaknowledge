@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { configSummary, configToDraft, draftToConfig } from "../src/components/sources/connector-config.ts";
+
+test("github form writes `ref` (what the connector reads) and reads the legacy `branch` key", () => {
+  const draft = configToDraft("github", { repo: "acme/handbook", branch: "release" });
+  assert.equal(draft.ref, "release");
+  const { config, errors } = draftToConfig("github", draft, { repo: "acme/handbook", branch: "release", include_issues: true });
+  assert.deepEqual(errors, {});
+  assert.equal(config.ref, "release");
+  assert.equal("branch" in config, false);
+  assert.equal(config.include_issues, true, "unknown keys are preserved");
+  assert.equal(configSummary("github", { repo: "acme/handbook", branch: "dev" }), "acme/handbook@dev");
+  assert.equal(configSummary("github", { repo: "acme/handbook", ref: "v2" }), "acme/handbook@v2");
+});
+
+test("web form writes follow_links / sitemap / max_pages / same_origin_only", () => {
+  const draft = configToDraft("web", {});
+  assert.equal(draft.follow_links, "false");
+  assert.equal(draft.same_origin_only, "true", "connector default");
+  const { config, errors } = draftToConfig("web", {
+    ...draft,
+    urls: "https://docs.example.com/",
+    sitemap: "https://docs.example.com/sitemap.xml",
+    follow_links: "true",
+    max_pages: "200",
+  });
+  assert.deepEqual(errors, {});
+  assert.deepEqual(config, {
+    urls: ["https://docs.example.com/"],
+    sitemap: "https://docs.example.com/sitemap.xml",
+    follow_links: true,
+    same_origin_only: true,
+    max_pages: 200,
+  });
+});
+
+test("web form translates and drops the legacy crawl_depth key", () => {
+  assert.equal(configToDraft("web", { urls: ["https://a.example/"], crawl_depth: 1 }).follow_links, "true");
+  assert.equal(configToDraft("web", { urls: ["https://a.example/"], crawl_depth: 0 }).follow_links, "false");
+  const prev = { urls: ["https://a.example/"], crawl_depth: 2 };
+  const { config } = draftToConfig("web", configToDraft("web", prev), prev);
+  assert.equal(config.follow_links, true);
+  assert.equal("crawl_depth" in config, false);
+});
+
+test("web form validation", () => {
+  const base = configToDraft("web", {});
+  assert.ok(draftToConfig("web", base).errors.urls, "needs urls or a sitemap");
+  assert.deepEqual(draftToConfig("web", { ...base, sitemap: "https://a.example/sitemap.xml" }).errors, {});
+  assert.ok(draftToConfig("web", { ...base, urls: "ftp://a.example" }).errors.urls);
+  assert.ok(draftToConfig("web", { ...base, urls: "https://a.example", max_pages: "5000" }).errors.max_pages);
+  assert.ok(draftToConfig("web", { ...base, urls: "https://a.example", max_pages: "0" }).errors.max_pages);
+});

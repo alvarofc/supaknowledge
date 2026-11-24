@@ -4,7 +4,7 @@
   // https://supabase.com/docs/guides/local-development/cli/config
   // A string used to distinguish different Supabase projects on the same host. Defaults to the
   // working directory name when running `supabase init`.
-  "project_id": "openkf",
+  "project_id": "supaknowledge",
 
   "api": {
     "enabled": true,
@@ -336,17 +336,22 @@
     // },
 
     // This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
-    // "hook": {
-    //   "before_user_created": {
-    //     "enabled": true,
-    //     "uri": "pg-functions://postgres/auth/before-user-created-hook"
-    //   },
-    //   // This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
-    //   "custom_access_token": {
-    //     "enabled": true,
-    //     "uri": "pg-functions://<database>/<schema>/<hook_name>"
-    //   }
-    // },
+    // Supaknowledge: refuses public sign-up (and OAuth/SSO) with the reserved agent e-mail domain
+    // agent-<uuid>@agents.supaknowledge.internal. Agents are created through the Auth admin API, which does not run
+    // this hook. The database also enforces the rule (constraint trigger guard_agent_email on auth.users, see
+    // supabase/migrations/20261125000011_identity.sql), so it holds even where the hook is not configured.
+    // Hosted projects: Dashboard > Authentication > Hooks > "Before User Created" > Postgres > private.hook_before_user_created.
+    "hook": {
+      "before_user_created": {
+        "enabled": true,
+        "uri": "pg-functions://postgres/private/hook_before_user_created"
+      }
+      // This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
+      // "custom_access_token": {
+      //   "enabled": true,
+      //   "uri": "pg-functions://<database>/<schema>/<hook_name>"
+      // }
+    },
 
     // Multi-factor-authentication is available to Supabase Pro plan.
     "mfa": {
@@ -475,12 +480,27 @@
       "KF_LLM_EXTRA_BODY": "env(KF_LLM_EXTRA_BODY)",
       "AI_GATEWAY_API_KEY": "env(AI_GATEWAY_API_KEY)",
       "OPENROUTER_API_KEY": "env(OPENROUTER_API_KEY)",
-      "GITHUB_TOKEN": "env(GITHUB_TOKEN)"
+      // Model ids space settings may choose (comma separated, "prefix/*" wildcards; empty = any).
+      "KF_LLM_ALLOWED_MODELS": "env(KF_LLM_ALLOWED_MODELS)",
+      // Wall-clock budget per curator task in ms (default 110000; up to 380000 on plans with 400 s functions).
+      "KF_CURATOR_TASK_BUDGET_MS": "env(KF_CURATOR_TASK_BUDGET_MS)",
+      // Public origin of the API as MCP clients see it (OAuth metadata, resource URLs). Required in production
+      // when SUPABASE_URL is an internal host; SUPABASE_PUBLIC_URL is accepted as a fallback.
+      "KF_PUBLIC_URL": "env(KF_PUBLIC_URL)",
+      "SUPABASE_PUBLIC_URL": "env(SUPABASE_PUBLIC_URL)",
+      // Connectors: GitHub token for public repos without a per-source token, response body cap (bytes,
+      // default 20 MiB) and the SSRF escape hatch for intranet sources (true = allow private addresses).
+      "GITHUB_TOKEN": "env(GITHUB_TOKEN)",
+      "KF_CONNECTOR_MAX_BYTES": "env(KF_CONNECTOR_MAX_BYTES)",
+      "KF_CONNECTORS_ALLOW_PRIVATE_NETWORK": "env(KF_CONNECTORS_ALLOW_PRIVATE_NETWORK)",
+      // New chunks embedded per embed request (gte-small on the worker CPU; default 4).
+      "KF_EMBEDS_PER_REQUEST": "env(KF_EMBEDS_PER_REQUEST)"
     }
   },
 
   // Supaknowledge Edge Functions authenticate callers themselves (user JWTs, OAuth tokens, agent keys or the
-  // internal cron secret), so the gateway JWT check is off for all of them.
+  // internal cron secret), so the gateway JWT check is off for all of them. (`maintenance` only accepts the
+  // internal secret: cron storage GC.)
   "functions": {
     "mcp": { "verify_jwt": false },
     "embed": { "verify_jwt": false },
@@ -488,7 +508,8 @@
     "connectors": { "verify_jwt": false },
     "traces": { "verify_jwt": false },
     "agents": { "verify_jwt": false },
-    "bundle": { "verify_jwt": false }
+    "bundle": { "verify_jwt": false },
+    "maintenance": { "verify_jwt": false }
   },
 
   "analytics": {

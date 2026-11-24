@@ -46,19 +46,20 @@ which runs, in order:
 | Command | What |
 |---|---|
 | `npm run typecheck` | `tsc` in every workspace |
-| `npm test` | Unit tests (`node --test`) of core, cli, sdk, mastra (a real Mastra agent against a mock OpenAI-compatible endpoint) and the example (offline curator story, real-agent path) |
+| `npm test` | Unit tests (`node --test`) of core, cli, sdk, mastra (a real Mastra agent against a mock OpenAI-compatible endpoint), Studio (`apps/studio/test`) and the example (offline curator story, real-agent path) |
+| `npm run lint -w @supaknowledge/studio` | ESLint for Studio |
 | `npm run check:shared` | `supabase/functions/_shared/core` is an exact copy of `packages/core/src` |
 | `npm run check:functions` | `deno check` of every Edge Function against its `deno.json` and lockfile |
-| `npm run test:deno` | Connector tests: `npx --yes deno@2 test --minimum-dependency-age 0 --allow-read --allow-env --config supabase/functions/connectors/deno.json supabase/functions/connectors/test/` (the script pins Deno 2.9.6) |
+| `npm run test:deno` | Every Edge Function Deno suite (`scripts/test-deno.mjs`): `connectors`, `agents`, `bundle`, `maintenance`, `mcp`, `traces` and `_shared`, each against its function's `deno.json` (Deno 2.9.6 through `npx`; `node scripts/test-deno.mjs mcp` runs one suite) |
 | `npm run test:python` | Python SDK tests (`uv venv`, `uv pip install -e ".[test]"`, `pytest`) |
-| `npx supabase test db` | The 329 pgTAP tests of the access model (`npm run test:db`) |
+| `npx supabase test db` | The 537 pgTAP tests of the access model (`npm run test:db`) |
 
 Extra checks worth running when you touch these areas:
 
 - `npm run smoke -w @supaknowledge/cli` after `npm run build:cli`: live CLI checks against the local stack (creates and
   deletes throwaway users).
 - `npm run demo` and `npm run demo:offline`: the example story end to end.
-- `npm run lint -w @supaknowledge/studio` and `npm run build -w @supaknowledge/studio`: ESLint and the production build for Studio.
+- `npm run build -w @supaknowledge/studio`: the production build for Studio.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request.
 
@@ -68,15 +69,21 @@ CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull requ
   `npm run sync:shared` and commit `supabase/functions/_shared/core` with it. CI fails when the copy drifts.
   Never edit `_shared/core` by hand.
 - **Access control lives in the database.** New tables get RLS and column grants in a migration, and new behaviour
-  gets pgTAP tests in `supabase/tests/database` (use the shared `_fixture.psql`). Edge Functions query as the
+  gets pgTAP tests in `supabase/tests/database` (use the shared `_fixture.psql`). New settings keys go into both
+  `SpaceSettingsSchema` (`packages/core/src/settings.ts`) and the database validator
+  (`private.validate_space_settings()`); `packages/core/test/settings-db.test.ts` fails when they drift. Edge Functions query as the
   caller; use the service role only in internal workers, or after checking permissions through the caller's RLS
   client, and say why in a comment.
 - **One write path.** Knowledge changes go through proposals and `apply_proposal()`, never direct writes to
-  `concepts`.
+  `concepts`. Proposals are created only with the `create_proposal()` RPC (proposal, ops and citations in one
+  transaction); never insert into `proposals`, `proposal_ops` or `proposal_citations` directly.
 - **Migrations are append-only.** Add a new migration instead of editing a released one. After a schema change,
   regenerate Studio's types:
   `npx supabase gen types typescript --local --schema public > apps/studio/src/lib/database.types.ts`.
 - **Pin dependencies** to exact versions (npm, `deno.json` imports, Python), and keep `deno.lock` files committed.
+  The exception is the runtime dependencies of the published SDKs, which users install next to their own: the
+  Python SDK declares a compatible range for `httpx`, and `@supaknowledge/mastra` a semver range for
+  `@supaknowledge/sdk`.
 - **Curator prompts** (`packages/core/src/curator/prompts.ts`) change behaviour for every space: describe the
   change and its effect in the pull request, and keep `packages/core/test/curator.test.ts` and the example green.
 - Keep docs in `docs/` in step with the code: commands, flags and routes in the docs are meant to be exact.

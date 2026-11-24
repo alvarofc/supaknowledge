@@ -8,11 +8,13 @@ import { UploadForm } from "@/components/sources/upload-form";
 import { Badge } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, EmptyState, PageHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
-import { actorLabel, formatDate, timeAgo } from "@/lib/format";
+import { actorLabel } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadSource } from "@/server/sources.functions";
+import { safeHref } from "@/lib/safe-href";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/sources/$id")({
   // numbers stay numbers so the router keeps the URL as ?page=2&deleted=1
@@ -73,7 +75,9 @@ function SourcePage() {
                 <dt className="text-subtle">Schedule</dt>
                 <dd>{intervalLabel(source.sync_interval)}</dd>
                 <dt className="text-subtle">Last sync</dt>
-                <dd title={formatDate(source.last_synced_at)}>{source.last_synced_at ? timeAgo(source.last_synced_at) : "Never"}</dd>
+                <dd>
+                  <Timestamp iso={source.last_synced_at} empty="Never" />
+                </dd>
               </>
             ) : null}
             <dt className="text-subtle">Scope</dt>
@@ -88,7 +92,7 @@ function SourcePage() {
             ) : null}
             <dt className="text-subtle">Added</dt>
             <dd>
-              {timeAgo(source.created_at)}
+              <Timestamp iso={source.created_at} />
               {source.created_by ? ` by ${actorLabel(`human:${source.created_by}`, profiles)}` : ""}
             </dd>
           </dl>
@@ -153,8 +157,8 @@ function SourcePage() {
                             <Link href={`${ctx.base}/sources/documents/${d.id}`} className="truncate font-medium text-fg hover:text-accent">
                               {d.title || d.external_id}
                             </Link>
-                            {d.url ? (
-                              <a href={d.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-subtle hover:text-fg" aria-label="Open original">
+                            {safeHref(d.url) ? (
+                              <a href={safeHref(d.url)!} target="_blank" rel="noopener noreferrer" className="shrink-0 text-subtle hover:text-fg" aria-label="Open original">
                                 <ExternalLink className="size-3.5" />
                               </a>
                             ) : null}
@@ -164,11 +168,11 @@ function SourcePage() {
                           <div className="truncate font-mono text-[11px] text-subtle">{d.external_id}</div>
                         </td>
                         <td className="hidden px-4 py-2 text-xs text-muted sm:table-cell">{d.mime_type ?? "—"}</td>
-                        <td className="px-4 py-2 text-xs whitespace-nowrap text-muted" title={formatDate(d.changed_at)}>
-                          {timeAgo(d.changed_at)}
+                        <td className="px-4 py-2 text-xs whitespace-nowrap text-muted">
+                          <Timestamp iso={d.changed_at} />
                         </td>
-                        <td className="hidden px-4 py-2 text-xs whitespace-nowrap text-muted md:table-cell" title={formatDate(d.synced_at)}>
-                          {timeAgo(d.synced_at)}
+                        <td className="hidden px-4 py-2 text-xs whitespace-nowrap text-muted md:table-cell">
+                          <Timestamp iso={d.synced_at} />
                         </td>
                       </tr>
                     ))}

@@ -266,3 +266,196 @@ def test_recorder_standalone_drops_4xx():
     r.flush()
     r.flush()
     assert len(errors) == 1
+
+
+# ---------------------------------------------------------------------------------------------- review fixes
+def test_tool_calls_create_trace_first_and_link_read_and_load_skill():
+    seen: dict[str, dict] = {}
+
+    def tool(name: str, args: dict) -> Any:
+        seen[name] = args
+        if name == "search_knowledge":
+            return [{"path": "metrics/arr", "title": "ARR", "kind": "domain"}]
+        if name == "read_concept":
+            return {"path": "metrics/arr", "kind": "domain", "title": "ARR", "body": "b"}
+        return {"skill": {"path": "skills/r", "kind": "skill", "title": "R", "body": "s"}}
+
+    m = mcp(tool)
+
+    def handle(req: httpx.Request, body: Any) -> httpx.Response | None:
+        if str(req.url).endswith("/functions/v1/traces") and req.method == "POST":
+            return httpx.Response(201, json={"trace_id": "t-9"})
+        if "/functions/v1/traces/" in str(req.url):
+            return httpx.Response(200, json={})
+        return m(req, body)
+
+    rec = Recorder(handle)
+    kf = client(rec)
+    t = kf.trace()
+    kf.handle_tool_call("search_knowledge", {"query": "arr"}, trace=t)
+    kf.handle_tool_call("read_concept", {"path": "metrics/arr"}, trace=t)
+    kf.handle_tool_call("load_skill", {"name": "r"}, trace=t)
+    assert seen["search_knowledge"]["trace_id"] == "t-9"
+    assert seen["read_concept"]["trace_id"] == "t-9"
+    assert seen["load_skill"]["trace_id"] == "t-9"
+    creates = [i for i, (r, _) in enumerate(rec.calls) if r.method == "POST" and str(r.url).endswith("/traces")]
+    first_search = next(i for i, (_, b) in enumerate(rec.calls) if b and b.get("params", {}).get("name") == "search_knowledge")
+    assert len(creates) == 1 and creates[0] < first_search
+    t.end()
+
+
+def test_invalid_json_tool_args_are_recorded_on_the_trace():
+    events: list[dict] = []
+
+    class T:
+        def create(self, body: dict) -> dict:
+            events.extend(body["events"])
+            return {"trace_id": "t"}
+
+        def update(self, trace_id: str, body: dict) -> None:
+            events.extend(body.get("events", []))
+
+        def flag(self, **kw: Any) -> dict:
+            return {}
+
+    kf = client(Recorder(lambda r, b: None))
+    t = TraceRecorder(T())
+    out = kf.handle_tool_calls([{"id": "c1", "name": "read_concept", "arguments": "{oops"}], trace=t)
+    assert out[0]["is_error"] is True
+    t.end()
+    assert [(e["tool_name"], e["is_error"], e["tool_input"]) for e in events] == [("read_concept", True, "{oops")]
+
+
+def test_trace_backoff_no_retry_storm_and_buffer_cap():
+    attempts = {"n": 0}
+    sent: list[dict] = []
+    state = {"down": True}
+
+    class T:
+        def create(self, body: dict) -> dict:
+            attempts["n"] += 1
+            if state["down"]:
+                raise SupaknowledgeError("down", status=503)
+            sent.extend(body["events"])
+            return {"trace_id": "t"}
+
+        def update(self, trace_id: str, body: dict) -> None: ...
+
+        def flag(self, **kw: Any) -> dict:
+            return {}
+
+    errors: list[BaseException] = []
+    r = TraceRecorder(T(), max_batch=2, max_buffer=5, retry_base=60, on_error=errors.append)
+    r.user("1").user("2")  # full batch: one attempt, fails
+    assert attempts["n"] == 1
+    for i in range(3, 21):
+        r.user(str(i))  # backing off: no new requests
+    assert attempts["n"] == 1
+    assert r.ensure_id() is None and attempts["n"] == 1
+    state["down"] = False
+    r.flush()  # explicit flush always tries
+    assert [e["content"] for e in sent] == ["16", "17", "18", "19", "20"]
+    assert r.ensure_id() == "t"
+
+
+def test_recording_is_not_blocked_by_a_slow_flush():
+    import threading
+
+    gate = threading.Event()
+    entered = threading.Event()
+
+    class T:
+        def create(self, body: dict) -> dict:
+            entered.set()
+            gate.wait(5)
+            return {"trace_id": "t"}
+
+        def update(self, trace_id: str, body: dict) -> None: ...
+
+        def flag(self, **kw: Any) -> dict:
+            return {}
+
+    r = TraceRecorder(T())
+    r.user("a")
+    th = threading.Thread(target=r.flush)
+    th.start()
+    assert entered.wait(5)
+    done = threading.Event()
+    threading.Thread(target=lambda: (r.user("b"), done.set())).start()
+    assert done.wait(1), "event() blocked on the HTTP call"
+    gate.set()
+    th.join(5)
+    r.end()
+
+
+def test_default_on_error_warns(caplog: pytest.LogCaptureFixture):
+    class T:
+        def create(self, body: dict) -> dict:
+            raise SupaknowledgeError("down", status=503)
+
+        def update(self, trace_id: str, body: dict) -> None: ...
+
+        def flag(self, **kw: Any) -> dict:
+            return {}
+
+    with caplog.at_level("WARNING", logger="supaknowledge"):
+        TraceRecorder(T()).user("x").flush()
+    assert "down" in caplog.text
+
+
+def test_trace_accepts_max_buffer_and_on_error():
+    errors: list[BaseException] = []
+    kf = client(Recorder(lambda r, b: httpx.Response(503, json={"error": "down"})))
+    t = kf.trace(max_buffer=2, on_error=errors.append)
+    t.user("1").user("2").user("3")
+    t.flush()
+    assert len(errors) == 1
+    assert [e["content"] for e in t._buffer] == ["2", "3"]
+
+
+def test_format_concept_status_and_missing_links():
+    from supaknowledge import format_concept
+
+    out = format_concept(
+        {"path": "a", "kind": "domain", "title": "A", "body": "b", "status": "deprecated", "superseded_by": "b", "revision": 2, "links": [{"path": "x", "exists": False}, {"path": "y"}]}
+    )
+    assert "status: deprecated (superseded by b)" in out
+    assert "- x (missing)" in out and "- y\n" in out + "\n"
+    assert out.index("status:") < out.index("revision: 2")
+
+
+def test_mcp_server_config_api_key_options_and_quoted_name():
+    kf = client(Recorder(lambda r, b: None))
+    inline = kf.mcp_server_config(name="my kf")
+    assert KEY in inline["command"] and "'my kf'" in inline["command"]
+    env = kf.mcp_server_config(api_key="", api_key_env="KF_KEY")
+    assert KEY not in json.dumps(env) and "$KF_KEY" in env["command"]
+    other = kf.mcp_server_config(api_key="skn_other")
+    assert "skn_other" in other["command"]
+
+
+def test_mcp_non_json_body_is_a_clear_error():
+    kf = client(Recorder(lambda r, b: httpx.Response(200, text="<html>login</html>", headers={"content-type": "text/html"})))
+    with pytest.raises(SupaknowledgeError) as ei:
+        kf.search("x")
+    assert ei.value.code == "invalid_response" and "text/html" in str(ei.value)
+
+
+def test_rest_load_skill_stable_only_prefers_exact_path():
+    def handle(req: httpx.Request, body: Any) -> httpx.Response | None:
+        u = str(req.url)
+        if "/rest/v1/concepts?" in u:
+            return httpx.Response(200, json=[{"path": "a/revenue"}, {"path": "revenue"}])
+        if u.endswith("/rpc/read_concept"):
+            return httpx.Response(200, json={"id": "c1", "path": body["p_path"], "kind": "skill", "title": "R", "body": ""})
+        if u.endswith("/rpc/log_concept_usage"):
+            return httpx.Response(200, json=1)
+        return None
+
+    rec = Recorder(handle)
+    kf = Supaknowledge(URL, SPACE_ID, access_token="jwt", publishable_key="pk", transport="rest", http_client=httpx.Client(transport=httpx.MockTransport(rec)))
+    s = kf.load_skill("revenue", trace_id="otel-abc")
+    assert s is not None and s["path"] == "revenue"
+    assert "status=eq.stable" in str(rec.calls[0][0].url)
+    usage = next(b for r, b in rec.calls if str(r.url).endswith("/rpc/log_concept_usage"))
+    assert usage["p_trace"] is None

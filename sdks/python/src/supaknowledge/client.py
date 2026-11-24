@@ -46,7 +46,7 @@ class Supaknowledge:
         transport: "mcp" (semantic search, any credential), "rest" (PostgREST RPCs, full-text search only,
             user tokens only) or "auto" (MCP, falling back to REST when the mcp function is not deployed).
         http_client: bring your own ``httpx.Client`` (tests: ``httpx.Client(transport=httpx.MockTransport(...))``).
-        on_error: receives background trace errors (default: ignore).
+        on_error: receives background trace errors (default: a warning on the ``supaknowledge`` logger).
     """
 
     def __init__(
@@ -117,12 +117,12 @@ class Supaknowledge:
 
         return self._route(via_mcp, via_rest)
 
-    def read(self, path: str) -> Concept | None:
+    def read(self, path: str, *, trace_id: str | None = None) -> Concept | None:
         """One concept by path, or None when it does not exist (or you cannot see it)."""
 
         def via_mcp() -> Concept | None:
             try:
-                r = self._mcp.call_tool("read_concept", {"path": path})
+                r = self._mcp.call_tool("read_concept", {"path": path, **({"trace_id": trace_id} if trace_id else {})})
             except SupaknowledgeError as e:
                 if e.code == "tool_error" and re.search(r"not found|no concept|does not exist", str(e), re.I):
                     return None
@@ -135,7 +135,7 @@ class Supaknowledge:
             sid = self.space_id()
             c = self._rpc("read_concept", {"p_space": sid, "p_path": path})
             if c and c.get("id"):
-                self._log_usage(sid, [c["id"]], "read", path, None)
+                self._log_usage(sid, [c["id"]], "read", path, trace_id)
             return c or None
 
         return self._route(via_mcp, via_rest)
@@ -152,10 +152,10 @@ class Supaknowledge:
 
         return self._route(via_mcp, via_rest)
 
-    def load_skill(self, name: str) -> Skill | None:
+    def load_skill(self, name: str, *, trace_id: str | None = None) -> Skill | None:
         def via_mcp() -> Skill | None:
             try:
-                r = self._mcp.call_tool("load_skill", {"name": name})
+                r = self._mcp.call_tool("load_skill", {"name": name, **({"trace_id": trace_id} if trace_id else {})})
             except SupaknowledgeError as e:
                 if e.code == "tool_error" and re.search(r"not found|no skill|does not exist", str(e), re.I):
                     return None
@@ -170,13 +170,17 @@ class Supaknowledge:
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
                 return None
             sid = self.space_id()
-            rows = self._rest_get(f"concepts?select=path&space_id=eq.{sid}&kind=eq.skill&or=(path.eq.{name},path.like.*/{name})&limit=1")
-            if not rows:
+            # same set list_skills shows (stable skills only); an exact path wins over a "<dir>/<name>" match
+            rows = self._rest_get(
+                f"concepts?select=path&space_id=eq.{sid}&kind=eq.skill&status=eq.stable&or=(path.eq.{name},path.like.*/{name})&order=path&limit=5"
+            ) or []
+            match = next((r for r in rows if r["path"] == name), None) or next((r for r in rows if _skill_name(r["path"]) == name), None)
+            if not match:
                 return None
-            c = self._rpc("read_concept", {"p_space": sid, "p_path": rows[0]["path"]})
+            c = self._rpc("read_concept", {"p_space": sid, "p_path": match["path"]})
             if not c:
                 return None
-            self._log_usage(sid, [c["id"]], "load_skill", name, None)
+            self._log_usage(sid, [c["id"]], "load_skill", name, trace_id)
             return {**c, "name": _skill_name(c["path"])}
 
         return self._route(via_mcp, via_rest)
@@ -228,8 +232,20 @@ class Supaknowledge:
         return self._mcp.call_tool(name, arguments or {})
 
     # ------------------------------------------------------------------ traces
-    def trace(self, name: str | None = None, external_id: str | None = None, metadata: dict[str, Any] | None = None, *, max_batch: int = 50) -> TraceRecorder:
-        """Start recording a trace. Recording never raises; flush()/end() send it."""
+    def trace(
+        self,
+        name: str | None = None,
+        external_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        *,
+        max_batch: int = 50,
+        max_buffer: int = 1000,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> TraceRecorder:
+        """Start recording a trace. Recording never raises; flush()/end() send it.
+
+        ``on_error`` overrides the client's ``on_error`` for this trace; ``max_buffer`` caps events kept while the
+        server is unreachable (oldest dropped)."""
         client = self
 
         class _T:
@@ -242,7 +258,9 @@ class Supaknowledge:
             def flag(self, **kwargs: Any) -> dict[str, Any]:
                 return client.flag(**kwargs)
 
-        return TraceRecorder(_T(), name=name, external_id=external_id, metadata=metadata, max_batch=max_batch, on_error=self._on_error)
+        return TraceRecorder(
+            _T(), name=name, external_id=external_id, metadata=metadata, max_batch=max_batch, max_buffer=max_buffer, on_error=on_error or self._on_error
+        )
 
     # ------------------------------------------------------------------ integrations
     def knowledge_tools(self, prefix: str = "", include: Iterable[str] | None = None, format: ToolFormat = "openai") -> list[dict[str, Any]]:
@@ -260,9 +278,20 @@ class Supaknowledge:
         """[{tool_call_id, name, content, is_error?}] for every Supaknowledge call in `calls` (e.g. an OpenAI message.tool_calls)."""
         return handle_tool_calls(self, calls, prefix=prefix, trace=trace)
 
-    def mcp_server_config(self, client: McpClientKind = "claude-code", *, name: str = "supaknowledge", auth: Literal["agent-key", "oauth"] | None = None) -> dict[str, Any]:
+    def mcp_server_config(
+        self,
+        client: McpClientKind = "claude-code",
+        *,
+        name: str = "supaknowledge",
+        auth: Literal["agent-key", "oauth"] | None = None,
+        api_key: str | None = None,
+        api_key_env: str = "SUPAKNOWLEDGE_API_KEY",
+    ) -> dict[str, Any]:
+        """MCP client config for this space. ``api_key`` overrides the client's key; pass ``api_key=""`` to use an
+        ``api_key_env`` placeholder instead of inlining the key."""
         mode = auth or ("agent-key" if self._api_key else "oauth")
-        return build_mcp_config(self.url, self.space, client=client, name=name, auth=mode, api_key=self._api_key if mode == "agent-key" else None)
+        key = (self._api_key if api_key is None else api_key) if mode == "agent-key" else None
+        return build_mcp_config(self.url, self.space, client=client, name=name, auth=mode, api_key=key or None, api_key_env=api_key_env)
 
     # ------------------------------------------------------------------ plumbing
     def _can_rest(self) -> bool:
@@ -303,7 +332,9 @@ class Supaknowledge:
         if not ids:
             return
         try:
-            self._rpc("log_concept_usage", {"p_space": space, "p_concepts": ids, "p_via": via, "p_query": query, "p_trace": trace_id})
+            # p_trace is a uuid: an upstream id (OTel / LangSmith) would make the whole call fail, so it is left out
+            trace = trace_id if trace_id and _UUID.match(trace_id) else None
+            self._rpc("log_concept_usage", {"p_space": space, "p_concepts": ids, "p_via": via, "p_query": query, "p_trace": trace})
         except SupaknowledgeError:
             pass
 

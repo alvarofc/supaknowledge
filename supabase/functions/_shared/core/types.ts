@@ -107,6 +107,8 @@ export interface SourceDocument {
   audience: Audience;
   author: string | null;
   changed_at: string;
+  /** connector kind of the document's source (notion, slack, web, ...) when known */
+  source_kind?: string | null;
 }
 
 export interface ProposalOp {
@@ -129,6 +131,11 @@ export interface Citation {
   audience: Audience;
   /** index into ops; undefined = applies to every op */
   op_index?: number;
+  /**
+   * Evidence the curator read while drafting but did not cite (taint tracking). The database treats it exactly
+   * like a citation for escalation and visibility, so restricted material cannot slip into a wider concept.
+   */
+  consulted?: boolean;
 }
 
 export interface ProposalDraft {

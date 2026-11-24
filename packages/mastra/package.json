@@ -37,7 +37,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "sideEffects": false,
   "engines": {
@@ -49,15 +50,14 @@
     "test": "node --conditions=supaknowledge-source --test test/*.test.ts",
     "prepack": "npm run build"
   },
-  "dependencies": {
-    "@supaknowledge/sdk": "0.1.0"
-  },
   "peerDependencies": {
+    "@supaknowledge/sdk": "^0.1.0",
     "@mastra/core": "^1.85.0",
     "zod": "^3.25.0 || ^4.0.0"
   },
   "devDependencies": {
     "@mastra/core": "1.85.0",
+    "@supaknowledge/sdk": "0.1.0",
     "esbuild": "0.28.2",
     "typescript": "5.9.3",
     "zod": "4.6.7"

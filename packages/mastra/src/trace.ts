@@ -172,9 +172,12 @@ export function recordStep(trace: TraceRecorder, step: StepLike): void {
 export function traceRun(client: Supaknowledge, opts: TraceRunOptions = {}): TracedRun {
   const { input, requestContext: rc, ...traceOpts } = opts;
   const trace = client.trace({ ...traceOpts, metadata: { framework: "mastra", ...(traceOpts.metadata ?? {}) } });
+  // same chain as the recorder itself: the run's onError, else the client's onError, else console.warn
   const onError = (e: unknown) => {
     try {
-      (traceOpts.onError ?? ((err: unknown) => console.warn("[supaknowledge] trace:", err)))(e);
+      if (traceOpts.onError) traceOpts.onError(e);
+      else if (typeof client.reportError === "function") client.reportError(e);
+      else console.warn("[supaknowledge] trace:", e);
     } catch {
       /* ignore */
     }

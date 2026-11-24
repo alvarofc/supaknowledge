@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { CliError, must, type Ctx } from "../context.ts";
+import { CliError, must, resolveId, type Ctx } from "../context.ts";
 import type { Runner } from "../program.ts";
 import { ago, shortId, statusColor, table, truncate } from "../render.ts";
 
@@ -56,12 +56,17 @@ export function registerCurator(program: Command, run: Runner): void {
           if (r.status === "succeeded") lines.push(ctx.c.dim("review the results with: kf proposals"));
           return lines.join("\n");
         });
-        if (r.status === "failed") throw new CliError(`curator run failed${r.error ? `: ${r.error}` : ""}`);
+        // the run (with its error) was already printed: in --json mode print nothing more, just exit non-zero
+        if (r.status === "failed" || r.status === "cancelled") {
+          throw new CliError(`curator run ${r.status}${r.error ? `: ${r.error}` : ""}`, { reported: true });
+        }
       }),
     );
 
-  program
-    .command("runs")
+  const runs = program.command("runs").description("curator runs: list recent runs, cancel a stuck one");
+
+  runs
+    .command("list", { isDefault: true })
     .description("recent curator runs")
     .option("-n, --limit <n>", "max rows", "20")
     .action(
@@ -77,6 +82,23 @@ export function registerCurator(program: Command, run: Runner): void {
             rows.map((r) => [shortId(r.id), statusColor(r.status, ctx.c), r.trigger, ago(r.started_at ?? r.created_at, ctx.io.now()), truncate(r.error ?? statsText(r.stats), 70)]),
             ctx.c,
           ),
+        );
+      }),
+    );
+
+  runs
+    .command("cancel")
+    .description("cancel a queued or running curator run (reviewer+); its remaining tasks stop")
+    .argument("<id>", "run id (or a unique prefix)")
+    .action(
+      run(async (ctx: Ctx, idArg: string) => {
+        const id = await resolveId(ctx, "curator_runs", idArg, "curator run");
+        const db = await ctx.db();
+        const r = (await must(db.rpc("cancel_curator_run", { p_run: id }))) as RunRow;
+        ctx.out(r, () =>
+          r.status === "cancelled"
+            ? `${ctx.c.yellow("cancelled")} run ${r.id}`
+            : `run ${r.id} was already ${statusColor(r.status, ctx.c)}; nothing to cancel`,
         );
       }),
     );

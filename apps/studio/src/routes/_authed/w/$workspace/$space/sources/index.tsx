@@ -7,11 +7,12 @@ import { DocumentSearch } from "@/components/sources/document-search";
 import { Badge } from "@/components/ui/badge";
 import { Callout, Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
-import { formatDate, pluralize, timeAgo } from "@/lib/format";
+import { pluralize } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { loadSources } from "@/server/sources.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/sources/")({
   loader: ({ params }) => loadSources({ data: { workspace: params.workspace, space: params.space } }),
@@ -93,8 +94,15 @@ function SourcesPage() {
                         <span>{configSummary(s.connector, s.config)}</span>
                         <span>{pluralize(docCount[s.id] ?? 0, "document")}</span>
                         {s.connector !== "upload" ? (
-                          <span title={s.last_synced_at ? formatDate(s.last_synced_at) : undefined}>
-                            {s.last_synced_at ? `Synced ${timeAgo(s.last_synced_at)}` : "Never synced"} · {intervalLabel(s.sync_interval).toLowerCase()}
+                          <span>
+                            {s.last_synced_at ? (
+                              <>
+                                Synced <Timestamp iso={s.last_synced_at} />
+                              </>
+                            ) : (
+                              "Never synced"
+                            )}{" "}
+                            · {intervalLabel(s.sync_interval).toLowerCase()}
                           </span>
                         ) : null}
                       </span>

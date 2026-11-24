@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Bot, ChevronLeft, ChevronRight, ListChecks, ScrollText, Sparkles } from "lucide-react";
 import { JsonDetails, StatChips } from "@/components/activity/json-view";
+import { CancelRunButton } from "@/components/activity/cancel-run-button";
+import { TaskPayload } from "@/components/activity/task-payload";
 import { OutcomeBadge, RUN_STATUS, duration } from "@/components/activity/outcome-badge";
 import { RunCuratorButton } from "@/components/activity/run-curator-button";
 import { AgentBadge, StatusDot } from "@/components/kf/badges";
@@ -10,11 +12,12 @@ import { LinkButton } from "@/components/ui/button";
 import { Callout, Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
 import { LinkTabs } from "@/components/ui/tabs";
-import { actorLabel, formatDate, shortId, timeAgo } from "@/lib/format";
+import { actorLabel, shortId } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
 import { PAGE_SIZE, loadActivity } from "@/server/activity.functions";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/activity/")({
   validateSearch: (search: Record<string, unknown>): { tab?: string; page?: number } => ({
@@ -109,10 +112,10 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
                     {r.requested_by ? (
                       <span className="text-xs text-subtle">by {profiles[r.requested_by]?.display_name ?? "a reviewer"}</span>
                     ) : null}
-                    <span className="ml-auto text-xs text-subtle">
-                      <time dateTime={r.created_at} title={formatDate(r.created_at)}>
-                        {timeAgo(r.created_at)}
-                      </time>
+                    {isReviewer && (r.status === "queued" || r.status === "running") ? <CancelRunButton runId={r.id} /> : null}
+                    {/* "running for" uses the clock, which differs between the server render and hydration */}
+                    <span className="ml-auto text-xs text-subtle" suppressHydrationWarning>
+                      <Timestamp iso={r.created_at} />
                       {d ? ` · ${r.finished_at ? "took" : "running for"} ${d}` : r.status === "queued" ? " · waiting for a worker" : ""}
                     </span>
                   </div>
@@ -126,10 +129,10 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
                   </div>
                   {r.since && r.since !== "-infinity" ? (
                     <p className="mt-1.5 text-xs text-subtle">
-                      Covers activity from {formatDate(r.since)} to {formatDate(r.until)}
+                      Covers activity from <Timestamp iso={r.since} format="date" /> to <Timestamp iso={r.until} format="date" />
                     </p>
                   ) : r.until ? (
-                    <p className="mt-1.5 text-xs text-subtle">Covers everything up to {formatDate(r.until)} (first run)</p>
+                    <p className="mt-1.5 text-xs text-subtle">Covers everything up to <Timestamp iso={r.until} format="date" /> (first run)</p>
                   ) : null}
                   {isAdmin && runTasks.length ? (
                     <details className="mt-2">
@@ -147,10 +150,7 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
                               <span className="ml-auto text-subtle">{duration(t.created_at, t.finished_at) ?? ""}</span>
                             </div>
                             {t.error ? <p className="mt-1 font-mono text-danger">{t.error}</p> : null}
-                            <div className="mt-1 flex flex-col gap-1">
-                              <JsonDetails label="Input" value={t.input} />
-                              <JsonDetails label="Output" value={t.output} />
-                            </div>
+                            <TaskPayload workspace={ctx.workspace.slug} space={ctx.space.slug} taskId={t.id} />
                           </li>
                         ))}
                       </ul>
@@ -204,9 +204,7 @@ function Traces({ ctx, page, data }: { ctx: Ctx; page: number; data: TracesData 
                     {t.on_behalf_of ? ` for ${profiles[t.on_behalf_of]?.display_name ?? "a user"}` : ""}
                   </span>
                   <span className="text-xs text-subtle tabular-nums">{events} events</span>
-                  <time className="text-xs text-subtle" dateTime={t.started_at} title={formatDate(t.started_at)}>
-                    {timeAgo(t.started_at)}
-                  </time>
+                  <Timestamp iso={t.started_at} className="text-xs text-subtle" />
                 </Link>
               </li>
             );
@@ -249,9 +247,7 @@ function Audit({ ctx, page, data }: { ctx: Ctx; page: number; data: AuditData })
               return (
                 <tr key={r.id} className="align-top">
                   <td className="px-4 py-2 text-xs whitespace-nowrap text-subtle">
-                    <time dateTime={r.at} title={formatDate(r.at)}>
-                      {timeAgo(r.at)}
-                    </time>
+                    <Timestamp iso={r.at} />
                   </td>
                   <td className="px-4 py-2 text-muted">{actorLabel(r.actor, profiles)}</td>
                   <td className="px-4 py-2 font-mono text-xs text-fg">{r.action}</td>

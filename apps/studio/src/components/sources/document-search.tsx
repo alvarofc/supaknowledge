@@ -3,8 +3,9 @@ import { Link } from "@/components/ui/link";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/form";
-import { errorMessage, timeAgo } from "@/lib/format";
+import { errorMessage } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
+import { Timestamp } from "@/components/kf/timestamp";
 
 type Hit = { document_id: string; source_id: string; title: string; url: string; snippet: string; changed_at: string; score: number };
 
@@ -68,7 +69,7 @@ export function DocumentSearch({ spaceId, sourceId, base }: { spaceId: string; s
                 <Link href={`${base}/sources/documents/${h.document_id}`} className="text-sm font-medium text-fg hover:text-accent">
                   {h.title || "Untitled document"}
                 </Link>
-                <span className="ml-2 text-xs text-subtle">changed {timeAgo(h.changed_at)}</span>
+                <span className="ml-2 text-xs text-subtle">changed <Timestamp iso={h.changed_at} /></span>
                 {h.snippet ? <p className="mt-1 line-clamp-2 text-xs text-muted">{h.snippet}</p> : null}
               </li>
             ))}

@@ -4,17 +4,21 @@
 //             include_discussions?: boolean, max_file_bytes?: number (default 1 MB),
 //             api_url?: string (GitHub Enterprise, default https://api.github.com), acl_strict?: boolean }
 //   token:  fine-grained PAT / GitHub App token with Contents: read (+ Issues, Discussions, Metadata;
-//           Administration: read to map teams of private repos). Falls back to env GITHUB_TOKEN, then
-//           unauthenticated (public repos, 60 req/h).
+//           Administration: read to map teams of private repos). Falls back to env GITHUB_TOKEN (only for
+//           https://api.github.com - the deployment's token is never sent to a custom api_url), then
+//           unauthenticated (public repos, 60 req/h). Credentials only ever go to the api_url origin.
 //   cursor: { sha, ref, issues_since, discussions_since }
 // Files: first run (or full) lists the git tree of the ref; later runs compare cursor.sha...head and only
 // fetch added/modified/renamed files, deleting removed ones. Blob shas are stored as the document version,
 // so unchanged files are never refetched. External ids: "file:<path>", "issue:<n>", "pr:<n>", "discussion:<n>".
 // ACL: private/internal repos are restricted and map to groups with external_ref {"github_repo": "owner/name"}
 // or {"github_team": "org/team-slug"} for each team that has access to the repo.
-import { bytesToText, ensureOk, getJson, looksBinary, nextLink, postJson, request } from "./http.ts";
+import { bytesToText, ensureOk, getJson, looksBinary, nextLink, postJson, readBody, readJson, request, TooLargeError } from "./http.ts";
+import { assertPublicUrl, BlockedUrlError } from "./net-guard.ts";
 import { htmlToMarkdown } from "./markdown.ts";
 import { type AclHint, asObject, type Connector, ConfigError, type DocumentChange, optBool, optNumber, optString, stringList, type SyncContext, UpstreamError } from "./types.ts";
+
+export const GITHUB_API = "https://api.github.com";
 
 export interface GithubConfig {
   owner: string;
@@ -62,7 +66,13 @@ export function globToRegExp(glob: string): RegExp {
 }
 
 export function makeMatcher(globs: string[]): (path: string) => boolean {
-  const res = globs.map(globToRegExp);
+  const res = globs.map((g) => {
+    try {
+      return globToRegExp(g);
+    } catch (e) {
+      throw new ConfigError(`config.paths: invalid glob "${g}": ${e instanceof Error ? e.message : e}`);
+    }
+  });
   return (p) => res.some((r) => r.test(p));
 }
 
@@ -124,6 +134,15 @@ export const github: Connector<GithubConfig> = {
     const m = repo ? /^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(repo.replace(/^https:\/\/github\.com\//, "")) : null;
     if (!m) throw new ConfigError('config.repo must look like "owner/name"');
     const paths = stringList(o, "paths");
+    makeMatcher(paths); // compile now: a bad glob is a config error, not a retried sync failure
+    const apiUrl = (optString(o, "api_url") ?? GITHUB_API).replace(/\/+$/, "");
+    let api: URL;
+    try {
+      api = assertPublicUrl(apiUrl, { requireHttps: true });
+    } catch (e) {
+      throw new ConfigError(`config.api_url: ${e instanceof Error ? e.message : e}`);
+    }
+    if (api.search || api.hash) throw new ConfigError("config.api_url must not contain a query or fragment");
     return {
       owner: m[1]!,
       name: m[2]!,
@@ -133,24 +152,43 @@ export const github: Connector<GithubConfig> = {
       issue_labels: stringList(o, "issue_labels"),
       include_discussions: optBool(o, "include_discussions", false),
       max_file_bytes: optNumber(o, "max_file_bytes", 1_000_000, 1, 50_000_000),
-      api_url: (optString(o, "api_url") ?? "https://api.github.com").replace(/\/$/, ""),
+      api_url: apiUrl,
     };
   },
 
   async *sync(ctx: SyncContext<GithubConfig>): AsyncGenerator<DocumentChange> {
     const { config } = ctx;
-    const token = ctx.token ?? ctx.env("GITHUB_TOKEN") ?? null;
+    const api = config.api_url;
+    const apiOrigin = new URL(api).origin;
+    // the deployment-wide GITHUB_TOKEN is only for github.com: never hand it to an admin-chosen host
+    const token = ctx.token ?? (api === GITHUB_API ? ctx.env("GITHUB_TOKEN") : undefined) ?? null;
+    /** server-provided URLs (Link: next, comments_url) must stay on the API origin: credentials ride along */
+    const onApi = (u: string): string => {
+      let parsed: URL;
+      try {
+        parsed = new URL(u);
+      } catch {
+        throw new UpstreamError(0, "github returned an invalid URL");
+      }
+      if (parsed.origin !== apiOrigin) throw new BlockedUrlError(`github returned a URL outside ${apiOrigin}; refusing to follow it`);
+      return parsed.toString();
+    };
     const headers: Record<string, string> = {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "Supaknowledge-Connector",
     };
     if (token) headers.Authorization = `Bearer ${token}`;
-    const api = config.api_url;
     const repoPath = `${api}/repos/${config.owner}/${config.name}`;
     const full = `${config.owner}/${config.name}`;
     const matches = makeMatcher(config.paths);
-    const cursor = { ...ctx.cursor } as { sha?: string; ref?: string; issues_since?: string; discussions_since?: string };
+    const cursor = { ...ctx.cursor } as {
+      sha?: string;
+      ref?: string;
+      issues_since?: string;
+      discussions_since?: string;
+      discussions_scan?: { after: string | null; since: string | null; top?: string };
+    };
     let fetched = 0;
     let capped = false;
 
@@ -186,7 +224,7 @@ export const github: Connector<GithubConfig> = {
         await res.body?.cancel();
         useTree = true; // base commit gone (force push / gc)
       } else {
-        const cmp = (await (await ensureOk(res, "compare")).json()) as { status: string; files?: CompareFile[] };
+        const cmp = await readJson<{ status: string; files?: CompareFile[] }>(await ensureOk(res, "compare"));
         if (cmp.status !== "ahead" || (cmp.files?.length ?? 0) >= 300) useTree = true; // diverged or too big for compare
         else {
           for (const f of cmp.files ?? []) {
@@ -224,8 +262,15 @@ export const github: Connector<GithubConfig> = {
         await request(ctx, `${repoPath}/git/blobs/${w.sha}`, { headers: { ...headers, Accept: "application/vnd.github.raw+json" } }),
         `blob ${w.path}`,
       );
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.length > config.max_file_bytes || looksBinary(bytes)) {
+      let bytes: Uint8Array;
+      try {
+        bytes = await readBody(res, config.max_file_bytes, `blob ${w.path}`);
+      } catch (e) {
+        if (!(e instanceof TooLargeError)) throw e;
+        if (snapshot) snapshot = snapshot.filter((x) => x !== id);
+        continue;
+      }
+      if (looksBinary(bytes)) {
         if (snapshot) snapshot = snapshot.filter((x) => x !== id);
         continue;
       }
@@ -272,8 +317,9 @@ export const github: Connector<GithubConfig> = {
       })();
       outer: while (url) {
         const res = await ensureOk(await request(ctx, url, { headers }), "issues");
-        const issues = (await res.json()) as Issue[];
-        url = nextLink(res.headers.get("link"));
+        const issues = await readJson<Issue[]>(res);
+        const next = nextLink(res.headers.get("link"));
+        url = next ? onApi(next) : null;
         for (const is of issues) {
           const labels = is.labels.map((l) => (typeof l === "string" ? l : l.name));
           const kind = is.pull_request ? "pr" : "issue";
@@ -287,7 +333,7 @@ export const github: Connector<GithubConfig> = {
             }
             fetched++;
             let comments: { user: { login: string } | null; body: string; created_at: string }[] = [];
-            if (is.comments > 0) comments = await getJson(ctx, `${is.comments_url}?per_page=100`, { headers });
+            if (is.comments > 0) comments = await getJson(ctx, `${onApi(is.comments_url)}?per_page=100`, { headers });
             yield { type: "upsert", doc: issueDoc(is, kind, labels, comments, full, acl) };
           }
           cursor.issues_since = is.updated_at;
@@ -300,35 +346,53 @@ export const github: Connector<GithubConfig> = {
     if (config.include_discussions && !capped) {
       if (!token) ctx.log("github: include_discussions needs a token; skipped");
       else {
-        const since = ctx.full ? undefined : cursor.discussions_since;
-        const graphql = api === "https://api.github.com" ? `${api}/graphql` : api.replace(/\/v3$/, "") + "/graphql";
-        const collected: Discussion[] = [];
-        let after: string | null = null;
-        pages: do {
+        // Pages come newest-first (the API has no "since" filter). Each page is processed as it arrives (bounded
+        // memory); `discussions_scan` remembers where a capped scan stopped and the high-water mark it will
+        // commit to `discussions_since` once it reaches the previous mark (or the end).
+        const graphql = api === GITHUB_API ? `${api}/graphql` : api.replace(/\/v3$/, "") + "/graphql";
+        const resume = !ctx.full ? cursor.discussions_scan : undefined;
+        const since = resume ? resume.since ?? undefined : ctx.full ? undefined : cursor.discussions_since;
+        let top = resume?.top;
+        let after: string | null = resume?.after ?? null;
+        let done = false;
+        pages: while (true) {
           const r: { data?: { repository?: { discussions: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: Discussion[] } } }; errors?: { message: string }[] } =
             await postJson(ctx, graphql, { query: DISCUSSIONS_QUERY, variables: { owner: config.owner, name: config.name, after } }, { headers });
           if (r.errors?.length) throw new UpstreamError(200, `github graphql: ${r.errors.map((e) => e.message).join("; ")}`);
           const d = r.data?.repository?.discussions;
-          if (!d) break;
-          for (const n of d.nodes) {
-            if (since && n.updatedAt <= since) break pages;
-            collected.push(n);
+          if (!d) {
+            done = true;
+            break;
           }
-          after = d.pageInfo.hasNextPage ? d.pageInfo.endCursor : null;
-        } while (after);
-        collected.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-        for (const d of collected) {
-          const id = `discussion:${d.number}`;
-          const prev = ctx.previous(id);
-          if (!(prev && !prev.deleted && prev.version === d.updatedAt)) {
+          for (const n of d.nodes) {
+            if (since && n.updatedAt <= since) {
+              done = true;
+              break pages;
+            }
+            if (!top || n.updatedAt > top) top = n.updatedAt;
+            const id = `discussion:${n.number}`;
+            const prev = ctx.previous(id);
+            if (prev && !prev.deleted && prev.version === n.updatedAt) continue;
             if (fetched >= ctx.limit) {
               capped = true;
-              break;
+              // resume at this page (already emitted items are skipped by version)
+              cursor.discussions_scan = { after, since: since ?? null, top };
+              break pages;
             }
             fetched++;
-            yield { type: "upsert", doc: discussionDoc(d, full, acl) };
+            yield { type: "upsert", doc: discussionDoc(n, full, acl) };
           }
-          cursor.discussions_since = d.updatedAt;
+          if (!d.pageInfo.hasNextPage) {
+            done = true;
+            break;
+          }
+          after = d.pageInfo.endCursor;
+          cursor.discussions_scan = { after, since: since ?? null, top };
+          yield { type: "cursor", cursor: { ...cursor } };
+        }
+        if (done) {
+          delete cursor.discussions_scan;
+          if (top && (!cursor.discussions_since || top > cursor.discussions_since)) cursor.discussions_since = top;
           yield { type: "cursor", cursor: { ...cursor } };
         }
       }

@@ -48,6 +48,11 @@ export interface SearchOptions {
   traceId?: string;
 }
 
+export interface ReadOptions {
+  /** Link the read / skill load to a trace (concept usage is attributed to it). */
+  traceId?: string;
+}
+
 export interface SearchResult {
   path: string;
   title: string;

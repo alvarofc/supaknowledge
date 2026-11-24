@@ -3,6 +3,7 @@ import { Markdown } from "@/components/kf/markdown";
 import { cn } from "@/components/ui/cn";
 import type { Database } from "@/lib/database.types";
 import { JsonDetails } from "./json-view";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export type TraceEventRow = Pick<
   Database["public"]["Tables"]["trace_events"]["Row"],
@@ -37,7 +38,7 @@ export function Transcript({ events, knowledgeBase }: { events: TraceEventRow[];
                 </span>
               ) : null}
               <span className="ml-auto text-subtle tabular-nums">
-                #{e.seq} · {new Date(e.at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                #{e.seq} · <Timestamp iso={e.at} format="time" />
               </span>
             </div>
             {e.content ? (

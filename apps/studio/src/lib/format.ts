@@ -1,4 +1,7 @@
-const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+// Dates render on the server (SSR) and again in the browser. The server cannot know the viewer's time zone or
+// locale, so server output uses English + UTC and the <Timestamp> component re-renders in the viewer's locale and
+// time zone after hydration (see components/kf/timestamp.tsx). Plain calls default to the runtime's locale.
+
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["year", 365 * 24 * 3600],
   ["month", 30 * 24 * 3600],
@@ -8,18 +11,37 @@ const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["minute", 60],
 ];
 
-export function timeAgo(iso: string | null | undefined, now = Date.now()): string {
+export interface DateFormatOptions {
+  /** BCP 47 locale; undefined = the runtime default (the viewer's, in the browser) */
+  locale?: string;
+  /** IANA time zone; undefined = the runtime default */
+  timeZone?: string;
+}
+
+export function timeAgo(iso: string | null | undefined, now = Date.now(), opts: DateFormatOptions = {}): string {
   if (!iso) return "never";
   const secs = (new Date(iso).getTime() - now) / 1000;
+  if (Number.isNaN(secs)) return "—";
+  const rtf = new Intl.RelativeTimeFormat(opts.locale, { numeric: "auto" });
   for (const [unit, s] of UNITS) {
     if (Math.abs(secs) >= s) return rtf.format(Math.round(secs / s), unit);
   }
   return "just now";
 }
 
-export function formatDate(iso: string | null | undefined): string {
+export function formatDate(iso: string | null | undefined, opts: DateFormatOptions = {}): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" });
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const text = d.toLocaleString(opts.locale, { dateStyle: "medium", timeStyle: "short", timeZone: opts.timeZone });
+  return opts.timeZone === "UTC" ? `${text} UTC` : text;
+}
+
+export function formatTime(iso: string | null | undefined, opts: DateFormatOptions = {}): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString(opts.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: opts.timeZone });
 }
 
 export function shortId(id: string | null | undefined): string {

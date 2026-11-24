@@ -61,7 +61,24 @@ function slug(s: string): string {
   return s.normalize("NFKD").toLowerCase().replace(/[^a-z0-9._/-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 200);
 }
 
+/** Optional source URL of an upload: http(s) only (it is rendered as a link and used as a base URL). */
+export function uploadUrl(raw: string | undefined): string | null {
+  const v = raw?.trim();
+  if (!v) return null;
+  if (v.length > 2048) throw new UploadError(400, "`url` is too long (max 2048 characters)");
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    throw new UploadError(400, "`url` must be an absolute http(s) URL");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new UploadError(400, "`url` must be an absolute http(s) URL");
+  if (u.username || u.password) throw new UploadError(400, "`url` must not contain credentials");
+  return u.toString();
+}
+
 export async function prepareUpload(input: UploadInput): Promise<SyncedDocument> {
+  const url = uploadUrl(input.url);
   const ext = uploadExt(input);
   const mime = EXT_TYPES[ext]!;
   const bytes = input.bytes ?? new TextEncoder().encode(input.text ?? "");
@@ -80,7 +97,7 @@ export async function prepareUpload(input: UploadInput): Promise<SyncedDocument>
     if (looksBinary(bytes)) throw new UploadError(415, `content does not look like ${ext} text`);
     const text = bytesToText(bytes);
     if (ext === "html" || ext === "htm") {
-      const conv = htmlToMarkdown(text, { mainContent: true, baseUrl: input.url });
+      const conv = htmlToMarkdown(text, { mainContent: true, baseUrl: url ?? undefined });
       content = conv.markdown;
       title ??= conv.title;
     } else {
@@ -93,7 +110,7 @@ export async function prepareUpload(input: UploadInput): Promise<SyncedDocument>
   return {
     externalId,
     title,
-    url: input.url ?? null,
+    url,
     content,
     mimeType: mime,
     raw: { body: bytes, ext, contentType: mime },

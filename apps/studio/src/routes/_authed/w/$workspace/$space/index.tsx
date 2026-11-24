@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CheckCheck, Flag, GitPullRequestArrow, History, Inbox as InboxIcon } from "lucide-react";
 import { FlagItem } from "@/components/inbox/flag-list";
+import { InvitationsBanner } from "@/components/invitations/invitations-banner";
 import { ProposalItem } from "@/components/inbox/proposal-list";
 import { LiveRefresh } from "@/components/kf/live-refresh";
 import { LinkButton } from "@/components/ui/button";
@@ -25,7 +26,7 @@ export const Route = createFileRoute("/_authed/w/$workspace/$space/")({
 function InboxPage() {
   const ctx = useSpace();
   const sp = Route.useSearch();
-  const { pending, history, flags, profiles } = Route.useLoaderData();
+  const { pending, history, flags, profiles, invitations } = Route.useLoaderData();
   const isEditor = atLeast(ctx.role, "editor");
   const canReview = atLeast(ctx.role, "reviewer");
 
@@ -51,6 +52,7 @@ function InboxPage() {
         }
         actions={<LiveRefresh spaceId={ctx.space.id} tables={["proposals", "flags"]} />}
       />
+      <InvitationsBanner invitations={invitations} className="mb-4" />
       {/* on wide screens the product sidebar carries these tabs */}
       <LinkTabs tabs={tabs} active={tab} className="mb-4 lg:hidden" />
       <div>

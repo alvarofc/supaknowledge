@@ -53,7 +53,10 @@ export function resolveHref(fromPath: string, href: string): string | null {
   const joined = target.startsWith("/") ? target.slice(1) : [dirname(fromPath), target].filter(Boolean).join("/");
   const norm = normalizePath(joined);
   if (norm === null || norm === "") return null;
-  return norm.replace(/\.md$/i, "").replace(/\/(index|SKILL)$/i, "") || null;
+  const path = norm.replace(/\.md$/i, "");
+  // a bundle-root index.md / SKILL.md is not a concept
+  if (/^(index|SKILL)$/i.test(path)) return null;
+  return path.replace(/\/(index|SKILL)$/i, "") || null;
 }
 
 export function extractLinks(fromPath: string, markdown: string): ExtractedLink[] {

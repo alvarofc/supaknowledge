@@ -98,7 +98,7 @@ async function preflight() {
   }
   const mcp = await fetch(`${URL}/functions/v1/mcp/.well-known/oauth-protected-resource`).catch(() => null);
   if (!mcp?.ok) {
-    throw new DemoError(`the Supaknowledge Edge Functions do not answer at ${URL}/functions/v1`, "`npx supabase start` serves them; check `docker logs supabase_edge_runtime_openkf`.");
+    throw new DemoError(`the Supaknowledge Edge Functions do not answer at ${URL}/functions/v1`, "`npx supabase start` serves them; check `docker logs supabase_edge_runtime_supaknowledge`.");
   }
 }
 
@@ -136,7 +136,9 @@ async function run() {
     "create group",
   ) as { id: string };
   must(await lead.db.from("group_members").insert({ group_id: finance.id, user_id: lead.id }), "join finance");
-  must(await lead.db.from("workspace_members").insert({ workspace_id: ws.id, user_id: engineer.id, role: "member" }), "add engineer to workspace");
+  // nobody joins a workspace without consent: the lead invites the engineer's e-mail, the engineer accepts
+  const invite = must(await lead.db.rpc("invite_to_workspace", { p_workspace: ws.id, p_email: engineer.email, p_role: "member" }), "invite engineer") as { id: string };
+  must(await engineer.db.rpc("accept_invitation", { p_id: invite.id }), "engineer accepts the invitation");
   // the engineer even administers the space: audiences are never bypassed by role
   must(await lead.db.from("space_members").insert({ space_id: space.id, user_id: engineer.id, role: "admin" }), "make engineer space admin");
   // space policy: low-risk data_access fixes backed by real agent work apply themselves
@@ -145,7 +147,7 @@ async function run() {
     "space settings",
   );
   say.ok(`workspace ${c.bold(workspaceSlug)} (finance lead = owner), space ${c.bold(spaceRef)}`);
-  say.ok(`group ${c.bold("finance")} = { finance lead }; engineer = workspace member + ${c.bold("space admin")}, not in finance`);
+  say.ok(`group ${c.bold("finance")} = { finance lead }; engineer = invited workspace member + ${c.bold("space admin")}, not in finance`);
   say.ok("policy: auto-apply low-risk data_access fixes that cite real agent work");
 
   // ------------------------------------------------------------------------------------------------------
@@ -177,7 +179,7 @@ async function run() {
       throw new DemoError(
         "embeddings did not appear within 3 minutes",
         "The kf-embed cron job calls the embed function through pg_net with the Vault secrets project_url and kf_internal_secret (supabase/seed.sql), " +
-          "and the function checks KF_INTERNAL_SECRET from supabase/.env. Check `docker logs supabase_edge_runtime_openkf`.",
+          "and the function checks KF_INTERNAL_SECRET from supabase/.env. Check `docker logs supabase_edge_runtime_supaknowledge`.",
       );
     }
     await sleep(2000);
@@ -281,7 +283,7 @@ async function run() {
     return;
   }
   if (status !== "succeeded") {
-    throw new DemoError(`curator run ${status}: ${runRow!.error ?? "(no error recorded)"}`, "Studio > Activity shows the run's tasks; `docker logs supabase_edge_runtime_openkf` shows the function logs.");
+    throw new DemoError(`curator run ${status}: ${runRow!.error ?? "(no error recorded)"}`, "Studio > Activity shows the run's tasks; `docker logs supabase_edge_runtime_supaknowledge` shows the function logs.");
   }
 
   // ------------------------------------------------------------------------------------------------------

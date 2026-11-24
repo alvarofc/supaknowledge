@@ -18,7 +18,16 @@ export function useMutation() {
   const run = useCallback(
     async <T,>(
       fn: () => PromiseLike<Result<T>>,
-      opts: { success?: string; refresh?: boolean; onSuccess?: (data: T | null | undefined) => void } = {},
+      opts: {
+        success?: string;
+        refresh?: boolean;
+        onSuccess?: (data: T | null | undefined) => void;
+        /**
+         * For UPDATE/DELETE with `.select()`: RLS silently filters rows the caller may not change, so zero returned
+         * rows means nothing happened. This message is shown as an error instead of the success toast.
+         */
+        expectRows?: string;
+      } = {},
     ): Promise<{ ok: boolean; data?: T | null }> => {
       setBusy(true);
       try {
@@ -28,6 +37,10 @@ export function useMutation() {
           return { ok: false };
         }
         const data = res && typeof res === "object" && "data" in res ? (res as { data?: T | null }).data : (res as T);
+        if (opts.expectRows && (data === null || data === undefined || (Array.isArray(data) && data.length === 0))) {
+          toast.error(opts.expectRows);
+          return { ok: false };
+        }
         if (opts.success) toast.success(opts.success);
         opts.onSuccess?.(data);
         if (opts.refresh !== false) startTransition(() => router.invalidate());

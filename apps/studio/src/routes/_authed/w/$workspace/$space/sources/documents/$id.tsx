@@ -6,10 +6,12 @@ import { ConnectorIcon } from "@/components/sources/connectors";
 import { Badge } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, PageHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
-import { formatDate, timeAgo } from "@/lib/format";
+
 import { title } from "@/lib/meta";
 import { useSpace } from "@/lib/use-space";
 import { loadSourceDocument } from "@/server/sources.functions";
+import { safeHref } from "@/lib/safe-href";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export const Route = createFileRoute("/_authed/w/$workspace/$space/sources/documents/$id")({
   validateSearch: (search: Record<string, unknown>): { view?: string } => ({
@@ -52,8 +54,8 @@ function DocumentPage() {
         }
         title={doc.title || doc.external_id}
         actions={
-          doc.url ? (
-            <a href={doc.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline">
+          safeHref(doc.url) ? (
+            <a href={safeHref(doc.url)!} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline">
               Open original <ExternalLink className="size-3.5" />
             </a>
           ) : null
@@ -61,7 +63,7 @@ function DocumentPage() {
       />
       {doc.deleted_at ? (
         <Callout tone="warn" title="Deleted upstream" className="mb-4">
-          This document was removed from {source?.name ?? "its source"} {timeAgo(doc.deleted_at)}. Knowledge that cites it may need a review.
+          This document was removed from {source?.name ?? "its source"} <Timestamp iso={doc.deleted_at} />. Knowledge that cites it may need a review.
         </Callout>
       ) : null}
 
@@ -124,16 +126,22 @@ function DocumentPage() {
             {doc.external_updated_at ? (
               <div>
                 <dt className="mono-label text-subtle">Updated upstream</dt>
-                <dd>{formatDate(doc.external_updated_at)}</dd>
+                <dd>
+                  <Timestamp iso={doc.external_updated_at} format="date" />
+                </dd>
               </div>
             ) : null}
             <div>
               <dt className="mono-label text-subtle">Content changed</dt>
-              <dd>{formatDate(doc.changed_at)}</dd>
+              <dd>
+                <Timestamp iso={doc.changed_at} format="date" />
+              </dd>
             </div>
             <div>
               <dt className="mono-label text-subtle">Last synced</dt>
-              <dd>{formatDate(doc.synced_at)}</dd>
+              <dd>
+                <Timestamp iso={doc.synced_at} format="date" />
+              </dd>
             </div>
             {doc.storage_path ? (
               <div>

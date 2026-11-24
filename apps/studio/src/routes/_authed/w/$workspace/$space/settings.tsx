@@ -58,7 +58,9 @@ function SettingsPage() {
         <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-medium">Your user ID</div>
-            <p className="text-xs text-subtle">Send it to a workspace admin so they can add you to a workspace, space or group.</p>
+            <p className="text-xs text-subtle">
+              Workspaces invite people by e-mail. Your ID identifies you in API calls, the CLI and the audit log.
+            </p>
             <code className="mt-1 block font-mono text-xs break-all text-muted">{ctx.user.id}</code>
           </div>
           <CopyButton value={ctx.user.id} label="Copy ID" />
@@ -75,6 +77,7 @@ function SettingsPage() {
           workspaceId={ctx.workspace.id}
           workspaceName={ctx.workspace.name}
           members={data.people}
+          invitations={data.invitations}
           canManage={wsAdmin}
           isOwner={ctx.workspaceRole === "owner"}
           me={ctx.user.id}

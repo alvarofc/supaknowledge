@@ -77,10 +77,10 @@ npm run offline -w @supaknowledge/example-revenue-report           # or: npm run
 ```
 
 `src/offline.ts` loads the same bundle into an in-memory store (`src/memory-store.ts`), replays the flag, the
-trace and an engineer's question about ARR, and runs the real curator engine (`runTask` from
+trace and a finance-only question about ARR, and runs the real curator engine (`runTask` from
 `@supaknowledge/core/curator`) with `ScriptedLLM` answering in place of a model. It prints every task and a diff of each proposal:
-the table fix is auto-applied, the skill change waits for review, and an ARR clarification that cites the
-finance-only concept is flagged as an **escalation**. `npm test -w @supaknowledge/example-revenue-report` runs it as a test, together with the real-agent path against the
+the table fix is auto-applied, the skill change waits for review, and an ARR clarification that cites
+finance-only evidence is flagged as an **escalation**. `npm test -w @supaknowledge/example-revenue-report` runs it as a test, together with the real-agent path against the
 mock endpoint (`test/agent.test.ts`).
 
 ## The knowledge

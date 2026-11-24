@@ -7,6 +7,7 @@ import { LinkButton } from "@/components/ui/button";
 import { Callout, Card, EmptyState } from "@/components/ui/card";
 import { title } from "@/lib/meta";
 import { loadConsent } from "@/server/consent.functions";
+import { safeHref } from "@/lib/safe-href";
 
 export const Route = createFileRoute("/_authed/oauth/consent")({
   validateSearch: (search: Record<string, unknown>): { authorization_id?: string } => ({
@@ -95,10 +96,12 @@ function ConsentPage() {
         <h1 className="text-xl font-normal tracking-tight">
           <span className="font-medium">{clientName}</span> wants to access Supaknowledge as you
         </h1>
-        {details.client.uri ? (
-          <a href={details.client.uri} target="_blank" rel="noopener noreferrer" className="mt-1 text-xs text-subtle hover:underline">
+        {safeHref(details.client.uri) ? (
+          <a href={safeHref(details.client.uri)!} target="_blank" rel="noopener noreferrer" className="mt-1 text-xs text-subtle hover:underline">
             {details.client.uri}
           </a>
+        ) : details.client.uri ? (
+          <span className="mt-1 text-xs break-all text-subtle">{details.client.uri}</span>
         ) : null}
       </div>
 
@@ -108,6 +111,11 @@ function ConsentPage() {
           <div className="mt-0.5 flex flex-wrap items-center justify-between gap-2 text-sm">
             <span className="font-medium">{details.requestEmail || user.email}</span>
             <form action="/auth/signout" method="post">
+              <input
+                type="hidden"
+                name="next"
+                value={`/oauth/consent?authorization_id=${encodeURIComponent(details.authorizationId)}`}
+              />
               <button type="submit" className="text-xs text-accent hover:underline">
                 Not you? Switch account
               </button>

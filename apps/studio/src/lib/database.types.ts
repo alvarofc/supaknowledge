@@ -7,14 +7,14 @@ export type Database = {
           Tables: {
             "agents": {
                   Row: {
-                    "created_at": string,"created_by": string | null,"description": string | null,"id": string,"key_prefix": string | null,"last_seen_at": string | null,"name": string,"workspace_id": string
+                    "created_at": string,"created_by": string | null,"description": string | null,"id": string,"key_prefix": string | null,"last_seen_at": string | null,"name": string,"revoked_at": string | null,"workspace_id": string
                   }
                   ComputedFields: never
                   Insert: {
-                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"id": string,"key_prefix"?: string | null,"last_seen_at"?: string | null,"name": string,"workspace_id": string
+                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"id": string,"key_prefix"?: string | null,"last_seen_at"?: string | null,"name": string,"revoked_at"?: string | null,"workspace_id": string
                   }
                   Update: {
-                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"id"?: string,"key_prefix"?: string | null,"last_seen_at"?: string | null,"name"?: string,"workspace_id"?: string
+                    "created_at"?: string,"created_by"?: string | null,"description"?: string | null,"id"?: string,"key_prefix"?: string | null,"last_seen_at"?: string | null,"name"?: string,"revoked_at"?: string | null,"workspace_id"?: string
                   }
                   Relationships: [
                     {
@@ -343,6 +343,20 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"kf_storage_gc": {
+                  Row: {
+                    "attempts": number,"bucket": string,"created_at": string,"id": number,"last_error": string | null,"prefix": string,"reason": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "attempts"?: number,"bucket": string,"created_at"?: string,"id"?: never,"last_error"?: string | null,"prefix": string,"reason": string
+                  }
+                  Update: {
+                    "attempts"?: number,"bucket"?: string,"created_at"?: string,"id"?: never,"last_error"?: string | null,"prefix"?: string,"reason"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
                 },"profiles": {
                   Row: {
                     "avatar_url": string | null,"created_at": string,"display_name": string | null,"id": string,"kind": Database["public"]['Enums']["principal_kind"]
@@ -359,28 +373,28 @@ isOneToOne: false
                   ]
                 },"proposal_citations": {
                   Row: {
-                    "audience": (string)[],"id": string,"label": string,"op_id": string | null,"proposal_id": string,"quote": string | null,"ref_id": string | null,"ref_kind": Database["public"]['Enums']["citation_kind"],"space_id": string,"url": string | null
+                    "audience": (string)[],"consulted": boolean,"id": string,"label": string,"op_id": string | null,"proposal_id": string,"quote": string | null,"ref_id": string | null,"ref_kind": Database["public"]['Enums']["citation_kind"],"space_id": string,"url": string | null
                   }
                   ComputedFields: never
                   Insert: {
-                    "audience"?: (string)[],"id"?: string,"label": string,"op_id"?: string | null,"proposal_id": string,"quote"?: string | null,"ref_id"?: string | null,"ref_kind": Database["public"]['Enums']["citation_kind"],"space_id": string,"url"?: string | null
+                    "audience"?: (string)[],"consulted"?: boolean,"id"?: string,"label": string,"op_id"?: string | null,"proposal_id": string,"quote"?: string | null,"ref_id"?: string | null,"ref_kind": Database["public"]['Enums']["citation_kind"],"space_id": string,"url"?: string | null
                   }
                   Update: {
-                    "audience"?: (string)[],"id"?: string,"label"?: string,"op_id"?: string | null,"proposal_id"?: string,"quote"?: string | null,"ref_id"?: string | null,"ref_kind"?: Database["public"]['Enums']["citation_kind"],"space_id"?: string,"url"?: string | null
+                    "audience"?: (string)[],"consulted"?: boolean,"id"?: string,"label"?: string,"op_id"?: string | null,"proposal_id"?: string,"quote"?: string | null,"ref_id"?: string | null,"ref_kind"?: Database["public"]['Enums']["citation_kind"],"space_id"?: string,"url"?: string | null
                   }
                   Relationships: [
                     {
-      foreignKeyName: "proposal_citations_op_id_fkey"
-      columns: ["op_id"]
-isOneToOne: false
-      referencedRelation: "proposal_ops"
-      referencedColumns: ["id"]
-    },{
       foreignKeyName: "proposal_citations_proposal_id_fkey"
       columns: ["proposal_id"]
 isOneToOne: false
       referencedRelation: "proposals"
       referencedColumns: ["id"]
+    },{
+      foreignKeyName: "proposal_citations_proposal_id_op_id_fkey"
+      columns: ["proposal_id","op_id"]
+isOneToOne: false
+      referencedRelation: "proposal_ops"
+      referencedColumns: ["proposal_id","id"]
     },{
       foreignKeyName: "proposal_citations_space_id_fkey"
       columns: ["space_id"]
@@ -683,6 +697,26 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"workspace_invitations": {
+                  Row: {
+                    "accepted_at": string | null,"created_at": string,"declined_at": string | null,"email": string,"expires_at": string,"id": string,"invited_by": string | null,"role": Database["public"]['Enums']["workspace_role"],"workspace_id": string
+                  }
+                  ComputedFields: never
+                  Insert: {
+                    "accepted_at"?: string | null,"created_at"?: string,"declined_at"?: string | null,"email": string,"expires_at"?: string,"id"?: string,"invited_by"?: string | null,"role"?: Database["public"]['Enums']["workspace_role"],"workspace_id": string
+                  }
+                  Update: {
+                    "accepted_at"?: string | null,"created_at"?: string,"declined_at"?: string | null,"email"?: string,"expires_at"?: string,"id"?: string,"invited_by"?: string | null,"role"?: Database["public"]['Enums']["workspace_role"],"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "workspace_invitations_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"workspace_members": {
                   Row: {
                     "created_at": string,"role": Database["public"]['Enums']["workspace_role"],"user_id": string,"workspace_id": string
@@ -723,8 +757,68 @@ isOneToOne: false
             [_ in never]: never
           }
           Functions: {
-            "apply_proposal":
+            "accept_invitation":
+{ Args: { "p_id": string }; Returns: {
+              "created_at": string,
+"created_by": string | null,
+"id": string,
+"name": string,
+"slug": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "workspaces"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"apply_proposal":
 { Args: { "p_actor"?: string,"p_note"?: string,"p_proposal": string }; Returns: {
+              "applied_at": string | null,
+"author": string,
+"auto_applied": boolean,
+"created_at": string,
+"created_by": string | null,
+"escalation": boolean,
+"id": string,
+"rationale": string,
+"review_note": string | null,
+"reviewed_at": string | null,
+"reviewed_by": string | null,
+"risk": Database["public"]['Enums']["proposal_risk"],
+"run_id": string | null,
+"space_id": string,
+"status": Database["public"]['Enums']["proposal_status"],
+"title": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "proposals"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"cancel_curator_run":
+{ Args: { "p_run": string }; Returns: {
+              "created_at": string,
+"error": string | null,
+"finished_at": string | null,
+"id": string,
+"requested_by": string | null,
+"since": string | null,
+"space_id": string,
+"started_at": string | null,
+"stats": NonNullable<Json>,
+"status": Database["public"]['Enums']["run_status"],
+"trigger": string,
+"until": string | null
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "curator_runs"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
+"create_proposal":
+{ Args: { "p_author"?: string,"p_citations"?: Json,"p_ops": Json,"p_rationale": string,"p_risk": Database["public"]['Enums']["proposal_risk"],"p_run"?: string,"p_space": string,"p_title": string }; Returns: {
               "applied_at": string | null,
 "author": string,
 "auto_applied": boolean,
@@ -779,6 +873,9 @@ isOneToOne: false
         isOneToOne: true
         isSetofReturn: false
       } },
+"decline_invitation":
+{ Args: { "p_id": string }; Returns: undefined
+                           },
 "dismiss_flag":
 { Args: { "p_flag": string,"p_reason": string }; Returns: {
               "audience": (string)[],
@@ -810,14 +907,41 @@ isOneToOne: false
 "flag_knowledge":
 { Args: { "p_concept_path"?: string,"p_evidence"?: Json,"p_kind": Database["public"]['Enums']["flag_kind"],"p_observation": string,"p_query"?: string,"p_space": string,"p_suggested_fix"?: string,"p_trace"?: string }; Returns: string
                            },
+"invite_to_workspace":
+{ Args: { "p_email": string,"p_role"?: Database["public"]['Enums']["workspace_role"],"p_workspace": string }; Returns: {
+              "accepted_at": string | null,
+"created_at": string,
+"declined_at": string | null,
+"email": string,
+"expires_at": string,
+"id": string,
+"invited_by": string | null,
+"role": Database["public"]['Enums']["workspace_role"],
+"workspace_id": string
+            }
+                          SetofOptions: {
+        from: "*"
+        to: "workspace_invitations"
+        isOneToOne: true
+        isSetofReturn: false
+      } },
 "is_stale":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: boolean
+                           },
+"kf_add_run_stats":
+{ Args: { "p_delta": Json,"p_run": string }; Returns: Json
                            },
 "kf_enqueue_curator_task":
 { Args: { "p_input": Json,"p_run": string,"p_step": string }; Returns: string
                            },
+"kf_finish_task":
+{ Args: { "p_error"?: string,"p_output"?: Json,"p_status": string,"p_task": string }; Returns: string
+                           },
 "kf_get_source_secret":
 { Args: { "p_source": string }; Returns: string
+                           },
+"kf_maybe_finish_run":
+{ Args: { "p_run": string }; Returns: string
                            },
 "kf_queue_ack":
 { Args: { "p_msg_ids": (number)[],"p_queue": string }; Returns: number
@@ -828,8 +952,24 @@ isOneToOne: false
 "kf_queue_send":
 { Args: { "p_delay"?: number,"p_messages": (Json)[],"p_queue": string }; Returns: (number)[]
                            },
+"kf_revoke_user_sessions":
+{ Args: { "p_user": string }; Returns: number
+                           },
+"kf_storage_gc_objects":
+{ Args: { "p_after"?: string,"p_bucket": string,"p_limit"?: number,"p_prefix": string }; Returns: {
+              "name": string
+            }[]
+                           },
+"kf_trace_events":
+{ Args: { "p_max_per_trace"?: number,"p_trace_ids": (string)[] }; Returns: Json
+                           },
 "knowledge_health":
 { Args: { "p_days"?: number,"p_space": string }; Returns: Json
+                           },
+"list_my_invitations":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "created_at": string,"expires_at": string,"id": string,"invited_by_name": string,"role": Database["public"]['Enums']["workspace_role"],"workspace_id": string,"workspace_name": string,"workspace_slug": string
+            }[]
                            },
 "log_concept_usage":
 { Args: { "p_concepts": (string)[],"p_query"?: string,"p_space": string,"p_trace"?: string,"p_via"?: string }; Returns: number

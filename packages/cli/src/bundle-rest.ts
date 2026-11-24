@@ -1,7 +1,7 @@
 // PostgREST fallbacks for the `bundle` Edge Function, used when it is not deployed (404/501).
 // They run the same @supaknowledge/core import/export code as the function, under the caller's RLS.
 // Limits vs. the function: skill attachments are not uploaded on import (Storage writes are service-role
-// only) and lint runs locally.
+// only) and lint runs locally. Proposals are created with the same atomic create_proposal RPC.
 import { exportBundle, importBundle, lintConcept, type AudienceMap, type ConceptDraft, type ExportConcept } from "@supaknowledge/core";
 import { encodeFile, type BundleFile } from "./files.ts";
 import { must, type Ctx, type SpaceRef } from "./context.ts";
@@ -16,6 +16,8 @@ export interface ImportResponse {
   problems?: unknown[];
   status?: string;
   files_synced?: number;
+  /** REST fallback: the proposal was created but apply_proposal failed */
+  apply_error?: string;
   [k: string]: unknown;
 }
 
@@ -76,7 +78,6 @@ export async function importViaRest(
   opts: { apply?: boolean; title?: string },
 ): Promise<ImportResponse> {
   const db = await ctx.db();
-  const uid = await ctx.userId();
   const parsed = importBundle(files, await audienceMap(ctx, sp));
   const warnings = [...parsed.warnings];
   const existing = (await must(
@@ -102,10 +103,19 @@ export async function importViaRest(
     if (c.draft.kind === "skill") after.files = c.files;
     const cur = byPath.get(c.draft.path);
     if (!cur) {
-      ops.push({ ord: ops.length, op: "create", path: c.draft.path, after, target_audience: c.draft.audience });
+      ops.push({ op: "create", path: c.draft.path, after, rationale: `import ${c.sourcePath}` });
       created.push(c.draft.path);
-    } else if (draftChanged(cur, c.draft)) {
-      ops.push({ ord: ops.length, op: "update", path: c.draft.path, concept_id: cur.id, base_revision: cur.revision, after, target_audience: c.draft.audience });
+      continue;
+    }
+    // keep an existing restriction when the bundle does not state one (never widen access by omission)
+    let draft: ConceptDraft = c.draft;
+    if (c.draft.audience.length === 0 && cur.audience.length > 0) {
+      delete after.audience;
+      draft = { ...c.draft, audience: cur.audience };
+      warnings.push(`${c.draft.path}: bundle has no audience; keeping the concept's current audience restriction`);
+    }
+    if (draftChanged(cur, draft)) {
+      ops.push({ op: "update", path: c.draft.path, concept_id: cur.id, base_revision: cur.revision, after, rationale: `import ${c.sourcePath}` });
       updated.push(c.draft.path);
     } else unchanged.push(c.draft.path);
   }
@@ -113,22 +123,30 @@ export async function importViaRest(
   if (!ops.length) return { proposal_id: null, created, updated, unchanged, warnings, status: "unchanged" };
 
   const title = opts.title ?? `Import ${parsed.bundle.title ?? "bundle"} (${created.length} new, ${updated.length} updated)`;
+  // one atomic RPC (proposal + ops commit together; the author is pinned to the caller)
   const prop = (await must(
-    db
-      .from("proposals")
-      .insert({ space_id: sp.id, author: `human:${uid}`, created_by: uid, title, rationale: "Imported with `kf import`.", risk: "medium" })
-      .select("id")
-      .single(),
+    db.rpc("create_proposal", {
+      p_space: sp.id,
+      p_title: title.slice(0, 200),
+      p_rationale: "Imported with `kf import`." + (warnings.length ? `\n\nImport warnings:\n${warnings.map((w) => `- ${w}`).join("\n")}` : ""),
+      p_risk: "medium",
+      p_ops: ops,
+      p_citations: [],
+    }),
   )) as { id: string };
-  await must(db.from("proposal_ops").insert(ops.map((o) => ({ ...o, proposal_id: prop.id, space_id: sp.id }))));
 
-  let status = "pending";
-  if (opts.apply) {
-    const applied = (await must(db.rpc("apply_proposal", { p_proposal: prop.id, p_note: "kf import --apply" }))) as { status: string; review_note?: string };
-    status = applied.status;
-    if (status === "conflicted") warnings.push(`apply conflicted: ${applied.review_note ?? ""}`);
+  const hasFiles = ops.some((o) => Array.isArray((o.after as { files?: unknown[] }).files) && ((o.after as { files: unknown[] }).files.length > 0));
+  if (!opts.apply) return { proposal_id: prop.id, created, updated, unchanged, warnings, status: "pending" };
+  const applied = await db.rpc("apply_proposal", { p_proposal: prop.id, p_note: "kf import --apply" });
+  if (applied.error) {
+    return { proposal_id: prop.id, created, updated, unchanged, warnings, status: "pending", apply_error: applied.error.message };
   }
-  return { proposal_id: prop.id, created, updated, unchanged, warnings, status };
+  const p = applied.data as { status: string; review_note?: string | null };
+  if (p.status === "conflicted") warnings.push(`apply conflicted: ${p.review_note ?? ""}`);
+  if (p.status === "applied" && hasFiles) {
+    warnings.push("skill files were not copied into Storage: that needs the bundle function, which is not deployed");
+  }
+  return { proposal_id: prop.id, created, updated, unchanged, warnings, status: p.status };
 }
 
 export async function exportViaRest(ctx: Ctx, sp: SpaceRef, opts: { publicOnly?: boolean }): Promise<BundleFile[]> {

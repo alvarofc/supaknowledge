@@ -45,6 +45,8 @@ interface SlackChannel {
 }
 
 const API = "https://slack.com/api";
+/** history is fetched (and held in memory) this many UTC days at a time */
+const WINDOW_DAYS = 7;
 const SKIP_SUBTYPES = new Set([
   "channel_join", "channel_leave", "channel_topic", "channel_purpose", "channel_name", "channel_archive",
   "channel_unarchive", "group_join", "group_leave", "group_topic", "group_purpose", "group_name", "pinned_item",
@@ -222,71 +224,79 @@ export const slack: Connector<SlackConfig> = {
       const prevOldest = ctx.full ? undefined : chanCursor[channelId]?.oldest;
       const since = prevOldest ? Number(prevOldest) : nowSec - config.since_days * 86400;
       const fetchOldest = prevOldest && config.include_threads ? since - config.thread_lookback_days * 86400 : since;
-
-      const msgs = (await history(channelId, fetchOldest)).filter(keep);
-      const affected = new Set<string>();
+      // Walk the history in windows of WINDOW_DAYS whole UTC days, oldest first, so a 90-day backfill never sits
+      // in memory at once and every day is fetched completely.
+      const firstDay = dayOf(fetchOldest.toFixed(6));
       let maxTs = since;
-      for (const m of msgs) {
-        const ts = Number(m.ts);
-        maxTs = Math.max(maxTs, ts);
-        if (!prevOldest || ts > since) affected.add(dayOf(m.ts));
-        else if (config.include_threads && m.latest_reply && Number(m.latest_reply) > since) affected.add(dayOf(m.ts));
-      }
-      const byDay = groupByDay(msgs);
-
-      for (const day of [...affected].sort()) {
-        const extId = `${channelId}:${day}`;
-        if (fetched >= ctx.limit) {
-          capped = true;
-          break;
+      windows: for (let wStart = dayBounds(firstDay)[0]; wStart <= nowSec; wStart += WINDOW_DAYS * 86400) {
+        const wEnd = wStart + WINDOW_DAYS * 86400;
+        const msgs = (await history(channelId, wStart, wEnd - 0.000001)).filter(keep);
+        const affected = new Set<string>();
+        for (const m of msgs) {
+          const ts = Number(m.ts);
+          // thread replies count as activity too: otherwise a reply newer than the last top-level message would
+          // keep its day "affected" (and refetched) on every run forever
+          const reply = config.include_threads && m.latest_reply ? Number(m.latest_reply) : 0;
+          maxTs = Math.max(maxTs, ts, reply);
+          if (!prevOldest || ts > since) affected.add(dayOf(m.ts));
+          else if (reply > since) affected.add(dayOf(m.ts));
         }
-        const [dStart, dEnd] = dayBounds(day);
-        // the fetched window may only cover part of the day: refetch the whole day then
-        let dayMsgs = byDay.get(day) ?? [];
-        if (dStart < fetchOldest) dayMsgs = [...groupByDay((await history(channelId, dStart, dEnd - 0.000001)).filter(keep)).get(day) ?? []];
-        if (config.min_reactions > 0) dayMsgs = dayMsgs.filter((m) => reactionCount(m) >= config.min_reactions);
+        const byDay = groupByDay(msgs);
 
-        const replies = new Map<string, SlackMessage[]>();
-        if (config.include_threads) {
-          for (const m of dayMsgs) if ((m.reply_count ?? 0) > 0) replies.set(m.ts, await repliesOf(channelId, m.ts));
-        }
-        const dayMax = Math.max(...(byDay.get(day) ?? []).map((m) => Number(m.ts)), dStart);
-        if (!dayMsgs.length) {
-          if (ctx.previous(extId) && !ctx.previous(extId)!.deleted) yield { type: "delete", externalId: extId, reason: "no qualifying messages" };
-        } else {
-          fetched++;
-          await resolveUsers(mentioned([...dayMsgs, ...[...replies.values()].flat()]));
-          const content = renderDay({ id: channelId, name }, day, dayMsgs, replies, (id) => users.get(id));
-          const first = dayMsgs[0]!;
-          const lastTs = Math.max(...dayMsgs.map((m) => Number(m.ts)), ...[...replies.values()].flat().map((m) => Number(m.ts)));
-          yield {
-            type: "upsert",
-            doc: {
-              externalId: extId,
-              title: `#${name} — ${day}`,
-              url: `${teamUrl}archives/${channelId}/p${first.ts.replace(".", "")}`,
-              content,
-              mimeType: "text/markdown",
-              raw: { body: JSON.stringify({ channel: info, day, messages: dayMsgs, replies: Object.fromEntries(replies) }, null, 2), ext: "json", contentType: "application/json" },
-              author: null,
-              updatedAt: new Date(lastTs * 1000).toISOString(),
-              metadata: {
-                channel_id: channelId,
-                channel_name: name,
-                day,
-                message_count: dayMsgs.length,
-                reply_count: [...replies.values()].reduce((n, r) => n + Math.max(0, r.length - 1), 0),
-                private: restricted,
+        for (const day of [...affected].sort()) {
+          const extId = `${channelId}:${day}`;
+          if (fetched >= ctx.limit) {
+            capped = true;
+            break windows;
+          }
+          const [dStart] = dayBounds(day);
+          let dayMsgs = byDay.get(day) ?? [];
+          if (config.min_reactions > 0) dayMsgs = dayMsgs.filter((m) => reactionCount(m) >= config.min_reactions);
+
+          const replies = new Map<string, SlackMessage[]>();
+          if (config.include_threads) {
+            for (const m of dayMsgs) if ((m.reply_count ?? 0) > 0) replies.set(m.ts, await repliesOf(channelId, m.ts));
+          }
+          // checkpoint mark: top-level messages of this day only (a later thread reply must not let a capped run
+          // skip newer days); the channel-level mark at the end covers replies
+          const dayMax = Math.max(...(byDay.get(day) ?? []).map((m) => Number(m.ts)), dStart);
+          if (!dayMsgs.length) {
+            if (ctx.previous(extId) && !ctx.previous(extId)!.deleted) yield { type: "delete", externalId: extId, reason: "no qualifying messages" };
+          } else {
+            fetched++;
+            await resolveUsers(mentioned([...dayMsgs, ...[...replies.values()].flat()]));
+            const content = renderDay({ id: channelId, name }, day, dayMsgs, replies, (id) => users.get(id));
+            const first = dayMsgs[0]!;
+            const lastTs = Math.max(...dayMsgs.map((m) => Number(m.ts)), ...[...replies.values()].flat().map((m) => Number(m.ts)));
+            yield {
+              type: "upsert",
+              doc: {
+                externalId: extId,
+                title: `#${name} — ${day}`,
+                url: `${teamUrl}archives/${channelId}/p${first.ts.replace(".", "")}`,
+                content,
+                mimeType: "text/markdown",
+                raw: { body: JSON.stringify({ channel: info, day, messages: dayMsgs, replies: Object.fromEntries(replies) }, null, 2), ext: "json", contentType: "application/json" },
+                author: null,
+                updatedAt: new Date(lastTs * 1000).toISOString(),
+                metadata: {
+                  channel_id: channelId,
+                  channel_name: name,
+                  day,
+                  message_count: dayMsgs.length,
+                  reply_count: [...replies.values()].reduce((n, r) => n + Math.max(0, r.length - 1), 0),
+                  private: restricted,
+                },
+                acl: { restricted, refs: [{ slack_channel: channelId }] },
               },
-              acl: { restricted, refs: [{ slack_channel: channelId }] },
-            },
-          };
+            };
+          }
+          // checkpoint: everything up to the end of this day is synced
+          const prevMark = Number(chanCursor[channelId]?.oldest ?? 0);
+          const mark = Math.max(prevMark, ctx.full ? dayMax : Math.max(since, dayMax));
+          chanCursor[channelId] = { oldest: mark.toFixed(6) };
+          yield { type: "cursor", cursor: { channels: { ...chanCursor } } };
         }
-        // checkpoint: everything up to the end of this day is synced
-        const prevMark = Number(chanCursor[channelId]?.oldest ?? 0);
-        const mark = Math.max(prevMark, ctx.full ? dayMax : Math.max(since, dayMax));
-        chanCursor[channelId] = { oldest: mark.toFixed(6) };
-        yield { type: "cursor", cursor: { channels: { ...chanCursor } } };
       }
       if (!capped) {
         chanCursor[channelId] = { oldest: Math.max(maxTs, Number(chanCursor[channelId]?.oldest ?? 0)).toFixed(6) };

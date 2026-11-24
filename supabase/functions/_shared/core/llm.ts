@@ -20,6 +20,8 @@ export interface GenerateRequest<T> {
   /** tools the model may call before answering (agentic research) */
   tools?: ToolsInput;
   maxSteps?: number;
+  /** aborts the call (and any research steps) when fired, e.g. AbortSignal.timeout(remaining budget) */
+  signal?: AbortSignal;
 }
 
 export interface Usage {
@@ -40,6 +42,8 @@ export interface LLM {
 
 export class LLMOutputError extends Error {}
 export class LLMConfigError extends Error {}
+/** The per-run token budget (curator.max_tokens_per_run) or the task's time budget is spent; retrying cannot help. */
+export class LLMBudgetError extends Error {}
 
 export interface ModelEndpoint {
   /** OpenAI-compatible base URL, e.g. https://llm.acme.internal/v1 */
@@ -131,9 +135,10 @@ export class MastraLLM implements LLM {
       const researcher = new Agent({ id: "supaknowledge-researcher", name: "Supaknowledge researcher", instructions: req.system, model, tools: req.tools });
       const research = await researcher.generate(
         [...parts, RESEARCH_PHASE_PROMPT].join("\n\n"),
-        { maxSteps: req.maxSteps ?? 8, modelSettings: { maxOutputTokens: Math.min(maxOutputTokens, 8000) } },
+        { maxSteps: req.maxSteps ?? 8, modelSettings: { maxOutputTokens: Math.min(maxOutputTokens, 8000) }, ...(req.signal ? { abortSignal: req.signal } : {}) },
       );
       add(research.usage);
+      req.signal?.throwIfAborted();
       notes = renderResearch(research as unknown as ResearchResult);
     }
 
@@ -142,7 +147,9 @@ export class MastraLLM implements LLM {
     const result = await answerer.generate([...parts, ...(notes ? [notes] : [])].join("\n\n"), {
       structuredOutput: { schema: req.schema, jsonPromptInjection: this.config.jsonPromptInjection ?? "auto" },
       modelSettings: { maxOutputTokens },
+      ...(req.signal ? { abortSignal: req.signal } : {}),
     });
+    req.signal?.throwIfAborted();
     add(result.usage);
     const output = result.object as T | undefined;
     if (output === undefined || output === null) {
@@ -189,6 +196,7 @@ function renderResearch(r: ResearchResult): string {
  *   KF_LLM_BASE_URL, KF_LLM_API_KEY, KF_LLM_HEADERS (JSON object), KF_LLM_API (chat | responses),
  *   KF_LLM_EXTRA_BODY (JSON object merged into request bodies, e.g. vLLM chat_template_kwargs)
  *   AI_GATEWAY_API_KEY (Vercel AI Gateway), OPENROUTER_API_KEY
+ *   KF_LLM_ALLOWED_MODELS (comma separated; "prefix/*" wildcards): model ids space settings may choose
  * Space settings may override the model ids; endpoints and keys only ever come from the environment.
  */
 export function llmConfigFromEnv(
@@ -196,24 +204,34 @@ export function llmConfigFromEnv(
   overrides: { model?: string; fastModel?: string; fallbackModels?: string[] } = {},
 ): LLMConfig {
   const list = (v?: string) => (v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  let headers: Record<string, string> | undefined;
-  const rawHeaders = getEnv("KF_LLM_HEADERS");
-  if (rawHeaders) {
+  const jsonObject = (name: string): Record<string, unknown> | undefined => {
+    const raw = getEnv(name);
+    if (!raw) return undefined;
+    let v: unknown;
     try {
-      headers = JSON.parse(rawHeaders) as Record<string, string>;
+      v = JSON.parse(raw);
     } catch {
-      throw new LLMConfigError("KF_LLM_HEADERS must be a JSON object");
+      throw new LLMConfigError(`${name} must be a JSON object`);
     }
-  }
-  let extraBody: Record<string, unknown> | undefined;
-  const rawExtra = getEnv("KF_LLM_EXTRA_BODY");
-  if (rawExtra) {
-    try {
-      extraBody = JSON.parse(rawExtra) as Record<string, unknown>;
-    } catch {
-      throw new LLMConfigError("KF_LLM_EXTRA_BODY must be a JSON object");
+    if (typeof v !== "object" || v === null || Array.isArray(v)) throw new LLMConfigError(`${name} must be a JSON object`);
+    return v as Record<string, unknown>;
+  };
+  const rawHeaders = jsonObject("KF_LLM_HEADERS");
+  if (rawHeaders && Object.values(rawHeaders).some((v) => typeof v !== "string")) throw new LLMConfigError("KF_LLM_HEADERS values must be strings");
+  const headers = rawHeaders as Record<string, string> | undefined;
+  const extraBody = jsonObject("KF_LLM_EXTRA_BODY");
+
+  // Space settings may only pick models the operator allows (KF_LLM_ALLOWED_MODELS, "*" suffix = prefix match).
+  const allowed = list(getEnv("KF_LLM_ALLOWED_MODELS"));
+  const check = (id: string | undefined, what: string) => {
+    if (!id || !allowed.length) return;
+    if (!isModelAllowed(id, allowed)) {
+      throw new LLMConfigError(`space setting ${what} "${id}" is not in KF_LLM_ALLOWED_MODELS (${allowed.join(", ")})`);
     }
-  }
+  };
+  check(overrides.model, "curator.model");
+  check(overrides.fastModel, "curator.fast_model");
+  for (const m of overrides.fallbackModels ?? []) check(m, "curator.fallback_models");
   const baseUrl = getEnv("KF_LLM_BASE_URL") || undefined;
   const gatewayKeys: Record<string, string> = {};
   const vercel = getEnv("AI_GATEWAY_API_KEY");
@@ -231,6 +249,11 @@ export function llmConfigFromEnv(
   };
 }
 
+/** Is `id` matched by the allow-list? Entries are exact ids or prefixes ending in "*" (e.g. "vercel/openai/*"). */
+export function isModelAllowed(id: string, allowed: string[]): boolean {
+  return allowed.some((a) => (a.endsWith("*") ? id.startsWith(a.slice(0, -1)) : id === a));
+}
+
 /** Deterministic LLM for tests and offline demos: returns queued outputs in order. */
 export class ScriptedLLM implements LLM {
   calls: GenerateRequest<unknown>[] = [];
@@ -239,6 +262,7 @@ export class ScriptedLLM implements LLM {
     this.outputs = outputs;
   }
   async generate<T>(req: GenerateRequest<T>): Promise<GenerateResult<T>> {
+    req.signal?.throwIfAborted();
     this.calls.push(req as GenerateRequest<unknown>);
     const raw = typeof this.outputs === "function" ? this.outputs(req as GenerateRequest<unknown>) : this.outputs.shift();
     if (raw === undefined) throw new LLMOutputError("ScriptedLLM ran out of outputs");

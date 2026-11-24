@@ -1,5 +1,6 @@
 import { ExternalLink } from "lucide-react";
 import type { Json } from "@/lib/database.types";
+import { safeHref } from "@/lib/safe-href";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -8,9 +9,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function Value({ v }: { v: unknown }) {
   if (v === null || v === undefined) return <span className="text-subtle">—</span>;
   if (typeof v === "string") {
-    if (/^https?:\/\//.test(v))
+    const href = safeHref(v);
+    if (href)
       return (
-        <a href={v} target="_blank" rel="noopener noreferrer" className="break-all text-accent hover:underline">
+        <a href={href} target="_blank" rel="noopener noreferrer" className="break-all text-accent hover:underline">
           {v}
         </a>
       );
@@ -67,10 +69,10 @@ export function parseSources(frontmatter: Json): SourceItem[] {
   const raw = frontmatter.sources;
   const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
   return list.map((s): SourceItem => {
-    if (typeof s === "string") return /^https?:\/\//.test(s) ? { label: s, url: s } : { label: s };
+    if (typeof s === "string") return safeHref(s) ? { label: s, url: safeHref(s)! } : { label: s };
     if (isRecord(s)) {
       const ref = typeof s.resource === "string" ? s.resource : typeof s.url === "string" ? s.url : typeof s.href === "string" ? s.href : undefined;
-      const url = ref && /^https?:\/\//.test(ref) ? ref : undefined;
+      const url = safeHref(ref) ?? undefined;
       const label = [s.title, s.name, s.id, url].find((x): x is string => typeof x === "string") ?? JSON.stringify(s);
       const detailBits = [s.type, s.kind, s.retrieved_at, s.at, s.date].filter((x): x is string => typeof x === "string");
       return { label, url, detail: detailBits.join(" · ") || undefined };

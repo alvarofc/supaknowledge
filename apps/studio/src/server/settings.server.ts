@@ -11,6 +11,10 @@ function friendly(code: string, message: string): string {
   return message.replace(/^Too small: expected number to be >=?/, "Must be at least ").replace(/^Too big: expected number to be <=?/, "Must be at most ");
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** Parsed space settings with defaults (the same parser the curator and policy engine use). */
 export function readSettings(raw: unknown): SpaceSettings {
   return parseSettings(raw);
@@ -36,11 +40,15 @@ export async function saveSettings(spaceId: string, input: unknown): Promise<Sav
   const { data: current, error: readError } = await supabase.from("spaces").select("settings").eq("id", spaceId).maybeSingle();
   if (readError || !current) return { ok: false, message: readError ? errorMessage(readError) : "Space not found" };
 
-  // keep unknown top-level keys other tools may have written
-  const previous = current.settings && typeof current.settings === "object" && !Array.isArray(current.settings) ? current.settings : {};
-  const merged = { ...previous, ...parsed.data } as unknown as NonNullable<Json>;
+  // keep keys other tools (or newer versions) wrote that this schema does not know, at the top level and inside
+  // each section (e.g. curator.stuck_after_minutes, read by the database's run reaper)
+  const previous = isPlainObject(current.settings) ? current.settings : {};
+  const merged: Record<string, unknown> = { ...previous };
+  for (const [k, v] of Object.entries(parsed.data)) {
+    merged[k] = isPlainObject(v) && isPlainObject(previous[k]) ? { ...previous[k], ...v } : v;
+  }
 
-  const { data, error } = await supabase.from("spaces").update({ settings: merged }).eq("id", spaceId).select("id");
+  const { data, error } = await supabase.from("spaces").update({ settings: merged as NonNullable<Json> }).eq("id", spaceId).select("id");
   if (error) return { ok: false, message: errorMessage(error) };
   if (!data?.length) return { ok: false, message: "Only space admins can change settings." };
   return { ok: true };

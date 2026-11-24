@@ -3,9 +3,10 @@ import { Link } from "@/components/ui/link";
 import { AgentBadge, AudienceBadge, FlagKindBadge } from "@/components/kf/badges";
 import { Badge } from "@/components/ui/badge";
 import type { Database } from "@/lib/database.types";
-import { timeAgo } from "@/lib/format";
+
 import type { ProfileMap } from "@/lib/format";
 import { DismissFlagButton } from "./dismiss-flag";
+import { Timestamp } from "@/components/kf/timestamp";
 
 export type FlagRow = Pick<
   Database["public"]["Tables"]["flags"]["Row"],
@@ -63,9 +64,7 @@ export function FlagItem({
         <AudienceBadge audience={flag.audience} groups={groups} />
         {flag.status !== "open" ? <Badge>{flag.status.replace("_", " ")}</Badge> : null}
         <span className="ml-auto flex items-center gap-2">
-          <time className="text-xs text-subtle" dateTime={flag.created_at} title={new Date(flag.created_at).toLocaleString()}>
-            {timeAgo(flag.created_at)}
-          </time>
+          <Timestamp iso={flag.created_at} className="text-xs text-subtle" />
           {canDismiss && flag.status === "open" ? <DismissFlagButton flagId={flag.id} observation={flag.observation} /> : null}
         </span>
       </div>

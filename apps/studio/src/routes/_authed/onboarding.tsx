@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { InvitationsBanner } from "@/components/invitations/invitations-banner";
 import { OnboardingWizard } from "@/components/onboarding/wizard";
 import { Logo } from "@/components/shell/logo";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
@@ -23,7 +24,7 @@ export const Route = createFileRoute("/_authed/onboarding")({
 });
 
 function OnboardingPage() {
-  const { initial, userId, hasAny } = Route.useLoaderData();
+  const { initial, userId, hasAny, invitations } = Route.useLoaderData();
   const deps = Route.useLoaderDeps();
   return (
     <div className="flex min-h-dvh flex-col">
@@ -40,7 +41,13 @@ function OnboardingPage() {
           <ThemeToggle />
         </div>
       </header>
-      <main className="flex flex-1 justify-center px-4 pt-[6vh] pb-16">
+      <main className="flex flex-1 flex-col items-center px-4 pt-[6vh] pb-16">
+        {invitations.length ? (
+          <div className="mb-8 w-full max-w-xl">
+            <InvitationsBanner invitations={invitations} />
+            {!hasAny ? <p className="mt-3 text-xs text-subtle">Or set up a workspace of your own:</p> : null}
+          </div>
+        ) : null}
         {/* a new ?workspace= / ?new= starts the wizard over, like a fresh page in the Next app */}
         <OnboardingWizard key={JSON.stringify(deps)} initial={initial} userId={userId} firstTime={!hasAny} />
       </main>

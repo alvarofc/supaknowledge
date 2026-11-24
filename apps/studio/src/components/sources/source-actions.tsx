@@ -50,7 +50,8 @@ export function SourceActions({ source, base, groups, myGroupIds }: { source: Ed
         <Button
           pending={pending}
           onClick={() =>
-            run(async () => supabase.from("sources").update({ status: source.status === "paused" ? "active" : "paused" }).eq("id", source.id), {
+            run(async () => supabase.from("sources").update({ status: source.status === "paused" ? "active" : "paused" }).eq("id", source.id).select("id"), {
+              expectRows: "Not changed: only space admins can manage sources",
               success: source.status === "paused" ? "Source resumed" : "Source paused: scheduled syncs stop until you resume it",
             })
           }
@@ -97,7 +98,7 @@ function EditSourceDialog({ source, groups, myGroupIds, onClose }: { source: Edi
     const supabase = createClient();
     const res = await run(
       async () => supabase.from("sources").update({ name: name.trim(), config, sync_interval: interval, audience }).eq("id", source.id).select("id"),
-      { success: "Source updated" },
+      { success: "Source updated", expectRows: "Not saved: only space admins can manage sources" },
     );
     if (res.ok) onClose();
   }
@@ -206,6 +207,7 @@ function DeleteSourceDialog({ source, base, onClose }: { source: EditableSource;
               const supabase = createClient();
               const res = await run(async () => supabase.from("sources").delete().eq("id", source.id).select("id"), {
                 success: "Source deleted",
+                expectRows: "Not deleted: only space admins can delete sources",
                 refresh: false,
               });
               if (res.ok) {

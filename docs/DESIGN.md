@@ -175,7 +175,7 @@ Every principal is a Supabase Auth user, so RLS is the single enforcement point 
 
 - **Humans** sign in to Studio with Supabase Auth.
 - **MCP clients** (Claude, Cursor…) sign in through Supabase Auth's **OAuth 2.1 server**, so the agent acts *as the user* and sees exactly what that user can see. The consent screen is in Studio (`/oauth/consent`). Tokens carry `client_id` for auditing.
-- **Headless agents** are Auth users with `app_metadata.kind = 'agent'`. Their API key (`skn_<agent-id>_<secret>`) is the Auth password; Edge Functions exchange it for a short-lived session, so RLS applies. Revoking an agent = banning its Auth user.
+- **Headless agents** are Auth users with `app_metadata.kind = 'agent'`. Their API key (`skn_<agent-id>_<secret>`) is the Auth password; Edge Functions exchange it for a short-lived session, so RLS applies. Revoking an agent = banning its Auth user (plus `agents.revoked_at` and deleting its sessions, added during the review).
 - **Cron/queues** call Edge Functions with an internal secret stored in Vault.
 
 Layers:
@@ -190,8 +190,8 @@ Rules worth knowing:
 
 - Agents are usually `reader`s: they can search, read and flag, but never see raw source documents (editors+) or other people's traces (reviewers+).
 - A flag inherits its concept's audience, so flags never leak restricted knowledge to reviewers who cannot read it.
-- A proposal is only visible to editors who can see **every** piece of evidence it cites and every audience it writes to.
-- **Escalation guard:** if a proposal would publish material from a restricted audience into a wider one (or widen an existing concept), the database marks it `escalation = true`, risk `high`. It can never be auto-applied and only a space **admin** can approve it. The curator also computes the narrowest safe audience for new concepts from their citations.
+- A proposal is only visible to editors who can see **every** piece of evidence it cites (or the curator consulted) and every audience it writes to. Proposals are created atomically by `create_proposal()`.
+- **Escalation guard:** if a proposal would publish material from a restricted audience into a wider one (or widen an existing concept), the database marks it `escalation = true`, risk `high`. It can never be auto-applied and only a (human) space **admin** can approve it. The curator also computes the narrowest safe audience for new concepts from their citations.
 - All knowledge writes go through `apply_proposal()` (single audited write path → revisions, verifications, audit log).
 
 ## 6. The agent-facing interface (MCP)
@@ -303,7 +303,7 @@ supabase/
     connectors/        notion, slack, github, gdrive, web, upload (+ Deno tests)
     _shared/           clients, caller auth, queue helpers, embedder; core/ = copy of packages/core/src
     _lib/              space resolution and error mapping for caller-facing functions
-  tests/database/      329 pgTAP tests of the access model
+  tests/database/      537 pgTAP tests of the access model
   seed.sql             local Vault secrets for cron (no demo data; see examples/)
 packages/
   core/                @supaknowledge/core: OKF + SKILL.md formats, links, chunking, access rules, settings + policy,

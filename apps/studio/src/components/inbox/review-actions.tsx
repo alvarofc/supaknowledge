@@ -7,19 +7,25 @@ import { Dialog } from "@/components/ui/dialog";
 import { Field, Textarea } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage } from "@/lib/format";
+import { callFunction } from "@/lib/functions";
 import { createClient } from "@/lib/supabase/client";
 
 /**
  * Approve (rpc apply_proposal) or reject (rpc reject_proposal) a proposal. The database re-checks
  * everything: reviewer role, visibility of all evidence, admin for escalations, and base revisions.
+ * Skill files travel inside the ops (`after.files`) and are copied into Storage by `bundle/sync-files` once the
+ * proposal is applied (same as `kf approve`).
  */
 export function ReviewActions({
   proposalId,
   canApprove,
   canReject,
   approveBlockedReason,
+  hasFiles = false,
 }: {
   proposalId: string;
+  /** some op carries skill files (after.files) that must be synced into Storage after applying */
+  hasFiles?: boolean;
   canApprove: boolean;
   canReject: boolean;
   approveBlockedReason?: string | null;
@@ -51,7 +57,17 @@ export function ReviewActions({
       if (data?.status === "conflicted") {
         toast.error("Not applied: the knowledge changed since this proposal was drafted. See the conflict details.");
       } else {
-        toast.success("Applied. The knowledge is updated and verified by you.");
+        let synced: number | null = null;
+        if (hasFiles) {
+          try {
+            synced = (await callFunction<{ files_synced: number }>("bundle/sync-files", { body: { proposal_id: proposalId } })).files_synced;
+          } catch (e) {
+            toast.error(`Applied, but the skill files were not synced into Storage: ${errorMessage(e)}`);
+          }
+        }
+        toast.success(
+          `Applied. The knowledge is updated and verified by you.${synced ? ` ${synced} skill file${synced === 1 ? "" : "s"} synced.` : ""}`,
+        );
       }
       close();
       startTransition(() => router.invalidate());

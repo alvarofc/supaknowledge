@@ -29,16 +29,24 @@ Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markd
 - **Reads** run in route loaders that call `createServerFn` server functions (`src/server/*.functions.ts`). They
   query as the user with the server client. Helpers that may only run on the server live in `*.server.ts` files, which
   Start's import protection keeps out of the browser bundle. Pages render on the server and hydrate. Hovering a link
-  preloads the next page's data.
+  preloads the next page's data. Dates render through `<Timestamp>` (`src/components/kf/timestamp.tsx`): English and
+  UTC on the server and during hydration, then the viewer's locale and time zone, so server and browser markup match.
 - **Writes** happen in small client components that use the browser client and call the RPCs in
   `supabase/migrations`: `apply_proposal`, `reject_proposal`, `dismiss_flag`, `verify_concept`, `propose_revert`,
-  `flag_knowledge`, `set_source_secret`, `request_source_sync`, `request_curator_run`, `create_workspace`,
-  `create_space`.
-  - Some writes are plain inserts or updates under RLS, such as human proposals (`proposals` + `proposal_ops`),
-    members and groups.
+  `flag_knowledge`, `set_source_secret`, `request_source_sync`, `request_curator_run`, `cancel_curator_run`,
+  `create_proposal`, `create_workspace`, `create_space`, `invite_to_workspace`, `list_my_invitations`,
+  `accept_invitation`, `decline_invitation`.
+  - Human proposals ("Suggest an edit", "New concept") go through `create_proposal`, which inserts the proposal, its
+    ops and citations in one transaction (direct inserts into the proposal tables are revoked).
+  - Some writes are plain inserts, updates or deletes under RLS, such as members, groups, grants and sources. They
+    ask for the affected rows back (`.select()`): RLS silently filters rows you may not change, so zero rows is
+    reported as an error instead of a false success.
   - After a write, the component calls `router.invalidate()` so the loaders run again.
 - **Edge Functions** are called with the user's access token as the Bearer (`src/lib/functions.ts`):
-  - `agents`: create, rotate, revoke and delete headless agents.
+  - `agents`: list headless agents (with whether each is revoked), create, rotate, revoke, restore and delete them.
+    Agent rows can only be deleted through this function.
+  - `bundle/sync-files`: after approving a proposal whose ops carry skill files, copies them into Storage (as
+    `kf approve` does).
   - `connectors/upload`: upload documents to `upload` sources.
   - `mcp`: the address shown in the "connect your agent" snippets.
 
@@ -100,7 +108,9 @@ npx supabase gen types typescript --local --schema public > apps/studio/src/lib/
 ### First steps
 
 1. Sign up at `/signup` with a password, or with an email link. Local emails go to Mailpit at http://127.0.0.1:54324.
-2. Onboarding (`/onboarding`) has three steps:
+2. If someone invited your e-mail address to a workspace, a **You've been invited** banner (on onboarding and on
+   Home) lists the invitation with Accept and Decline; accepting opens the workspace. Otherwise onboarding
+   (`/onboarding`) has three steps:
    - Create a workspace (`create_workspace`).
    - Create the first space (`create_space`).
    - Connect an agent: OAuth snippets for your own assistant, or a link to create a headless agent key.
@@ -117,8 +127,10 @@ curl -X POST http://127.0.0.1:54321/auth/v1/admin/users \
   -d '{"email":"bob@example.com","password":"password123","email_confirm":true}'
 ```
 
-Then add them to a workspace from **Settings → Members**. People find their user ID on the onboarding screen and in
-Settings.
+Then invite them from **Settings → Members → Invite by e-mail** (workspace owners and admins; only owners can invite
+owners). No e-mail is sent: the person signs in with that (verified) address and accepts the invitation from the
+banner. Pending invitations are listed under Members with their expiry (14 days) and a Revoke button. People cannot be
+added to a workspace without accepting; see [access control](access-control.md#joining-a-workspace-invitations).
 
 ## Environment variables
 
@@ -126,6 +138,13 @@ Settings.
 |---|---|---|
 | `VITE_SUPABASE_URL` | yes | Project URL, such as `https://<ref>.supabase.co`. Locally `http://127.0.0.1:54321`. |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | yes | The project's **publishable** key (`sb_publishable_…`). The legacy anon key also works. |
+
+Optional, server-only (read at runtime by the auth routes, not inlined; no `VITE_` prefix):
+
+| Variable | Value |
+|---|---|
+| `SITE_URL` | Studio's public URL, such as `https://studio.example.com`. When set, sign-in / sign-out redirects always go there instead of being derived from request headers. Recommended in production. |
+| `TRUST_PROXY` | `1` only behind a reverse proxy that overwrites `X-Forwarded-Host` / `X-Forwarded-Proto`. Without it Studio ignores those headers and uses the `Host` header (validated), then the request URL. |
 
 That's all. Don't add a secret or service-role key: nothing in Studio needs one.
 
@@ -161,16 +180,19 @@ The flow:
      client and scopes, so there is nothing to decide. The loader throws `redirect({ href })`, which is a 307 during SSR.
    - Otherwise it shows:
      - the client name, logo and site;
-     - **which account is consenting**, with a "switch account" option;
-     - that the agent **acts with the user's own permissions** (same spaces, roles and audience groups, and every action
-       recorded under their account);
+     - **which account is consenting**, with a "switch account" option (it signs out and returns to the same
+       authorization request after the new sign-in);
+     - that the agent **reads with the user's own permissions** (same spaces and audience groups, every action
+       recorded under their account) and can search, read and flag, but never edit, approve or administer;
      - the requested scopes in plain language;
      - the exact redirect URI, with a warning if it uses plain HTTP on a non-loopback host.
    - **Allow** calls `supabase.auth.oauth.approveAuthorization(id, { skipBrowserRedirect: true })`. **Deny** calls
      `denyAuthorization(...)`. Both then send the browser to the returned `redirect_url`: the authorization code on
      approve, `access_denied` on deny.
 4. The client exchanges the code at `/auth/v1/oauth/token` (PKCE). The tokens carry `client_id`. PostgREST and the `mcp`
-   function treat them like the user's own session, so RLS applies unchanged.
+   function apply RLS as the user, and the database additionally limits OAuth-client tokens to reading, searching,
+   logging usage, flagging and recording traces: they cannot create, apply or reject proposals, verify or revert
+   concepts, or change workspaces, members, groups, sources or agents, whatever the user's role.
 
 People can see and revoke the applications they approved under **Agents → Connected applications**
 (`auth.oauth.listGrants()` / `revokeGrant()`).
@@ -239,21 +261,21 @@ CDN cache them.
 
 | Route | What it does |
 |---|---|
-| `/login`, `/signup` | Password or email-link sign-in and sign-up. `?next=` is preserved, and only same-origin paths are allowed. |
+| `/login`, `/signup` | Password or email-link sign-in and sign-up. `?next=` is preserved, and only same-origin paths are allowed (control characters, backslashes and anything that resolves to another origin are rejected). |
 | `/auth/callback`, `/auth/confirm` | Server routes: PKCE code exchange and token-hash verification for email links. |
-| `/auth/signout` | Server route, POST: signs out and returns to `/login`. |
+| `/auth/signout` | Server route, POST: signs out and returns to `/login` (keeping a validated `next`). Cross-site POSTs are refused (`Sec-Fetch-Site` / `Origin` check). |
 | `/oauth/consent` | The consent screen for MCP clients (see above). |
-| `/onboarding` | Create a workspace, then a space, then connect an agent. `?workspace=<slug>` skips to "new space". |
+| `/onboarding` | Pending invitations (accept / decline), then create a workspace, a space, and connect an agent. `?workspace=<slug>` skips to "new space". |
 | `/w/<ws>/<space>` | **Inbox**: pending proposals (risk, escalation), open flags (dismiss), and history including auto-applied changes. Updates live. |
-| `…/proposals/<id>` | **Review**: rationale; per-change field, frontmatter and body diffs (split or unified); citations with quotes and links to documents, traces and flags; review notes; approve with an optional note or reject with a required one; conflicts explained. |
+| `…/proposals/<id>` | **Review**: rationale; per-change field, frontmatter and body diffs (split or unified); skill files by name and size; citations with quotes and links to documents, traces and flags; evidence the curator consulted but did not cite, listed separately (it still decides visibility and escalation); review notes; approve with an optional note (skill files are then synced into Storage) or reject with a required one; conflicts explained. |
 | `…/knowledge` | Concept tree (kind icons, trust, stale, restricted), kind filters, full-text search (`search_knowledge`). |
 | `…/knowledge/<path>` | Rendered markdown with footnotes, frontmatter, OKF sources, links and backlinks, files, open flags. History tab with diffs between revisions. Actions: verify, revert (`propose_revert`), suggest an edit, report a problem. |
-| `…/suggest[?path=]` | Editor that creates a human proposal (insert `proposals` + `proposal_ops` under RLS), with a live diff and preview. |
-| `…/sources` | Sources with status, last sync and errors. Add a source (connector config forms and audience), set a write-only token, sync now, browse and search documents, upload to `upload` sources. |
-| `…/agents` | "Connect as yourself" (OAuth) snippets; headless agents (create shows the key once, plus snippets for Claude Code, Cursor and generic clients; rotate, revoke, delete); connected applications. |
-| `…/activity` | Curator runs (run now, stats, tasks for admins), traces with a transcript viewer (reviewers and up), audit log (admins). |
+| `…/suggest[?path=]` | Editor that creates a human proposal (`create_proposal`, atomic), with a live diff and preview. |
+| `…/sources` | Sources with status, last sync and errors. Add a source (connector config forms with the keys each connector reads, such as GitHub `ref` or Web `follow_links` / `sitemap` / `max_pages` / `same_origin_only`; audience), set a write-only token, sync now, browse and search documents, upload to `upload` sources. |
+| `…/agents` | "Connect as yourself" (OAuth) snippets; headless agents (create shows the key once, plus snippets for Claude Code, Cursor and generic clients; rotate, revoke, restore, delete; revoked agents are marked); connected applications. Revoke, rotate and delete sign the agent's sessions out; its old key stops working within seconds. |
+| `…/activity` | Curator runs (run now, cancel a queued or running run, stats, tasks for admins with their input and output loaded on demand), traces with a transcript viewer (reviewers and up), audit log (admins). |
 | `…/health` | `knowledge_health`: counts by kind and trust, stale, open and missing flags, flag rate per concept, never-used concepts, last run. |
-| `…/settings` | General (name, visibility, delete), curator (model ids, research steps, caps, house rules) and auto-apply policy (form for `SpaceSettingsSchema`), members (space and workspace), groups and their members, group grants. |
+| `…/settings` | General (name, visibility, delete), curator (model ids, research steps and scope, caps incl. the token budget per run, flag cooldown, stuck-run timeout, auto-dismissing flags, house rules), auto-apply policy (incl. untrusted source kinds) and retention (trace and usage days) — a field for every key of `SpaceSettingsSchema`; members (space and workspace; invite by e-mail, pending invitations), groups and their members, group grants. |
 
 Roles shape the navigation:
 - Readers don't see Sources or Activity.

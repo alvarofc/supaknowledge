@@ -10,6 +10,7 @@ import { slugify } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
 import { useMutation } from "@/lib/use-mutation";
 import type { Person } from "./people";
+import { useConfirm } from "@/components/ui/confirm";
 
 export type GroupRow = {
   id: string;
@@ -61,6 +62,7 @@ export function Groups({ workspaceId, groups, people, canManage, me }: { workspa
 
 function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; people: Person[]; canManage: boolean; me: string; onEdit: () => void }) {
   const { run, pending } = useMutation();
+  const [confirm, confirmDialog] = useConfirm();
   const [add, setAdd] = useState("");
   const supabase = createClient();
   const candidates = people.filter((p) => !group.members.some((m) => m.user_id === p.user_id));
@@ -89,9 +91,18 @@ function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; 
               size="sm"
               aria-label={`Delete ${group.name}`}
               disabled={pending}
-              onClick={() => {
-                if (!window.confirm(`Delete the group “${group.name}”? Anything restricted only to it becomes invisible to everyone until its audience is changed.`)) return;
-                void run(async () => supabase.from("groups").delete().eq("id", group.id), { success: "Group deleted" });
+              onClick={async () => {
+                const ok = await confirm({
+                  title: `Delete the group “${group.name}”?`,
+                  description:
+                    "Its members lose any access granted through it. A group that is still used as an audience (by knowledge, sources or documents) can't be deleted: change those audiences first.",
+                  confirmLabel: "Delete group",
+                });
+                if (!ok) return;
+                void run(async () => supabase.from("groups").delete().eq("id", group.id).select("id"), {
+                  success: "Group deleted",
+                  expectRows: "Not deleted: only workspace admins can delete groups",
+                });
               }}
             >
               <Trash className="size-3.5" />
@@ -109,7 +120,12 @@ function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; 
                 aria-label={`Remove ${m.name} from ${group.name}`}
                 disabled={pending}
                 className="rounded-full p-0.5 text-subtle hover:bg-surface-3 hover:text-fg"
-                onClick={() => run(async () => supabase.from("group_members").delete().eq("group_id", group.id).eq("user_id", m.user_id), { success: `${m.name} removed` })}
+                onClick={() =>
+                  run(async () => supabase.from("group_members").delete().eq("group_id", group.id).eq("user_id", m.user_id).select("user_id"), {
+                    success: `${m.name} removed`,
+                    expectRows: "Not removed: only workspace admins can change group membership",
+                  })
+                }
               >
                 <X className="size-3" />
               </button>
@@ -146,6 +162,7 @@ function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; 
         ) : null}
         {!group.members.length && !canManage ? <span className="text-xs text-subtle">No members</span> : null}
       </div>
+      {confirmDialog}
     </li>
   );
 }
@@ -179,8 +196,11 @@ function GroupDialog({ workspaceId, group, onClose }: { workspaceId: string; gro
     const supabase = createClient();
     const values = { name: name.trim(), slug, description: description.trim() || null, external_ref };
     const res = await run(
-      async () => (group ? supabase.from("groups").update(values).eq("id", group.id) : supabase.from("groups").insert({ ...values, workspace_id: workspaceId })),
-      { success: group ? "Group updated" : "Group created" },
+      async () =>
+        group
+          ? supabase.from("groups").update(values).eq("id", group.id).select("id")
+          : supabase.from("groups").insert({ ...values, workspace_id: workspaceId }).select("id"),
+      { success: group ? "Group updated" : "Group created", expectRows: "Not saved: only workspace admins can manage groups" },
     );
     if (res.ok) onClose();
   }

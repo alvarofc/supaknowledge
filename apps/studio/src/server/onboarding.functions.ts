@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { isWorkspaceAdmin } from "@/lib/roles";
 import { getNavigation, requireUser } from "@/server/space.server";
 import { getSupabase } from "@/server/supabase.server";
+import { myInvitations } from "@/server/invitations.functions";
 
 type Step = "workspace" | "space" | "connect";
 type OnboardingSearch = { workspace?: string; space?: string; step?: string };
@@ -11,8 +12,11 @@ export const loadOnboarding = createServerFn({ method: "GET" })
   .validator((d: OnboardingSearch) => d)
   .handler(async ({ data: sp }) => {
     const user = await requireUser("/onboarding");
-    const nav = await getNavigation();
-    const { data: memberships } = await getSupabase().from("workspace_members").select("workspace_id, role").eq("user_id", user.id);
+    const [nav, { data: memberships }, invitations] = await Promise.all([
+      getNavigation(),
+      getSupabase().from("workspace_members").select("workspace_id, role").eq("user_id", user.id),
+      myInvitations(),
+    ]);
     const adminOf = new Set((memberships ?? []).filter((m) => isWorkspaceAdmin(m.role)).map((m) => m.workspace_id));
 
     const ws = sp.workspace ? nav.workspaces.find((w) => w.slug === sp.workspace) : undefined;
@@ -23,5 +27,5 @@ export const loadOnboarding = createServerFn({ method: "GET" })
     else if (ws && adminOf.has(ws.id)) initial = { step: "space", workspace: ws };
     else initial = { step: "workspace" };
 
-    return { initial, userId: user.id, hasAny: nav.workspaces.length > 0 };
+    return { initial, userId: user.id, hasAny: nav.workspaces.length > 0, invitations };
   });

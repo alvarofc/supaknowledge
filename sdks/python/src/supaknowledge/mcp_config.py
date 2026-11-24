@@ -10,6 +10,10 @@ from urllib.parse import quote
 McpClientKind = Literal["claude-code", "cursor", "claude-desktop", "generic"]
 
 
+def _quote(s: str) -> str:
+    return s if re.fullmatch(r"[A-Za-z0-9_\-./:=%@]+", s) else shlex.quote(s)
+
+
 def mcp_endpoint(url: str, space: str) -> str:
     return f"{url.rstrip('/')}/functions/v1/mcp?space={quote(space, safe='/')}"
 
@@ -39,7 +43,7 @@ def build_mcp_config(
         entry: dict[str, Any] = {"type": "http", "url": endpoint}
         if not oauth:
             entry["headers"] = {"Authorization": f"Bearer {api_key or '${' + api_key_env + '}'}"}
-        cmd = ["claude", "mcp", "add", "--transport", "http", name, shlex.quote(endpoint) if not re.fullmatch(r"[A-Za-z0-9_\-./:=%@]+", endpoint) else endpoint]
+        cmd = ["claude", "mcp", "add", "--transport", "http", _quote(name), _quote(endpoint)]
         if not oauth:
             cmd += ["--header", shlex.quote(f"Authorization: Bearer {api_key}") if api_key else f'"Authorization: Bearer ${api_key_env}"']
         else:

@@ -1,4 +1,4 @@
-import { Field, Input, Textarea } from "@/components/ui/form";
+import { Checkbox, Field, Input, Textarea } from "@/components/ui/form";
 import { connectorDef } from "./connectors";
 import type { ConfigDraft, ConnectorKind } from "./connectors";
 
@@ -33,6 +33,19 @@ export function ConfigFields({
           "aria-invalid": errors[f.key] ? true : undefined,
           "aria-describedby": errors[f.key] ? `${id}-error` : f.hint ? `${id}-hint` : undefined,
         };
+        if (f.kind === "boolean") {
+          return (
+            <Checkbox
+              key={f.key}
+              id={id}
+              label={f.label}
+              description={f.hint}
+              checked={draft[f.key] === "true"}
+              disabled={disabled}
+              onChange={(e) => onChange({ ...draft, [f.key]: String(e.target.checked) })}
+            />
+          );
+        }
         return (
           <Field key={f.key} label={f.label} htmlFor={id} hint={f.hint} error={errors[f.key]} optional={!f.required}>
             {f.kind === "list" ? (
@@ -41,8 +54,8 @@ export function ConfigFields({
               <Input
                 {...common}
                 type={f.kind === "number" ? "number" : "text"}
-                min={f.kind === "number" ? 0 : undefined}
-                max={f.kind === "number" ? 5 : undefined}
+                min={f.kind === "number" ? (f.min ?? 0) : undefined}
+                max={f.kind === "number" ? f.max : undefined}
                 className={f.kind === "text" ? "font-mono text-xs" : undefined}
                 onChange={(e) => onChange({ ...draft, [f.key]: e.target.value })}
               />

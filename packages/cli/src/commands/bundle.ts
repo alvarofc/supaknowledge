@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { isNotDeployed, SupaknowledgeError } from "@supaknowledge/sdk";
-import { dirname, join, posix, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 import { exportViaRest, importViaRest, lintLocal, type ImportResponse, type LintResponse } from "../bundle-rest.ts";
 import { CliError, type Ctx, type SpaceRef } from "../context.ts";
 import { readTree, toBuffer, writeManaged, type BundleFile, type WriteReport, type WriteTarget } from "../files.ts";
@@ -42,7 +42,7 @@ export function registerBundle(program: Command, run: Runner): void {
     .option("--dry-run", "show what would change without writing")
     .addHelpText(
       "after",
-      "\nFiles kf writes are tracked in .supaknowledge/manifest.json next to .supaknowledge.json (or in the current directory).\nExisting files that kf did not write, or that you edited, are left alone unless --force.\n\nExamples:\n  kf pull\n  kf pull --skills-dir .deepagents/skills --no-bundle",
+      "\nDirectories are relative to the project root (where .supaknowledge.json is; else the current directory).\nFiles kf writes are tracked in .supaknowledge/manifest.json next to .supaknowledge.json (or in the current directory).\nExisting files that kf did not write, or that you edited, are left alone unless --force.\n\nExamples:\n  kf pull\n  kf pull --skills-dir .deepagents/skills --no-bundle",
     )
     .action(run(pullCmd));
 }
@@ -79,6 +79,9 @@ async function importCmd(ctx: Ctx, dir: string, opts: { apply?: boolean; title?:
       ctx.note(ctx.c.dim("bundle function not deployed; importing through PostgREST"));
       via = "rest";
       res = await importViaRest(ctx, sp, files, opts);
+      if (opts.apply && res.proposal_id && res.status !== "applied") {
+        failure = res.apply_error ?? `proposal ${res.status ?? "not applied"}`;
+      }
     } else throw e;
   }
   ctx.out({ ...res, files: files.length, via }, () => {
@@ -193,18 +196,31 @@ export function skillTargets(files: BundleFile[], skillsDir: string): WriteTarge
   return out;
 }
 
+/**
+ * A `kf pull` target directory as a POSIX path relative to the project root. Relative paths are relative to the
+ * project root (where .supaknowledge.json lives), not the current directory, so `kf pull` writes to the same place
+ * from any subdirectory. The root itself is refused: pruning is scoped to these directories.
+ */
+export function projectSubdir(root: string, dir: string, flag: string): string {
+  const rel = relative(root, resolve(root, dir)).split("\\").join("/");
+  if (rel === "" || rel === ".") throw new CliError(`${flag} must be a subdirectory of the project, not its root`, { exitCode: 2 });
+  if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) throw new CliError(`${flag} must be inside the project (${root})`, { exitCode: 2 });
+  return rel.replace(/\/+$/, "");
+}
+
 async function pullCmd(
   ctx: Ctx,
   opts: { skillsDir: string; bundleDir: string; skills: boolean; bundle: boolean; force?: boolean; dryRun?: boolean },
 ): Promise<void> {
-  const sp = await ctx.space();
   const project = ctx.project();
   const root = project ? dirname(project.path) : resolve(ctx.io.cwd);
-  const rel = (p: string) => relative(root, resolve(ctx.io.cwd, p)).split("\\").join("/");
-  const skillsDir = rel(opts.skillsDir);
-  const bundleDir = rel(opts.bundleDir);
-  if (skillsDir.startsWith("..") || bundleDir.startsWith("..")) throw new CliError("--skills-dir and --bundle-dir must be inside the project", { exitCode: 2 });
+  const skillsDir = projectSubdir(root, opts.skillsDir, "--skills-dir");
+  const bundleDir = projectSubdir(root, opts.bundleDir, "--bundle-dir");
+  if (opts.skills && opts.bundle && (skillsDir === bundleDir || skillsDir.startsWith(bundleDir + "/") || bundleDir.startsWith(skillsDir + "/"))) {
+    throw new CliError("--skills-dir and --bundle-dir must not overlap", { exitCode: 2 });
+  }
 
+  const sp = await ctx.space();
   const files = await exportFiles(ctx, sp, false);
   const targets: WriteTarget[] = [];
   if (opts.skills) targets.push(...skillTargets(files, skillsDir));

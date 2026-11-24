@@ -85,7 +85,9 @@ Deno.test("slack: incremental sync asks for oldest = cursor - lookback and rebui
   const cursorTs = "1795452300.000300";
   const changes = await collect(slack, makeCtx(slack, { channels: [CH], thread_lookback_days: 1 }, { fetch: f, cursor: { channels: { [CH]: { oldest: cursorTs } } } }));
   const first = f.calls.find((c) => c.url.includes("conversations.history"))!;
-  assertEquals(new URL(first.url).searchParams.get("oldest"), (Number(cursorTs) - 86400).toFixed(6));
+  // whole UTC days: the window starts at 00:00 of the day containing cursor - lookback
+  const lookback = Number(cursorTs) - 86400;
+  assertEquals(new URL(first.url).searchParams.get("oldest"), (Math.floor(lookback / 86400) * 86400).toFixed(6));
   // 11-23 is rebuilt because of the newer thread reply, 11-24 because of the new message
   assertEquals(upserts(changes).map((d) => d.externalId), [`${CH}:2026-11-23`, `${CH}:2026-11-24`]);
 
@@ -110,4 +112,37 @@ Deno.test("slack: channels dropped from config are deleted; not_in_channel is a 
   const { f: f2 } = await api({ history: () => ({ ok: false, error: "not_in_channel" }) });
   await assertRejects(() => collect(slack, makeCtx(slack, { channels: [CH] }, { fetch: f2 })), ConfigError, "invite it");
   assertThrows(() => slack.parseConfig({ channels: ["general"] }), ConfigError, "not a channel id");
+});
+
+Deno.test("slack: thread replies advance the cursor (no endless re-fetch of a day with a late reply)", async () => {
+  // the last top-level message is the 11-23 16:45 one; its thread got a reply at 17:10 (latest_reply)
+  const { fx } = await api();
+  const history = fx.history.messages.filter((m) => m.ts !== "1795516200.000200" && m.ts !== "1795507200.000100");
+  const route = (url: URL) => {
+    const oldest = Number(url.searchParams.get("oldest"));
+    const latest = Number(url.searchParams.get("latest") ?? Infinity);
+    return { ...fx.history, messages: history.filter((m) => Number(m.ts) >= oldest && Number(m.ts) <= latest) };
+  };
+  const { f } = await api({ history: route });
+  const run1 = await collect(slack, makeCtx(slack, { channels: [CH] }, { fetch: f, cursor: { channels: { [CH]: { oldest: "1795452300.000300" } } } }));
+  assertEquals(upserts(run1).map((d) => d.externalId), [`${CH}:2026-11-23`]);
+  const oldest = (lastCursor(run1)!.cursor as { channels: Record<string, { oldest: string }> }).channels[CH]!.oldest;
+  assertEquals(oldest, "1795453800.000500"); // = latest_reply, not the top-level ts
+
+  // a month later nothing changed: the day is not rebuilt and no replies are fetched
+  const { f: f2 } = await api({ history: route });
+  const run2 = await collect(slack, makeCtx(slack, { channels: [CH] }, { fetch: f2, cursor: { channels: { [CH]: { oldest } } }, now: new Date("2026-12-24T12:00:00Z") }));
+  assertEquals(upserts(run2).length, 0);
+  assertEquals(f2.calls.some((c) => c.url.includes("conversations.replies")), false);
+  assertEquals((lastCursor(run2)!.cursor as { channels: Record<string, { oldest: string }> }).channels[CH]!.oldest, oldest);
+});
+
+Deno.test("slack: a long backfill is fetched in bounded day windows, oldest first", async () => {
+  const { f } = await api();
+  await collect(slack, makeCtx(slack, { channels: [CH], since_days: 30 }, { fetch: f, full: true }));
+  const windows = f.calls.filter((c) => c.url.includes("conversations.history")).map((c) => new URL(c.url).searchParams);
+  assert(windows.length >= 4, `expected several windows, got ${windows.length}`);
+  for (const w of windows) assert(Number(w.get("latest")) - Number(w.get("oldest")) < 7 * 86400 + 1);
+  const starts = windows.map((w) => Number(w.get("oldest")));
+  assertEquals(starts, [...starts].sort((a, b) => a - b));
 });

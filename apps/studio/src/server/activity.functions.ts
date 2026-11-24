@@ -21,20 +21,38 @@ async function loadRuns(ctx: SpaceContext, isAdmin: boolean) {
     .order("created_at", { ascending: false })
     .limit(50);
   const list = runs ?? [];
-  const { data: tasks } =
+  // task rows without their (large) input/output payloads: those load on demand (loadTaskPayload)
+  const [{ data: tasks }, profiles] = await Promise.all([
     isAdmin && list.length
-      ? await supabase
+      ? supabase
           .from("curator_tasks")
-          .select("id, run_id, step, status, attempts, error, input, output, created_at, finished_at")
+          .select("id, run_id, step, status, attempts, error, created_at, finished_at")
           .in(
             "run_id",
             list.map((r) => r.id),
           )
           .order("created_at")
-      : { data: [] as never[] };
-  const profiles = await getProfiles(list.map((r) => r.requested_by));
+      : Promise.resolve({ data: [] as never[] }),
+    getProfiles(list.map((r) => r.requested_by)),
+  ]);
   return { list, tasks: tasks ?? [], profiles };
 }
+
+/** Input and output of one curator task (space admins; RLS decides), loaded when its details are opened. */
+export const loadTaskPayload = createServerFn({ method: "GET" })
+  .validator((d: SpaceParams & { taskId: string }) => spaceParams(d))
+  .handler(async ({ data }) => {
+    const ctx = await getSpaceContext(data.workspace, data.space);
+    if (!/^[0-9a-f-]{36}$/i.test(data.taskId)) throw notFound();
+    const { data: task } = await getSupabase()
+      .from("curator_tasks")
+      .select("input, output")
+      .eq("id", data.taskId)
+      .eq("space_id", ctx.space.id)
+      .maybeSingle();
+    if (!task) throw notFound();
+    return task;
+  });
 
 async function loadTraces(ctx: SpaceContext, from: number) {
   const { data, count } = await getSupabase()
@@ -121,9 +139,11 @@ export const loadTrace = createServerFn({ method: "GET" })
     const flags = (flagsRes.data ?? []) as FlagRow[];
     const usage = usageRes.data ?? [];
     const conceptIds = [...new Set(usage.map((u) => u.concept_id))];
-    const { data: concepts } = conceptIds.length
-      ? await supabase.from("concepts").select("id, path, title, kind").in("id", conceptIds)
-      : { data: [] as { id: string; path: string; title: string; kind: "skill" | "domain" | "data_access" }[] };
-    const profiles = await getProfiles([trace.principal_id, trace.on_behalf_of, ...flags.map((f) => f.created_by)]);
+    const [{ data: concepts }, profiles] = await Promise.all([
+      conceptIds.length
+        ? supabase.from("concepts").select("id, path, title, kind").in("id", conceptIds)
+        : Promise.resolve({ data: [] as { id: string; path: string; title: string; kind: "skill" | "domain" | "data_access" }[] }),
+      getProfiles([trace.principal_id, trace.on_behalf_of, ...flags.map((f) => f.created_by)]),
+    ]);
     return { trace, events, flags, usage, conceptIds, concepts: concepts ?? [], profiles };
   });

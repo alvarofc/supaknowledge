@@ -81,8 +81,13 @@ export function AccessGrants({
                       onChange={(e) =>
                         run(
                           async () =>
-                            supabase.from("space_group_grants").update({ role: e.target.value as SpaceRole }).eq("space_id", spaceId).eq("group_id", g.group_id),
-                          { success: "Grant updated" },
+                            supabase
+                              .from("space_group_grants")
+                              .update({ role: e.target.value as SpaceRole })
+                              .eq("space_id", spaceId)
+                              .eq("group_id", g.group_id)
+                              .select("group_id"),
+                          { success: "Grant updated", expectRows: "Not changed: only space admins can change group access" },
                         )
                       }
                     >
@@ -97,7 +102,12 @@ export function AccessGrants({
                       size="sm"
                       aria-label={`Remove grant for ${name(g.group_id)}`}
                       disabled={pending}
-                      onClick={() => run(async () => supabase.from("space_group_grants").delete().eq("space_id", spaceId).eq("group_id", g.group_id), { success: "Grant removed" })}
+                      onClick={() =>
+                        run(async () => supabase.from("space_group_grants").delete().eq("space_id", spaceId).eq("group_id", g.group_id).select("group_id"), {
+                          success: "Grant removed",
+                          expectRows: "Not removed: only space admins can change group access",
+                        })
+                      }
                     >
                       <Trash className="size-3.5" />
                     </Button>

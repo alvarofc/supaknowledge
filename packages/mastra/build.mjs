@@ -18,7 +18,7 @@ await build({
   format: "esm",
   platform: "neutral",
   target: "es2022",
-  sourcemap: true,
+  sourcemap: false,
   legalComments: "none",
   external: [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {}), "@mastra/core/*"],
 });

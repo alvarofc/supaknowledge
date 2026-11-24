@@ -9,6 +9,9 @@ import { createClient } from "@/lib/supabase/client";
 import { ROLE_HELP } from "@/lib/roles";
 import type { SpaceRole, WorkspaceRole } from "@/lib/roles";
 import { useMutation } from "@/lib/use-mutation";
+import { useConfirm } from "@/components/ui/confirm";
+import { Timestamp } from "@/components/kf/timestamp";
+import { invitationErrorMessage, invitationState, normalizeEmail } from "@/lib/invitations";
 
 export type Person = { user_id: string; name: string; kind: "human" | "agent" };
 
@@ -99,7 +102,8 @@ export function SpaceMembers({
                       )
                     }
                   >
-                    {SPACE_ROLES.map((r) => (
+                    {/* agents can never be space admins (enforced by the database) */}
+                    {SPACE_ROLES.filter((r) => m.kind !== "agent" || r !== "admin" || m.role === "admin").map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
@@ -183,10 +187,13 @@ const WS_ROLE_HELP: Record<WorkspaceRole, string> = {
   member: "Sees spaces with workspace visibility, plus spaces they're added to",
 };
 
+export type PendingInvitation = { id: string; email: string; role: WorkspaceRole; created_at: string; expires_at: string; invited_by_name: string | null };
+
 export function WorkspaceMembers({
   workspaceId,
   workspaceName,
   members,
+  invitations,
   canManage,
   isOwner,
   me,
@@ -194,23 +201,25 @@ export function WorkspaceMembers({
   workspaceId: string;
   workspaceName: string;
   members: (Person & { role: WorkspaceRole })[];
+  invitations: PendingInvitation[];
   canManage: boolean;
   isOwner: boolean;
   me: string;
 }) {
   const { run, pending } = useMutation();
-  const [addId, setAddId] = useState("");
-  const [addRole, setAddRole] = useState<WorkspaceRole>("member");
+  const [email, setEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<WorkspaceRole>("member");
   const supabase = createClient();
   const owners = members.filter((m) => m.role === "owner").length;
+  const [confirm, confirmDialog] = useConfirm();
   const roles: WorkspaceRole[] = isOwner ? ["member", "admin", "owner"] : ["member", "admin"];
-  const idValid = UUID_RE.test(addId.trim());
+  const normalized = normalizeEmail(email);
 
   return (
     <Card>
       <CardHeader
         title={`Workspace members · ${workspaceName}`}
-        description="People (and agents) in the workspace. New people sign up at Studio, then a workspace admin adds them here by user ID."
+        description="People (and agents) in the workspace. Admins invite people by e-mail; nobody joins a workspace until they accept."
       />
       <ul className="divide-y divide-line">
         {members.map((m) => {
@@ -246,7 +255,8 @@ export function WorkspaceMembers({
                       )
                     }
                   >
-                    {roles.map((r) => (
+                    {/* agents can never be workspace admins or owners (enforced by the database) */}
+                    {roles.filter((r) => m.kind !== "agent" || r === "member" || r === m.role).map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
@@ -257,8 +267,13 @@ export function WorkspaceMembers({
                     size="sm"
                     aria-label={`Remove ${m.name} from the workspace`}
                     disabled={pending}
-                    onClick={() => {
-                      if (!window.confirm(`Remove ${m.name} from ${workspaceName}? They lose access to every space in it.`)) return;
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Remove ${m.name} from ${workspaceName}?`,
+                        description: "They lose access to every space in it, and their space and group memberships here are removed.",
+                        confirmLabel: "Remove member",
+                      });
+                      if (!ok) return;
                       void run(
                         async () =>
                           ensureRows(
@@ -278,40 +293,92 @@ export function WorkspaceMembers({
         })}
       </ul>
       {canManage ? (
-        <form
-          className="flex flex-wrap items-end gap-3 border-t border-line bg-surface-2/40 px-4 py-3"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!idValid) return;
-            const res = await run(async () => supabase.from("workspace_members").insert({ workspace_id: workspaceId, user_id: addId.trim(), role: addRole }), {
-              success: "Added to the workspace",
-            });
-            if (res.ok) setAddId("");
-          }}
-        >
-          <Field
-            label="Add by user ID"
-            htmlFor="wm-add"
-            className="min-w-56 flex-1"
-            hint="Ask them to sign up at Studio and send you the user ID shown in Settings → Members."
-            error={addId.trim() && !idValid ? "That doesn't look like a user ID" : null}
+        <>
+          <div className="border-t border-line px-4 py-3">
+            <h3 className="text-sm font-medium">Pending invitations</h3>
+            {invitations.length === 0 ? (
+              <p className="mt-1 text-xs text-subtle">No open invitations.</p>
+            ) : (
+              <ul className="mt-2 divide-y divide-line">
+                {invitations.map((i) => {
+                  const state = invitationState(i);
+                  return (
+                    <li key={i.id} className="flex flex-wrap items-center gap-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-fg">{i.email}</span>
+                        <span className="block text-[11px] text-subtle">
+                          Invited <Timestamp iso={i.created_at} />
+                          {i.invited_by_name ? ` by ${i.invited_by_name}` : ""} ·{" "}
+                          {state === "expired" ? (
+                            <>expired <Timestamp iso={i.expires_at} /></>
+                          ) : (
+                            <>expires <Timestamp iso={i.expires_at} /></>
+                          )}
+                        </span>
+                      </div>
+                      {state === "expired" ? <Badge tone="neutral">expired</Badge> : null}
+                      <Badge tone={i.role === "owner" ? "violet" : i.role === "admin" ? "accent" : "neutral"}>{i.role}</Badge>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Revoke the invitation for ${i.email}`}
+                        disabled={pending}
+                        onClick={() =>
+                          run(async () => await supabase.from("workspace_invitations").delete().eq("id", i.id).select("id"), {
+                            success: `Invitation for ${i.email} revoked`,
+                            expectRows: "Only workspace admins can revoke invitations",
+                          })
+                        }
+                      >
+                        <Trash className="size-3.5" /> Revoke
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+          <form
+            className="flex flex-wrap items-end gap-3 border-t border-line bg-surface-2/40 px-4 py-3"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!normalized) return;
+              const res = await run(
+                async () => {
+                  const { error } = await supabase.rpc("invite_to_workspace", { p_workspace: workspaceId, p_email: normalized, p_role: inviteRole });
+                  if (error) throw new Error(invitationErrorMessage(error));
+                  return null;
+                },
+                { success: `Invited ${normalized}. Tell them to sign in to Studio with that e-mail to accept.` },
+              );
+              if (res.ok) setEmail("");
+            }}
           >
-            <Input id="wm-add" value={addId} onChange={(e) => setAddId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" className="font-mono text-xs" />
-          </Field>
-          <Field label="Role" htmlFor="wm-add-role">
-            <Select id="wm-add-role" value={addRole} onChange={(e) => setAddRole(e.target.value as WorkspaceRole)} className="w-32" title={WS_ROLE_HELP[addRole]}>
-              {roles.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Button type="submit" variant="primary" pending={pending} disabled={!idValid}>
-            <UserPlus className="size-4" /> Add
-          </Button>
-        </form>
+            <Field
+              label="Invite by e-mail"
+              htmlFor="wm-invite"
+              className="min-w-56 flex-1"
+              hint="No e-mail is sent: tell them to sign up or sign in to Studio with this address (verified), then accept the invitation on the home page. Invitations expire after 14 days."
+              error={email.trim() && !normalized ? "That doesn't look like an e-mail address" : null}
+            >
+              <Input id="wm-invite" type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" />
+            </Field>
+            <Field label="Role" htmlFor="wm-invite-role">
+              <Select id="wm-invite-role" value={inviteRole} onChange={(e) => setInviteRole(e.target.value as WorkspaceRole)} className="w-32" title={WS_ROLE_HELP[inviteRole]}>
+                {roles.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Button type="submit" variant="primary" pending={pending} disabled={!normalized}>
+              <UserPlus className="size-4" /> Invite
+            </Button>
+          </form>
+        </>
       ) : null}
+      {confirmDialog}
     </Card>
   );
 }

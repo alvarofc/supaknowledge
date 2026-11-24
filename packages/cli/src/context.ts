@@ -27,7 +27,10 @@ export interface Io {
   readStdin: () => Promise<string>;
   /** Prompt on the terminal; `hidden` for passwords. Throws when there is no TTY. */
   prompt: (question: string, hidden?: boolean) => Promise<string>;
+  /** stdout is a terminal (colors, tables) */
   isTTY: boolean;
+  /** stdin is a terminal (so we may prompt instead of reading piped input) */
+  stdinIsTTY: boolean;
   env: Env;
   cwd: string;
   fetch: FetchFn;
@@ -292,6 +295,16 @@ export async function must<T>(p: PromiseLike<PgResult<T>>): Promise<T> {
     throw new CliError(extra ? `${msg} (${extra})` : msg, { hint });
   }
   return data as T;
+}
+
+/**
+ * For UPDATE / DELETE / UPSERT with `.select()`: RLS silently filters rows the caller may not change, so an empty
+ * result means nothing happened. Turn that into an error instead of reporting success.
+ */
+export async function mustRows<T>(p: PromiseLike<PgResult<T[]>>, message: string, hint?: string): Promise<T[]> {
+  const rows = await must(p);
+  if (!Array.isArray(rows) || rows.length === 0) throw new CliError(message, { hint });
+  return rows;
 }
 
 export { SupaknowledgeError };

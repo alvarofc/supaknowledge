@@ -16,6 +16,12 @@ export interface TraceOptions {
   maxBatch?: number;
   /** Hard cap on buffered events while the server is unreachable; oldest are dropped. Default 1000. */
   maxBuffer?: number;
+  /**
+   * Backoff after a failed flush: automatic flushes (batch full, interval timer) wait `retryBaseMs * 2^(failures-1)`,
+   * capped at `retryMaxMs`, before trying again. Explicit flush() / end() / start() always try. Defaults 1000 / 60000.
+   */
+  retryBaseMs?: number;
+  retryMaxMs?: number;
   onError?: (error: unknown) => void;
 }
 
@@ -48,6 +54,8 @@ export class TraceRecorder {
   private chain: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private ended = false;
+  private failures = 0;
+  private retryAt = 0;
   private readonly t: TraceTransport;
   private readonly opts: TraceOptions;
   private readonly onError: (e: unknown) => void;
@@ -103,9 +111,9 @@ export class TraceRecorder {
       const ev: TraceEventInput = { ...e, at: e.at ?? new Date().toISOString() };
       for (const k of Object.keys(ev) as (keyof TraceEventInput)[]) if (ev[k] === undefined) delete ev[k];
       this.buffer.push(ev);
-      const max = this.opts.maxBuffer ?? 1000;
-      if (this.buffer.length > max) this.buffer.splice(0, this.buffer.length - max);
-      if (this.buffer.length >= (this.opts.maxBatch ?? 50)) void this.flush();
+      this.trimBuffer();
+      // a full batch flushes right away, unless the server just failed: then wait for the backoff (no retry storm)
+      if (this.buffer.length >= this.maxBatch() && this.backoffRemaining() === 0) void this.flush();
       else this.schedule();
     } catch (err) {
       this.onError(err);
@@ -143,6 +151,17 @@ export class TraceRecorder {
     return this.id;
   }
 
+  /**
+   * The server-side trace id, creating the (possibly empty) trace when it does not exist yet, so searches and reads
+   * can be attributed to it. Resolves null without a request while the recorder is backing off after failures.
+   * Never rejects.
+   */
+  async ensureId(): Promise<string | null> {
+    if (this.id) return this.id;
+    if (this.ended || this.backoffRemaining() > 0) return null;
+    return this.start();
+  }
+
   /** Raise a flag linked to this trace (creates/flushes it first so the flag carries the trace id). Never rejects. */
   async flag(input: Omit<FlagInput, "traceId">): Promise<FlagResult | null> {
     await this.start();
@@ -154,9 +173,28 @@ export class TraceRecorder {
     }
   }
 
+  private maxBatch(): number {
+    return this.opts.maxBatch ?? 50;
+  }
+
+  private trimBuffer(): void {
+    const max = this.opts.maxBuffer ?? 1000;
+    if (this.buffer.length > max) this.buffer.splice(0, this.buffer.length - max);
+  }
+
+  /** ms left before automatic flushes may hit the server again (0 when not backing off). */
+  private backoffRemaining(): number {
+    return this.failures > 0 ? Math.max(0, this.retryAt - Date.now()) : 0;
+  }
+
   private schedule(): void {
-    const ms = this.opts.flushIntervalMs ?? 2000;
-    if (ms <= 0 || this.timer) return;
+    if (this.timer || this.ended) return;
+    const interval = this.opts.flushIntervalMs ?? 2000;
+    const wait = this.backoffRemaining();
+    let ms: number;
+    if (wait > 0 && this.buffer.length >= this.maxBatch()) ms = wait; // full batch: retry once the backoff expires
+    else if (interval > 0) ms = Math.max(interval, wait);
+    else return;
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.flush();
@@ -187,10 +225,20 @@ export class TraceRecorder {
       } else {
         await this.t.update(this.id, { ...(events.length ? { events } : {}), ...(extra ?? {}) });
       }
+      this.failures = 0;
     } catch (e) {
-      // keep events for the next attempt when the failure is transient; drop them on 4xx so a bad payload
-      // cannot wedge the recorder
-      if (retryable(e) && !this.ended) this.buffer.unshift(...events);
+      // keep events for the next attempt when the failure is transient (bounded by maxBuffer, oldest dropped) and
+      // back off; drop them on 4xx so a bad payload cannot wedge the recorder
+      if (retryable(e)) {
+        this.failures++;
+        const base = this.opts.retryBaseMs ?? 1000;
+        this.retryAt = Date.now() + Math.min(this.opts.retryMaxMs ?? 60000, base * 2 ** Math.min(this.failures - 1, 30));
+        if (!this.ended) {
+          this.buffer.unshift(...events);
+          this.trimBuffer();
+          this.schedule();
+        }
+      }
       throw e;
     }
   }

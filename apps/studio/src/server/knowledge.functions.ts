@@ -24,17 +24,18 @@ export const loadKnowledge = createServerFn({ method: "GET" })
       .eq("space_id", ctx.space.id)
       .order("path");
     if (kind) query = query.eq("kind", kind);
-    const { data: concepts, error } = await query;
+    const [{ data: concepts, error }, results, kindRows] = await Promise.all([
+      query,
+      q ? supabase.rpc("search_knowledge", { p_space: ctx.space.id, p_query: q, p_limit: 30, p_kinds: kind ? [kind] : undefined }) : Promise.resolve(null),
+      // counts per kind: from the tree itself unless it is filtered to one kind
+      kind ? supabase.from("concepts").select("kind").eq("space_id", ctx.space.id).then((r) => r.data ?? []) : Promise.resolve(null),
+    ]);
     const all = (concepts ?? []) as TreeConcept[];
 
-    const results = q
-      ? await supabase.rpc("search_knowledge", { p_space: ctx.space.id, p_query: q, p_limit: 30, p_kinds: kind ? [kind] : undefined })
-      : null;
-
     const counts = Object.fromEntries(KINDS.map((k) => [k, 0])) as Record<Kind, number>;
-    const { data: kindRows } = await supabase.from("concepts").select("kind").eq("space_id", ctx.space.id);
-    for (const r of kindRows ?? []) counts[r.kind]++;
-    const total = kindRows?.length ?? 0;
+    const rows = kindRows ?? all;
+    for (const r of rows) counts[r.kind]++;
+    const total = rows.length;
 
     return {
       q,
