@@ -695,7 +695,15 @@ export function buildProposal(
     // target audience, which is the conservative choice for access escalation.
   });
 
-  const flagIds = out.resolves_flags.filter((id) => ev.flags.has(id));
+  // Flags this proposal addresses: the ones the model listed (tolerating a "flag:" prefix) plus every flag it
+  // cites as evidence. Models often cite the flag but leave resolves_flags empty, which would strand the flag open.
+  const normalizeFlagId = (id: string) => id.trim().replace(/^flag:/, "");
+  const flagIds = [
+    ...new Set([
+      ...out.resolves_flags.map(normalizeFlagId),
+      ...citations.filter((c) => c.ref_kind === "flag" && !c.consulted && c.ref_id).map((c) => c.ref_id!),
+    ]),
+  ].filter((id) => ev.flags.has(id));
   return {
     draft: { title: out.title, rationale: out.rationale, risk: out.risk, ops, citations, flag_ids: flagIds },
     problems,

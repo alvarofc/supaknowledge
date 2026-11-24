@@ -542,3 +542,16 @@ test("buildProposal: expired stale_after advances, moves need a normalized new_p
   assert.match(move(null).problems.join("\n"), /no new_path/);
   assert.equal(move("/data/revenue.md").draft.ops[0]!.new_path, "data/revenue");
 });
+
+test("flags cited by a proposal are linked even when resolves_flags is empty or prefixed", async () => {
+  const { buildProposal } = await import("../src/curator/engine.ts");
+  const { parseSettings } = await import("../src/settings.ts");
+  const c = { id: "c1", space_id: "s", path: "data/rev", kind: "data_access", type: "BigQuery Table", title: "Rev", description: "", body: "# Rev\n", frontmatter: {}, tags: [], status: "stable", audience: [], revision: 1, generated_by: null, generated_at: "", created_at: "", updated_at: "" };
+  const flag = (id: string) => ({ id, space_id: "s", created_by: null, trace_id: null, kind: "incorrect", concept_id: "c1", concept_path: "data/rev", query: null, observation: "x", suggested_fix: null, evidence: {}, audience: [], status: "open", synthetic: false, created_at: "" });
+  const ev = { flags: new Map([["f1", flag("f1")], ["f2", flag("f2")]]), traces: new Map(), documents: new Map(), sourceHits: [], targets: new Map([["data/rev", c]]), related: [] };
+  const op = { op: "update", path: "data/rev", new_path: null, kind: null, type: null, title: null, description: null, body: "# Rev\n\nfixed[^e]\n", tags: null, superseded_by: null, stale_after: null, citation_labels: ["e"], rationale: "" };
+  const out = { decision: "propose", title: "t", rationale: "", risk: "low", ops: [op], citations: [{ label: "e", ref: "flag:f1", quote: "q" }], resolves_flags: ["flag:f2"], dismiss_flags: [] };
+  const { draft } = buildProposal(out as never, ev as never, new Map(), parseSettings({}), new Date("2026-11-25T00:00:00Z"));
+  assert.deepEqual([...draft.flag_ids].sort(), ["f1", "f2"]);
+});
+
