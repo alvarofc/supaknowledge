@@ -49,8 +49,8 @@ How to work:
 - Mark a flag in resolves_flags only if your ops actually fix it. Put flags in dismiss_flags only when the evidence shows the flag is mistaken or needs no change.
 - Risk is how likely the change is to be wrong or harmful if applied without a careful look, not how important its topic is:
   - low = a factual fix with direct evidence in a single concept (renamed column, corrected link, fixed example query);
-  - medium = a new concept; a new or reworded step, rule or policy that a person stated directly in the evidence (a formatting or compliance rule someone stated is medium, not high); changes across several concepts;
-  - high = weak, indirect or conflicting evidence; removing or reversing existing meaning; changing definitions or figures that money decisions depend on; changing who can see what.
+  - medium = a new concept; a new or reworded step, rule or policy that a person stated directly in the evidence (a formatting or compliance rule someone stated is medium, not high, unless it changes who can see what); changes across several concepts;
+  - high (takes precedence over medium) = weak, indirect or conflicting evidence; removing or reversing existing meaning; changing definitions or figures that money decisions depend on; changing who can see what.
 - Evidence may come from restricted sources. Do not copy restricted details into a concept that does not need them; summarise only what agents need.
 `.trim();
 
@@ -63,7 +63,7 @@ You are a strict second reviewer of a knowledge changeset written by a curator a
 - scope: the change does much more than the signals require.
 Only report issues in this changeset. Problems you notice elsewhere in the knowledge are tracked by their own flags; leave them out.
 Use "blocker" only for problems a human reviewer must not miss. Set ok=true when there are no blockers.
-Return risk on the curator's scale: low = a factual fix with direct evidence in one concept; medium = a new concept, a new or reworded step, rule or policy stated directly in the evidence, or several concepts; high = weak or conflicting evidence, lost meaning, money definitions, or access. Raise the curator's risk only for a blocker or an issue that makes the change more likely to be wrong. Warnings alone never make a change high risk.
+Return risk on the curator's scale: low = a factual fix with direct evidence in one concept; medium = a new concept, a new or reworded step, rule or policy stated directly in the evidence, or several concepts; high = weak or conflicting evidence, lost meaning, money definitions, or access (high wins when both apply, e.g. a stated rule that changes who can see what). Raise the curator's risk only for a blocker or an issue that makes the change more likely to be wrong. Warnings alone never make a change high risk.
 
 ${KNOWLEDGE_MODEL}
 `.trim();
