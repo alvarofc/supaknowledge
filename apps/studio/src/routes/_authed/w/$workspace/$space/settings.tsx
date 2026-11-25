@@ -100,7 +100,7 @@ function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description={`How ${ctx.space.name} is curated and who can use it.`} />
+      <PageHeader title="Settings" />
       {/* on wide screens the product sidebar carries these tabs */}
       <LinkTabs tabs={tabs} active={tab} className="mb-6 lg:hidden" />
       {body}

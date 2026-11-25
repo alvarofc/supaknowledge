@@ -29,7 +29,6 @@ function AgentsPage() {
     <>
       <PageHeader
         title="Agents"
-        description="Agents use this space's knowledge over MCP: they search, read, load skills and flag what's missing or wrong. Connect one as yourself, or register a headless agent with its own key."
         actions={admin ? <CreateAgentButton ctx={actionCtx} /> : null}
       />
 
@@ -74,7 +73,7 @@ function AgentsPage() {
       <Card className="overflow-hidden">
         <CardHeader
           title={`Headless agents in ${ctx.workspace.name}`}
-          description="Each is a Supabase Auth user (app_metadata.kind = agent). Its API key is the password the MCP function exchanges for a short-lived session, so RLS applies exactly as for people."
+          description="For CI jobs, bots and services. Each has its own API key, and row level security applies to it as to a person."
         />
         {!statusKnown && list.length ? (
           <p className="border-b border-line px-4 py-2 text-xs text-warn">

@@ -31,7 +31,7 @@ function HealthPage() {
   const header = (
     <PageHeader
       title="Health"
-      description="Is the factory keeping knowledge correct and current? Numbers cover what you can see; restricted knowledge outside your groups is not counted."
+      description="Restricted knowledge outside your groups is not counted."
       actions={
         <div role="group" aria-label="Time window" className="inline-flex rounded-md border border-line bg-surface-2 p-0.5">
           {HEALTH_DAYS.map((d) => (
@@ -130,7 +130,7 @@ function HealthPage() {
       <Card>
         <CardHeader
           title="Most flagged"
-          description={`Flag rate = flags ÷ times used in the last ${days} days. A high rate on a busy concept is the best place to spend review time.`}
+          description={`Flag rate = flags ÷ times used in the last ${days} days.`}
         />
         {h.most_flagged.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-subtle">No flags in this window. Either the knowledge is solid, or agents are not flagging — check their system prompt encourages flag_knowledge.</p>

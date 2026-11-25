@@ -1,4 +1,4 @@
-import { ArrowUpRight, FileSearch, Lightbulb, Sparkles } from "lucide-react";
+import { FileSearch, Lightbulb, Sparkles } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { AgentBadge, AudienceBadge, FlagKindBadge } from "@/components/kf/badges";
 import { Badge } from "@/components/ui/badge";
@@ -121,7 +121,7 @@ export function FlagItem({
           )}
           {flag.trace_id && !inTrace ? (
             <Link href={`${base}/activity/traces/${flag.trace_id}`} className="inline-flex items-center gap-0.5 text-accent hover:underline">
-              View trace <ArrowUpRight className="size-3" />
+              View trace
             </Link>
           ) : null}
         </div>

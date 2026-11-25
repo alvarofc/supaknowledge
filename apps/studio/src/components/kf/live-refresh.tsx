@@ -46,10 +46,11 @@ export function LiveRefresh({ spaceId, tables, label = true }: { spaceId: string
   }, [spaceId, key, router]);
 
   if (!label) return null;
+  const text = status === "live" ? "Live updates on" : status === "offline" ? "Live updates offline" : "Connecting to live updates";
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-subtle" title="Updates appear here as they happen (Supabase Realtime)">
-      <span className={`size-1.5 rounded-full ${status === "live" ? "animate-pulse bg-ok" : status === "offline" ? "bg-danger" : "bg-warn"}`} />
-      {status === "live" ? "Live" : status === "offline" ? "Offline" : "Connecting"}
+    <span role="status" aria-label={text} title={text} className="inline-flex items-center gap-1.5 text-xs text-subtle">
+      <span className={`size-1.5 rounded-full ${status === "live" ? "bg-ok" : status === "offline" ? "bg-danger" : "bg-warn"}`} />
+      {status === "live" ? null : status === "offline" ? "Offline" : "Connecting"}
     </span>
   );
 }

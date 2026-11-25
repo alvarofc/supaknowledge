@@ -49,7 +49,6 @@ function KnowledgePage() {
     <div>
       <PageHeader
         title="Knowledge"
-        description="Everything your agents can search and read in this space: skills, domain knowledge and data access notes, with their trust tier and freshness."
         actions={
           <>
             <LiveRefresh spaceId={ctx.space.id} tables={["concepts"]} />

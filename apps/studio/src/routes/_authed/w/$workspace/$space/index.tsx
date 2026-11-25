@@ -47,7 +47,7 @@ function InboxPage() {
         title="Inbox"
         description={
           isEditor
-            ? "What your agents reported and what the curator proposes to change. Review proposals like pull requests; nothing changes the knowledge until it is applied."
+            ? "Nothing changes the knowledge until a proposal is applied."
             : "Flags you raised. Editors and reviewers in this space decide what changes."
         }
         actions={<LiveRefresh spaceId={ctx.space.id} tables={["proposals", "flags"]} />}

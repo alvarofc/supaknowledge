@@ -59,7 +59,6 @@ function ActivityPage() {
     <>
       <PageHeader
         title="Activity"
-        description="What the curator did, what agents did, and who changed what. The curator learns from flags, traces and sources, then writes proposals."
         actions={
           tab === "runs" ? <LiveRefresh spaceId={ctx.space.id} tables={["curator_runs"]} /> : null
         }
