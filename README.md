@@ -25,8 +25,8 @@ Supabase project.
 > change before 1.0. Not yet recommended for production data.
 
 <p align="center">
-  <img src="docs/assets/inbox-light.png" width="49%" alt="Studio review inbox with two curator proposals">
-  <img src="docs/assets/proposal-dark.png" width="49%" alt="A curator proposal with a field diff, in dark mode">
+  <img src="docs/assets/inbox-light.png" width="49%" alt="Studio inbox history: an approved curator proposal, a low-risk fix applied by policy, and the imported bundle">
+  <img src="docs/assets/proposal-dark.png" width="49%" alt="An applied curator proposal with its rationale, folded self-review and reviewer note, in dark mode">
 </p>
 <p align="center">
   <img src="docs/assets/knowledge-light.png" width="49%" alt="Knowledge browser with skills, domain and data-access concepts">
