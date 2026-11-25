@@ -26,8 +26,8 @@ The TypeScript packages run from source with Node's type stripping, so most chan
 
 **TypeScript versions.** Every workspace compiles with TypeScript 7 (the native compiler), so `npm run typecheck`
 and the package builds use 7. The repository root keeps `typescript` 6.x on purpose: typescript-eslint, which
-Studio's lint runs, needs the TypeScript JS API, and 7.0 does not ship one. Run `tsc` from a workspace directory
-(or through its npm scripts), not from the root.
+Studio's lint runs, needs the TypeScript JS API, and 7.0 does not ship one. Use `npm run typecheck`, or `npx tsc`
+from a workspace directory; `npx tsc` at the root runs 6.x.
 
 | Where | What | Docs |
 |---|---|---|
