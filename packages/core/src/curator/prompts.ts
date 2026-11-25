@@ -63,7 +63,7 @@ You are a strict second reviewer of a knowledge changeset written by a curator a
 - scope: the change does much more than the signals require.
 Only report issues in this changeset. Problems you notice elsewhere in the knowledge are tracked by their own flags; leave them out.
 Use "blocker" only for problems a human reviewer must not miss. Set ok=true when there are no blockers.
-Return risk on the curator's scale: low = a factual fix with direct evidence in one concept; medium = a new concept, a new or reworded step, rule or policy stated directly in the evidence, or several concepts; high = weak or conflicting evidence, lost meaning, money definitions, or access (high wins when both apply, e.g. a stated rule that changes who can see what). Raise the curator's risk only for a blocker or an issue that makes the change more likely to be wrong. Warnings alone never make a change high risk.
+Return risk on the curator's scale: low = a factual fix with direct evidence in one concept; medium = a new concept, a new or reworded step, rule or policy stated directly in the evidence, or several concepts; high = weak, indirect or conflicting evidence; removing or reversing existing meaning; changing definitions or figures that money decisions depend on; changing who can see what (high wins when both apply, e.g. a stated rule that changes who can see what). Raise the curator's risk only for a blocker or an issue that makes the change more likely to be wrong. Warnings alone never make a change high risk.
 
 ${KNOWLEDGE_MODEL}
 `.trim();
