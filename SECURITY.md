@@ -22,7 +22,7 @@ Please give us a reasonable time to ship a fix before disclosing.
 ## What Supaknowledge guarantees
 
 These are the properties we treat as security bugs when broken. They are described in
-[docs/access-control.md](docs/access-control.md) and enforced by row level security, with 702 pgTAP tests in
+[docs/access-control.md](docs/access-control.md) and enforced by row level security, with 739 pgTAP tests in
 `supabase/tests/database`.
 
 1. **RLS is the single enforcement point.** People, OAuth-connected MCP clients and agents query with their own
@@ -37,7 +37,9 @@ These are the properties we treat as security bugs when broken. They are describ
    it touches; evidence audiences are always read from the live rows. Escalations (restricted material into a
    wider audience) need a human space admin and are never applied automatically.
 5. **One audited write path.** Proposals are written only through `create_proposal()`, and knowledge changes only
-   through `apply_proposal()`, which records revisions, verifications and the audit log.
+   through `apply_proposal()`, which records revisions and the audit log. An approval by a reviewer also records a
+   verification (`human:` or `agent:`); an auto-apply (service role, `process:` actor) records none, so it never
+   raises a concept's trust tier.
 6. **Agents** are Auth users limited to the spaces they were granted; they cannot create workspaces, manage
    agents, hold the space `admin` or workspace `admin`/`owner` role, or approve escalations. What an agent applies
    or verifies is recorded as `agent:<id>` and counts as `machine_confirmed`, never `human_reviewed`. Agent Auth

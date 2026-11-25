@@ -58,6 +58,7 @@ export function CreateAgentButton({ ctx }: { ctx: Ctx }) {
   const [nameError, setNameError] = useState<string | null>(null);
 
   function close() {
+    if (pending) return; // the key comes back only once: keep the dialog until the request settles
     setOpen(false);
     setIssued(null);
     setName("");
@@ -99,6 +100,7 @@ export function CreateAgentButton({ ctx }: { ctx: Ctx }) {
       <Dialog
         open={open}
         onClose={close}
+        dismissible={!pending}
         size="lg"
         title={issued ? `${issued.name} is ready` : "Create an agent"}
         description={issued ? undefined : "A headless identity for an automated agent (CI job, Slack bot, scheduled worker) with its own API key."}
@@ -109,7 +111,9 @@ export function CreateAgentButton({ ctx }: { ctx: Ctx }) {
             </Button>
           ) : (
             <>
-              <Button onClick={close}>Cancel</Button>
+              <Button onClick={close} disabled={pending}>
+                Cancel
+              </Button>
               <Button variant="primary" type="submit" form="create-agent-form" pending={pending}>
                 Create agent
               </Button>
@@ -177,6 +181,7 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
   }, [menu]);
 
   function close() {
+    if (pending) return; // a rotated key comes back only once: keep the dialog until the request settles
     setDialog(null);
     setNewKey(null);
     setUnavailable(null);
@@ -275,6 +280,7 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
         <Dialog
           open
           onClose={close}
+          dismissible={!pending}
           size={newKey ? "lg" : "sm"}
           title={newKey ? `New key for ${agent.name}` : d.title}
           footer={
@@ -284,7 +290,9 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
               </Button>
             ) : (
               <>
-                <Button onClick={close}>Cancel</Button>
+                <Button onClick={close} disabled={pending}>
+                  Cancel
+                </Button>
                 <Button variant={d.tone === "danger" ? "danger" : "primary"} pending={pending} onClick={() => dialog && act(dialog)}>
                   {d.cta}
                 </Button>

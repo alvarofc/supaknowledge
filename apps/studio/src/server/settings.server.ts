@@ -2,10 +2,10 @@ import { SpaceSettingsSchema, parseSettings } from "@supaknowledge/core";
 import type { SpaceSettings } from "@supaknowledge/core";
 import type { Json } from "@/lib/database.types";
 import { errorMessage } from "@/lib/format";
-import { friendlyIssue } from "@/lib/settings-form";
+import { friendlyIssue, mergeSettingsUpdate } from "@/lib/settings-form";
 import { getSupabase } from "@/server/supabase.server";
 
-export type SaveSettingsResult = { ok: true } | { ok: false; message: string; fieldErrors?: Record<string, string> };
+export type SaveSettingsResult = { ok: true; settings: SpaceSettings } | { ok: false; message: string; fieldErrors?: Record<string, string> };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -19,9 +19,11 @@ export function readSettings(raw: unknown): SpaceSettings {
 /**
  * Validates space settings with the shared SpaceSettingsSchema (the same schema the curator and policy engine
  * parse with) and saves them as the signed-in user. Runs on the server so the core package (and its LLM
- * client) never ships to the browser. RLS decides whether the update is allowed (space admins only).
+ * client) never ships to the browser. RLS decides whether the update is allowed (space admins only). `base` is the
+ * settings the form was loaded with: fields the user did not change keep what is stored now (see mergeSettingsUpdate).
+ * Returns the saved settings so the form can show what is stored. The write is a compare-and-swap.
  */
-export async function saveSettings(spaceId: string, input: unknown): Promise<SaveSettingsResult> {
+export async function saveSettings(spaceId: string, input: unknown, base?: unknown): Promise<SaveSettingsResult> {
   const parsed = SpaceSettingsSchema.safeParse(input);
   if (!parsed.success) {
     const fieldErrors: Record<string, string> = {};
@@ -35,20 +37,29 @@ export async function saveSettings(spaceId: string, input: unknown): Promise<Sav
   }
 
   const supabase = getSupabase();
-  const { data: current, error: readError } = await supabase.from("spaces").select("settings").eq("id", spaceId).maybeSingle();
-  if (readError || !current) return { ok: false, message: readError ? errorMessage(readError) : "Space not found" };
+  // Compare-and-swap (update_space_settings): merge against what is stored now and write only if it is still
+  // stored, so a save by another admin in between is never lost; on a conflict, re-read and merge again.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data: current, error: readError } = await supabase.from("spaces").select("settings").eq("id", spaceId).maybeSingle();
+    if (readError || !current) return { ok: false, message: readError ? errorMessage(readError) : "Space not found" };
 
-  // keep keys other tools (or newer versions) wrote that this schema does not know, at the top level and inside
-  // each section (e.g. curator.stuck_after_minutes, read by the database's run reaper)
-  const previous = isPlainObject(current.settings) ? current.settings : {};
-  const merged: Record<string, unknown> = { ...previous };
-  for (const [k, v] of Object.entries(parsed.data)) {
-    merged[k] = isPlainObject(v) && isPlainObject(previous[k]) ? { ...previous[k], ...v } : v;
+    // keep keys other tools (or newer versions) wrote that this schema does not know, at the top level and inside
+    // each section (e.g. curator.stuck_after_minutes, read by the database's run reaper), and other admins' changes
+    // to fields this form left alone
+    const previous = isPlainObject(current.settings) ? current.settings : {};
+    const merged = mergeSettingsUpdate(previous, parsed.data, isPlainObject(base) ? base : undefined, readSettings(previous));
+
+    const { data: outcome, error } = await supabase.rpc("update_space_settings", {
+      p_space: spaceId,
+      p_settings: merged as NonNullable<Json>,
+      p_expected: current.settings as Json,
+    });
+    // the database re-validates (private.validate_space_settings); its message names the offending key
+    if (error) return { ok: false, message: `Could not save settings: ${errorMessage(error)}` };
+    if (outcome === "saved") return { ok: true, settings: readSettings(merged) };
+    if (outcome === "forbidden") return { ok: false, message: "Only space admins can change settings." };
+    if (outcome === "not_found") return { ok: false, message: "Space not found" };
+    // "conflict": someone saved in between; merge again against their version
   }
-
-  const { data, error } = await supabase.from("spaces").update({ settings: merged as NonNullable<Json> }).eq("id", spaceId).select("id");
-  // the database re-validates (private.validate_space_settings); its message names the offending key
-  if (error) return { ok: false, message: `Could not save settings: ${errorMessage(error)}` };
-  if (!data?.length) return { ok: false, message: "Only space admins can change settings." };
-  return { ok: true };
+  return { ok: false, message: "Another admin is changing these settings right now. Try again." };
 }

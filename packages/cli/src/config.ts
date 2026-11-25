@@ -72,11 +72,19 @@ export function findProjectFile(cwd: string): { path: string; data: ProjectFile 
   for (;;) {
     const p = join(dir, PROJECT_FILE);
     if (existsSync(p)) {
+      let data: unknown;
       try {
-        return { path: p, data: JSON.parse(readFileSync(p, "utf8")) as ProjectFile };
+        data = JSON.parse(readFileSync(p, "utf8"));
       } catch (e) {
         throw new Error(`could not parse ${p}: ${(e as Error).message}`);
       }
+      // hand-edited files reach string-only code paths (spec.split, url.replace): reject wrong types up front
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(`invalid ${p}: expected a JSON object`);
+      for (const k of ["space", "space_id", "workspace_id", "url"] as const) {
+        const v = (data as Record<string, unknown>)[k];
+        if (v !== undefined && typeof v !== "string") throw new Error(`invalid ${p}: "${k}" must be a string`);
+      }
+      return { path: p, data: data as ProjectFile };
     }
     const parent = dirname(dir);
     if (parent === dir) return null;

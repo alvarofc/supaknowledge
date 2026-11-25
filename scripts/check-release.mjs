@@ -1,7 +1,8 @@
 // Release consistency checks (run by CI and the release workflow; `node scripts/check-release.mjs [--tag vX.Y.Z]`):
 //   - every published package has the same version: the 3 npm packages, SDK_VERSION in the TS SDK, the Python
 //     package version (pyproject.toml) and supaknowledge.__version__;
-//   - @supaknowledge/mastra's peer range on @supaknowledge/sdk accepts that version;
+//   - @supaknowledge/mastra's peer range on @supaknowledge/sdk accepts that version, and the exact SDK pins (CLI
+//     and mastra devDependencies) equal it;
 //   - with --tag vX.Y.Z (or GITHUB_REF_TYPE=tag), the tag matches;
 //   - LICENSE and NOTICE copies shipped inside each package are identical to the repository root ones.
 import { appendFileSync, readFileSync } from "node:fs";
@@ -91,6 +92,12 @@ function main() {
   const peer = JSON.parse(read("packages/mastra/package.json")).peerDependencies?.["@supaknowledge/sdk"];
   if (!/^\^/.test(peer ?? "") || !parseSemver(peer.slice(1))) errors.push(`packages/mastra peerDependencies["@supaknowledge/sdk"] should be a caret range, got ${peer}`);
   else if (!caretAccepts(peer, version)) errors.push(`packages/mastra peer range ${peer} does not accept @supaknowledge/sdk ${version}`);
+
+  // exact pins on the SDK (the CLI bundles it; mastra develops against it) must exist and be the release version
+  for (const [file, field] of [["packages/cli/package.json", "devDependencies"], ["packages/mastra/package.json", "devDependencies"]]) {
+    const pin = JSON.parse(read(file))[field]?.["@supaknowledge/sdk"];
+    if (pin !== version) errors.push(`${file} ${field}["@supaknowledge/sdk"] is ${pin}, expected ${version}`);
+  }
 
   const tagArg = process.argv.indexOf("--tag");
   const tag = tagArg > 0 ? process.argv[tagArg + 1] : process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : undefined;

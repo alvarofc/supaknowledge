@@ -27,9 +27,13 @@ Deno.test("acl: narrowing rules", () => {
   // restricted source: intersection
   const r = resolveAudience([G_FIN, G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups);
   assertEquals(r.kind === "ok" && r.audience, [G_FIN]);
-  // disjoint: keep the (narrower-or-equal) source audience, never the mapped group
-  const d = resolveAudience([G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups);
+  // disjoint, restricted upstream: skipped even without acl_strict (the source audience would be wider than the
+  // upstream ACL, the mapped group wider than the source)
+  assertEquals(resolveAudience([G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups).kind, "skip");
+  // disjoint, unrestricted upstream: keep the (narrower-or-equal) source audience, never the mapped group
+  const d = resolveAudience([G_ENG], { restricted: false, refs: [{ slack_channel: "CFIN" }] }, groups);
   assertEquals(d.kind === "ok" && d.audience, [G_ENG]);
+  assertEquals(d.kind === "ok" && d.mode, "disjoint");
   // unmapped private object: inherit, or skip in strict mode
   assertEquals(resolveAudience([], { restricted: true, refs: [{ slack_channel: "CX" }] }, groups).kind, "ok");
   assertEquals(resolveAudience([], { restricted: true, refs: [{ slack_channel: "CX" }] }, groups, { strict: true }).kind, "skip");
@@ -94,10 +98,12 @@ Deno.test("engine: ACL narrowing applied per document and audience changes are w
   assertEquals(store.docs.get("CGEN:2026-11-24")!.audience, []);
   assertEquals((store.docs.get("CFIN:2026-11-24")!.metadata.acl as { mode: string }).mode, "mapped");
 
-  // source narrowed later: same content but audience must be rewritten
+  // source narrowed later: same content but audience must be rewritten (by the stored-ACL re-check, before the
+  // connector even re-emits the item, so the re-emitted copy is then unchanged)
   const r = await runSync({ ...base, source: source({ audience: [G_OPS] }), store, connector: scripted([priv, pub]) });
-  assertEquals(r.upserted, 2);
-  assertEquals(store.docs.get("CFIN:2026-11-24")!.audience, [G_OPS]); // disjoint -> source audience, never wider
+  assertEquals([r.upserted, r.unchanged, r.skipped, r.deleted], [0, 1, 1, 1]);
+  // disjoint private doc: skipped and its earlier copy retracted (G_OPS readers outside #finance must not see it)
+  assertEquals(store.live(), ["CGEN:2026-11-24"]);
   assertEquals(store.docs.get("CGEN:2026-11-24")!.audience, [G_OPS]);
 });
 
@@ -109,6 +115,35 @@ Deno.test("engine: acl_strict skips unmapped private docs and retracts earlier c
   const r = await runSync({ ...base, source: source({ config: { acl_strict: true } }), store, connector: scripted([p]) });
   assertEquals([r.skipped, r.deleted], [1, 1]);
   assertEquals(store.live(), []);
+});
+
+Deno.test("engine: stored documents are re-checked against the current rules even when the connector skips them", async () => {
+  const store = new MemoryStore();
+  const finDoc = doc("file:fin.md", "q4", { acl: { restricted: true, refs: [{ slack_channel: "CFIN" }] } });
+  const opsDoc = doc("file:ops.md", "runbook", { acl: { restricted: true, refs: [{ slack_channel: "COPS" }] } });
+  const pubDoc = doc("file:pub.md", "hello", { acl: { restricted: false, refs: [] } });
+  await runSync({ ...base, source: source({ audience: [G_ENG, G_FIN, G_OPS] }), store, connector: scripted([finDoc, opsDoc, pubDoc]) });
+  assertEquals(store.live(), ["file:fin.md", "file:ops.md", "file:pub.md"]);
+
+  // A copy stored under the old disjoint rule (restricted upstream, mapped group outside the source audience,
+  // stored with the source audience) and never re-emitted because its blob is unchanged: retracted.
+  const legacy = store.docs.get("file:fin.md")!;
+  legacy.audience = [G_ENG];
+  legacy.metadata.acl = { mode: "disjoint", restricted: true, groups: [G_FIN] };
+  // The source narrows to engineering + ops: the ops doc's narrower audience is re-derived, the public doc narrows.
+  const r = await runSync({ ...base, source: source({ audience: [G_ENG, G_OPS] }), store, connector: scripted([]) });
+  assertEquals(r.deleted, 1);
+  assertEquals(store.live(), ["file:ops.md", "file:pub.md"]);
+  assertEquals(store.docs.get("file:ops.md")!.audience, [G_OPS]);
+  assertEquals(store.docs.get("file:pub.md")!.audience, [G_ENG, G_OPS].sort());
+
+  // acl_strict turned on: a stored restricted doc whose groups no longer map is retracted; never widened
+  store.docs.get("file:ops.md")!.metadata.acl = { mode: "unmapped", restricted: true, groups: [] };
+  store.docs.get("file:pub.md")!.audience = [G_ENG];
+  const s = await runSync({ ...base, source: source({ audience: [G_ENG, G_OPS], config: { acl_strict: true } }), store, connector: scripted([]) });
+  assertEquals(s.deleted, 1);
+  assertEquals(store.live(), ["file:pub.md"]);
+  assertEquals(store.docs.get("file:pub.md")!.audience, [G_ENG], "a re-check never widens a stored audience");
 });
 
 Deno.test("engine: deletes, snapshots and revival re-embed", async () => {

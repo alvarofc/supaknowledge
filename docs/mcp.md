@@ -46,7 +46,7 @@ The server also sends instructions telling the model to search before working, p
 | `read_concept` | `path`, `space?`, `trace_id?` | Markdown: title, metadata (kind, type, status, revision, trust, staleness, last change), warnings for unverified / stale / deprecated content, the body, outgoing links (marked `[missing]` when the target does not exist), backlinks and attached files |
 | `list_skills` | `space?` | Name, title and description of every stable skill (progressive disclosure) |
 | `load_skill` | `name` (e.g. `revenue-report` or `skills/revenue-report`), `space?`, `trace_id?` | The SKILL.md body plus attached files; text files up to 32 KB are inlined (128 KB in total), others are listed |
-| `flag_knowledge` | `kind` (`missing` · `incorrect` · `outdated` · `conflicting` · `unclear`), `observation`, `concept_path?`, `query?`, `suggested_fix?`, `space?`, `trace_id?` | The new flag id. The flag inherits the concept's audience and records the OAuth client |
+| `flag_knowledge` | `kind` (`missing` · `incorrect` · `outdated` · `conflicting` · `unclear`), `observation`, `concept_path?`, `query?`, `suggested_fix?`, `evidence?` (a JSON object, at most 16,000 characters), `space?`, `trace_id?` | The new flag id. The flag inherits the concept's audience and records the OAuth client |
 
 Everything runs under the caller's RLS: results never include concepts outside the caller's audiences, and a
 `read_concept` on one answers "No concept at …", exactly like a missing path. `search_knowledge`, `read_concept`

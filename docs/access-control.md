@@ -6,7 +6,7 @@ JWT. Edge Functions do not re-implement permissions; they call the database as t
 and the CLI only hide buttons.
 
 The model was designed in [DESIGN.md §5a](DESIGN.md#5a-access-control-supabase-auth--rls) and is pinned down by
-702 pgTAP tests ([below](#tests)).
+739 pgTAP tests ([below](#tests)).
 
 ## Principals
 
@@ -274,6 +274,10 @@ material; every test file runs inside a transaction that is rolled back.
 | `09_round2.test.sql` | 106 | Current reader access for own-row branches, revoked agents losing every role at once, locked agent passwords, `last_seen_at`, citation audiences that never relax (client audiences ignored, snapshots follow the evidence), URL citations, group deletion guard and `retire_group()`, Storage GC liveness, agent memberships, invitation owner protection, uniform 42501s |
 | `10_round2_functions.test.sql` | 30 | `flag_knowledge()` path normalization, audience-scoped search (`p_visible_to`) and the similarity floor, `kf_rejected_proposals()` (service role, audiences of what a rejection touched), rowless consulted evidence escalating, settings length limits |
 | `11_round2_embed.test.sql` | 28 | The `embed` worker's compare-and-swap chunk writes (`kf_embed_write_concept()` / `kf_embed_write_document()`, service role only) and once-per-entity re-queueing (`kf_embed_requeue()`) |
+| `12_pr1_followups.test.sql` | 11 | `traces.on_behalf_of` updates (workspace members only, sender only, needs current space access), soft-deleted restricted documents hidden with their chunks and files, agents never recorded as human reviewers |
+| `13_pr1_db_followups.test.sql` | 8 | `search_sources(p_source)` filtering before the limit without widening visibility, concept paths without empty or `.` segments |
+| `14_pr5_followups.test.sql` | 12 | `p_source` finding a source's documents outside the space-wide candidate sets (text, vector, hybrid), proposal path validation |
+| `15_settings_cas.test.sql` | 6 | `update_space_settings()` compare-and-swap: saved, conflict, forbidden for non-admins, not found |
 
 Run them against a running local stack:
 

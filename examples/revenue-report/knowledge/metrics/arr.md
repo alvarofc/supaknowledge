@@ -1,7 +1,7 @@
 ---
 type: Metric
 title: Annual Recurring Revenue (ARR)
-description: ARR is the annualized value of active subscription revenue at the end of a month, excluding services.
+description: ARR is 12 times the recurring revenue recognized in a month; services and other one-off revenue are excluded.
 tags: [metrics, revenue, saas]
 sources:
   - id: finance-handbook-arr

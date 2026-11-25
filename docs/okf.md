@@ -33,7 +33,7 @@ are skipped; so are `index.md`, `log.md` and anything under a dot-folder. Paths 
 ---
 type: Metric
 title: Annual Recurring Revenue (ARR)
-description: ARR is the annualized value of active subscription revenue at the end of a month, excluding services.
+description: ARR is 12 times the recurring revenue recognized in a month; services and other one-off revenue are excluded.
 tags: [metrics, revenue]
 sources:
   - id: finance-handbook-arr
@@ -101,7 +101,7 @@ not keep megabytes of base64 around, and Studio and `kf proposal <id>` still lis
 ```markdown
 ---
 name: revenue-report
-description: Build Acme's monthly revenue report (revenue by region and product line, ARR and NRR) in the house format. Use when someone asks for a revenue report, a monthly or quarterly revenue summary, or revenue numbers for leadership.
+description: Build Acme's monthly revenue report (revenue by region and product line, ARR and NRR) in the house format. Use when someone asks for a revenue report, a monthly revenue summary, or revenue numbers for leadership.
 license: Apache-2.0
 metadata:
   owner: finance-data

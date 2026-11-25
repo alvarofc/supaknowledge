@@ -23,10 +23,16 @@ export function json(data: unknown, status = 200, headers: Record<string, string
   });
 }
 
+/**
+ * Error -> response. Client errors (4xx) and deliberate transient errors (502-504) carry their message. Internal
+ * errors (unexpected exceptions, HttpError 500) can embed database / upstream diagnostics, so the details only go
+ * to the function log, under a request id the response returns.
+ */
 export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return json({ error: e.message }, e.status, e.headers);
-  console.error(e);
-  return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  if (e instanceof HttpError && e.status !== 500) return json({ error: e.message }, e.status, e.headers);
+  const requestId = crypto.randomUUID();
+  console.error(`request ${requestId}:`, e);
+  return json({ error: `internal error (request id ${requestId})`, request_id: requestId }, 500, e instanceof HttpError ? e.headers : {});
 }
 
 /** Wrap a handler with CORS preflight + uniform error responses. */

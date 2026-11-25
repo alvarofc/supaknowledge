@@ -1,5 +1,8 @@
 import { ExternalLink } from "lucide-react";
 import type { Json } from "@/lib/database.types";
+import { Link } from "@/components/ui/link";
+import { parseSources } from "@/lib/okf-sources";
+import type { EvidenceAccess } from "@/lib/okf-sources";
 import { safeHref } from "@/lib/safe-href";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -61,28 +64,8 @@ export function FrontmatterPanel({ frontmatter }: { frontmatter: Json }) {
   );
 }
 
-type SourceItem = { label: string; url?: string; detail?: string };
-
-/** OKF `sources`: a list of strings (ids / urls) or objects ({title, url, id, retrieved_at, ...}). */
-export function parseSources(frontmatter: Json): SourceItem[] {
-  if (!isRecord(frontmatter)) return [];
-  const raw = frontmatter.sources;
-  const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
-  return list.map((s): SourceItem => {
-    if (typeof s === "string") return safeHref(s) ? { label: s, url: safeHref(s)! } : { label: s };
-    if (isRecord(s)) {
-      const ref = typeof s.resource === "string" ? s.resource : typeof s.url === "string" ? s.url : typeof s.href === "string" ? s.href : undefined;
-      const url = safeHref(ref) ?? undefined;
-      const label = [s.title, s.name, s.id, url].find((x): x is string => typeof x === "string") ?? JSON.stringify(s);
-      const detailBits = [s.type, s.kind, s.retrieved_at, s.at, s.date].filter((x): x is string => typeof x === "string");
-      return { label, url, detail: detailBits.join(" · ") || undefined };
-    }
-    return { label: JSON.stringify(s) };
-  });
-}
-
-export function SourcesList({ frontmatter }: { frontmatter: Json }) {
-  const items = parseSources(frontmatter);
+export function SourcesList({ frontmatter, base, access }: { frontmatter: Json; base?: string; access: EvidenceAccess }) {
+  const items = parseSources(frontmatter, base, access);
   if (!items.length)
     return <p className="px-4 py-3 text-sm text-subtle">No sources declared. Curator-written concepts cite their evidence here and as footnotes.</p>;
   return (
@@ -94,9 +77,14 @@ export function SourcesList({ frontmatter }: { frontmatter: Json }) {
               {s.label}
               <ExternalLink className="size-3 shrink-0" />
             </a>
+          ) : s.href ? (
+            <Link href={s.href} className="break-all text-accent hover:underline">
+              {s.label}
+            </Link>
           ) : (
             <span className="break-all text-fg">{s.label}</span>
           )}
+          {s.resource ? <span className="block font-mono text-xs break-all text-subtle">{s.resource}</span> : null}
           {s.detail ? <span className="block text-xs text-subtle">{s.detail}</span> : null}
         </li>
       ))}

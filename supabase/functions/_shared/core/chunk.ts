@@ -1,5 +1,6 @@
 // Heading-aware markdown chunking for retrieval. gte-small has a 512-token window, so chunks are kept
 // around ~1,200 characters with a small overlap, and every chunk carries its heading trail for context.
+import { fencedLines } from "./fences.ts";
 
 export interface Chunk {
   ord: number;
@@ -24,15 +25,14 @@ function splitSections(markdown: string): Section[] {
   const sections: Section[] = [];
   const trail: string[] = [];
   let buf: string[] = [];
-  let inFence = false;
+  const fenced = fencedLines(lines);
   const flush = () => {
     const text = buf.join("\n").trim();
     if (text) sections.push({ trail: [...trail], text });
     buf = [];
   };
-  for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
-    const h = !inFence ? /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line) : null;
+  for (const [i, line] of lines.entries()) {
+    const h = !fenced[i] ? /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line) : null;
     if (h) {
       flush();
       const level = h[1]!.length;

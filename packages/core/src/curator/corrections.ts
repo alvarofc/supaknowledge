@@ -69,15 +69,93 @@ function renderValue(v: unknown, n: number): string {
   return clip(typeof v === "string" ? v : JSON.stringify(v), n);
 }
 
-/** Compact transcript for the model: long tool payloads are clipped, structure is kept. */
+/**
+ * The events the correction heuristic points at, most important first: feedback and correcting user turns, then
+ * failed tools (each with the later successful call of the same tool that shows the recovery, if any); within
+ * each group the latest first, so a long trace never loses its late corrections to early errors.
+ */
+function signalEvents(events: TraceEvent[]): { at: number; recovery: number | null }[] {
+  const human: number[] = [];
+  const tools: { at: number; recovery: number | null }[] = [];
+  let sawAssistant = false;
+  events.forEach((e, i) => {
+    if (e.role === "assistant") sawAssistant = true;
+    if (e.role === "feedback") human.push(i);
+    else if (e.role === "user" && sawAssistant && e.content && CORRECTION_CUES.some((re) => re.test(e.content!))) human.push(i);
+    else if (e.role === "tool" && e.is_error) {
+      let recovery: number | null = null;
+      for (let j = i + 1; j < events.length; j++) {
+        const r = events[j]!;
+        if (r.role === "tool" && r.tool_name === e.tool_name && !r.is_error) {
+          recovery = j;
+          break;
+        }
+      }
+      tools.push({ at: i, recovery });
+    }
+  });
+  return [...human.reverse().map((at) => ({ at, recovery: null })), ...tools.reverse()];
+}
+
+/**
+ * Compact transcript for the model: long tool payloads are clipped, structure is kept. A transcript over
+ * maxChars keeps, in order and as far as each fits: the correction moments (human corrections first, then failed
+ * tools with their recovery; latest first), the turn before each, the opening event, then as much of the end and
+ * the start as fits (an event too large to fit is skipped, not a reason to stop).
+ * Omitted runs are marked, so a correction late in a long trace is never cut off.
+ */
 export function renderTrace(trace: Trace, maxChars = 24_000): string {
-  const lines: string[] = [`Trace ${trace.id} "${trace.name ?? ""}" outcome=${trace.outcome}`];
-  for (const e of trace.events as TraceEvent[]) {
+  const header = `Trace ${trace.id} "${trace.name ?? ""}" outcome=${trace.outcome}`;
+  const events = trace.events as TraceEvent[];
+  const lines = events.map((e) => {
     const head = `[${e.seq}] ${e.role}${e.tool_name ? `:${e.tool_name}` : ""}${e.is_error ? " (ERROR)" : ""}`;
     const parts = [e.content ? clip(e.content, 2000) : "", e.tool_input !== undefined ? `input=${renderValue(e.tool_input, 800)}` : "", e.tool_output !== undefined ? `output=${renderValue(e.tool_output, 1200)}` : ""].filter(Boolean);
-    lines.push(`${head}: ${parts.join(" | ")}`);
+    return `${head}: ${parts.join(" | ")}`;
+  });
+  const omitted = (n: number) => `…[${n} event${n === 1 ? "" : "s"} omitted]`;
+  const full = [header, ...lines].join("\n");
+  if (full.length <= maxChars) return full;
+
+  // Budget: every kept line costs its length + a newline; every run of omitted events costs one marker line.
+  const MARKER = omitted(lines.length).length + 1;
+  const budget = maxChars - header.length;
+  const keep = new Array<boolean>(lines.length).fill(false);
+  let used = MARKER; // nothing kept yet: one marker for the whole run
+  const take = (i: number): void => {
+    if (i < 0 || i >= lines.length || keep[i]) return;
+    // i sits inside an omitted run (one marker); keeping it leaves a run on each side that is still omitted
+    const markers = (i > 0 && !keep[i - 1] ? 1 : 0) + (i < lines.length - 1 && !keep[i + 1] ? 1 : 0) - 1;
+    const cost = lines[i]!.length + 1 + markers * MARKER;
+    if (used + cost > budget) return; // too big: smaller events further on may still fit
+    keep[i] = true;
+    used += cost;
+  };
+  const signals = signalEvents(events);
+  for (const s of signals) {
+    take(s.at);
+    if (s.recovery !== null) take(s.recovery);
   }
-  return clip(lines.join("\n"), maxChars);
+  for (const s of signals) {
+    take(s.at - 1);
+    if (s.recovery !== null) take(s.recovery - 1);
+  }
+  take(0); // the opening event usually states the task
+  for (let i = lines.length - 1; i >= 0; i--) take(i);
+  for (let i = 0; i < lines.length; i++) take(i);
+
+  const out = [header];
+  let gap = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!keep[i]) {
+      gap++;
+      continue;
+    }
+    if (gap) out.push(omitted(gap));
+    gap = 0;
+    out.push(lines[i]!);
+  }
+  if (gap) out.push(omitted(gap));
+  return clip(out.join("\n"), maxChars);
 }
 
 export async function extractLessons(
