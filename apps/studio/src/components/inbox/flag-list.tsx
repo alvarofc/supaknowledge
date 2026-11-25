@@ -92,7 +92,7 @@ export function FlagItem({
           <summary className="w-fit cursor-pointer select-none text-subtle hover:text-fg">{flag.suggested_fix ? "Suggested fix" : "Context"}</summary>
           {flag.suggested_fix ? (
             <p className="mt-1.5 flex items-start gap-1.5">
-              <Lightbulb className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+              <Lightbulb className="mt-px size-3.5 shrink-0 text-subtle" aria-hidden="true" />
               <span>{flag.suggested_fix}</span>
             </p>
           ) : null}

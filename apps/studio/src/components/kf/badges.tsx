@@ -78,7 +78,7 @@ export function StaleBadge() {
 }
 
 export function RiskBadge({ risk }: { risk: Enums["proposal_risk"] }) {
-  const tone: Tone = risk === "high" ? "danger" : risk === "medium" ? "warn" : "ok";
+  const tone: Tone = risk === "high" ? "danger" : risk === "medium" ? "neutral" : "ok";
   return <Badge tone={tone}>{risk[0].toUpperCase() + risk.slice(1)} risk</Badge>;
 }
 
@@ -112,11 +112,12 @@ export function ProposalStatusBadge({ status, autoApplied }: { status: Enums["pr
 }
 
 const FLAG_KIND: Record<Enums["flag_kind"], { label: string; tone: Tone }> = {
-  missing: { label: "Missing", tone: "violet" },
+  // the kind is a category, not a state: only "incorrect" (wrong knowledge agents may be using) gets a colour
+  missing: { label: "Missing", tone: "neutral" },
   incorrect: { label: "Incorrect", tone: "danger" },
-  outdated: { label: "Outdated", tone: "warn" },
-  conflicting: { label: "Conflicting", tone: "warn" },
-  unclear: { label: "Unclear", tone: "info" },
+  outdated: { label: "Outdated", tone: "neutral" },
+  conflicting: { label: "Conflicting", tone: "neutral" },
+  unclear: { label: "Unclear", tone: "neutral" },
 };
 
 export function FlagKindBadge({ kind }: { kind: Enums["flag_kind"] }) {
@@ -147,7 +148,7 @@ export function AudienceBadge({ audience, groups }: { audience: string[]; groups
   if (!audience.length) return null;
   const names = audience.map((id) => groups.find((g) => g.id === id)?.name ?? "hidden group");
   return (
-    <Badge plain tone="warn" icon={<Lock />} title={`Only members of: ${names.join(", ")}`}>
+    <Badge plain tone="neutral" icon={<Lock />} title={`Only members of: ${names.join(", ")}`}>
       {names.join(", ")}
     </Badge>
   );

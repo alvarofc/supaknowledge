@@ -15,7 +15,7 @@ const ROLE_META = {
   user: { label: "User", Icon: User, box: "border-line bg-surface", icon: "text-info" },
   assistant: { label: "Agent", Icon: Bot, box: "border-line bg-surface", icon: "text-accent" },
   tool: { label: "Tool", Icon: Wrench, box: "border-line bg-surface-2/40", icon: "text-violet" },
-  feedback: { label: "Human correction", Icon: MessageSquareWarning, box: "border-warn/50 bg-warn-soft", icon: "text-warn" },
+  feedback: { label: "Human correction", Icon: MessageSquareWarning, box: "border-accent/50 bg-accent-soft", icon: "text-accent" },
 } as const;
 
 /** A trace rendered as a chat transcript. Corrections and tool errors are what the curator learns from. */
