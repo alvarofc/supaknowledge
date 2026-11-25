@@ -52,8 +52,10 @@ npx supabase secrets set \
 > The Supabase CLI also reads `supabase/.env` when it deploys functions or sets secrets, and uploads the values it
 > finds there. If your checkout has a local-development `supabase/.env`, its `KF_INTERNAL_SECRET`,
 > `KF_CURATOR_TASK_BUDGET_MS` and model settings can silently replace the ones you meant for the hosted project.
-> The cron jobs then fail with `invalid internal secret`. Run these commands from a checkout without
-> `supabase/.env`, or point `--workdir` at a directory that holds only `supabase/config.jsonc`. Then compare
+> The cron jobs then fail with `invalid internal secret`. Deploy functions from a checkout (or a copy of
+> `supabase/functions` and `supabase/config.jsonc`) without `supabase/.env`, and run `secrets set` with
+> `--project-ref <project-ref>` from such a directory (`--workdir` can point at one that holds only
+> `supabase/config.jsonc`, since `secrets set` needs no function sources). Then compare
 > digests: `npx supabase secrets list` shows the SHA-256 of each value, which must equal
 > `printf %s '<value>' | shasum -a 256`.
 
@@ -111,7 +113,8 @@ so without the hook such sign-ups still fail, just with a generic error.
 
 **From the command line instead of the dashboard.** The Management API sets all of the above in one call,
 without `supabase config push` (which would upload the local stack's settings, including email confirmations
-off). Create a personal access token at
+off). `uri_allow_list` is one comma-separated string that **replaces** the current list, so include every redirect
+URL you still need (preview domains, a local Studio). Create a personal access token at
 [supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens), then:
 
 ```bash
@@ -194,12 +197,17 @@ select status_code, content from net._http_response order by created desc limit 
 
 A `401 internal secret required` / `invalid internal secret` means `KF_INTERNAL_SECRET` and the Vault
 `kf_internal_secret` differ (see the `supabase/.env` warning in [Edge Functions](#3-edge-functions)). After you
-fix it, queued jobs retry by themselves once their visibility timeout passes (about two minutes for embeddings).
+fix it, embedding and sync jobs retry by themselves once their visibility timeout passes (about two minutes for
+embeddings). Curator tasks count every delivery, including rejected ones: if the secret was wrong through three
+deliveries, the task fails (its error then blames the time limit) and you start a new run (`kf curate` or Run now
+in Studio).
 
 **Studio on your machine against the hosted project** (before you deploy it, or to debug): put
 `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` of the hosted project in `apps/studio/.env.hosted.local`
-(ignored by git), add `http://localhost:3000/**` to the redirect URLs, and run
-`npm run dev -w @supaknowledge/studio -- --mode hosted`.
+(ignored by git), add `http://127.0.0.1:3000/**` and `http://localhost:3000/**` to the redirect URLs, and run
+`npm run dev -w @supaknowledge/studio -- --mode hosted`. Sign-in works from either address. Email links and the OAuth
+consent page (MCP sign-in) follow the project's Site URL, so they reach this local Studio only if the Site URL points
+at it. That's fine on a test project; on a production project, keep the Site URL on your deployed Studio.
 
 ## Updating
 
