@@ -12,12 +12,16 @@ function shortHash(s: string): string {
 }
 
 /**
- * MCP server name for a space in client configs. Includes the workspace, so "main" in two workspaces does not
- * collide in one client; long names are shortened deterministically (prefix + hash of the full name).
+ * MCP server name for a space in client configs: distinct (workspace, space) pairs never share a name, so several
+ * spaces fit in one client config. Slugs are [a-z0-9-] only, so "_" marks the workspace/space boundary
+ * ("supaknowledge_<ws>_<space>"). Names over the cap are shortened deterministically to
+ * "supaknowledge-<prefix>-<hash of the full name>"; the "-" after "supaknowledge" keeps them apart from every
+ * unshortened name.
  */
 export function serverName(wsSlug: string, spaceSlug: string): string {
-  const full = `supaknowledge-${wsSlug}-${spaceSlug}`;
+  const full = `supaknowledge_${wsSlug}_${spaceSlug}`;
   if (full.length <= MAX_SERVER_NAME) return full;
   const hash = shortHash(full);
-  return `${full.slice(0, MAX_SERVER_NAME - hash.length - 1).replace(/-+$/, "")}-${hash}`;
+  const head = `supaknowledge-${full.slice("supaknowledge_".length)}`;
+  return `${head.slice(0, MAX_SERVER_NAME - hash.length - 1).replace(/[-_]+$/, "")}-${hash}`;
 }

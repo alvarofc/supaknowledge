@@ -55,7 +55,7 @@ users, writing skill files to Storage). See [access control](access-control.md).
 
 ## Data model
 
-Twenty migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…20` review fixes and follow-ups):
+Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups):
 
 | Migration | Contents |
 |---|---|
@@ -83,6 +83,8 @@ Twenty migrations in `supabase/migrations` (`20261124000001`–`…10` the base 
 | `…22_round2_functions` | `flag_knowledge()` path normalization, `p_visible_to` / `p_min_similarity` on `search_knowledge` / `search_sources`, `kf_rejected_proposals()`, settings length limits |
 | `…23_round2_embed` | Compare-and-swap embedding writes (`kf_embed_write_concept()` / `kf_embed_write_document()`) and `kf_embed_requeue()` |
 | `…24_pr1_followups` | `search_sources(p_source)` (per-source search filtered before the limit), concept paths reject empty and `.` segments |
+| `…25_pr5_followups` | Proposal path validation (`private.valid_concept_path`) rejects empty and `.` segments like `concepts.path` |
+| `…26_settings_cas` | `update_space_settings()`: compare-and-swap saves of space settings (RLS and settings validation still apply) |
 
 ### One write path
 

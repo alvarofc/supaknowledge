@@ -298,6 +298,18 @@ describe("kf init space selection", () => {
   });
 });
 
+describe("kf project file validation", () => {
+  it("reports a project file whose space is not a string instead of crashing", async () => {
+    const h = harness();
+    writeFileSync(join(h.dir, ".supaknowledge.json"), JSON.stringify({ space: 42 }));
+    const r = await h.run("init");
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /invalid .*\.supaknowledge\.json: "space" must be a string/);
+    assert.doesNotMatch(r.stderr, /TypeError|split is not a function/);
+    assert.equal(h.calls.length, 0);
+  });
+});
+
 describe("kf mcp-config --key-env", () => {
   it("rejects a value that is not an environment variable name", async () => {
     const h = harness();

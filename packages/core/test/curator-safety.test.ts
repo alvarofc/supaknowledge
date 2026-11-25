@@ -552,7 +552,7 @@ test("the repair round runs without research tools for lint problems and is skip
 // #28 buildProposal edge cases
 // ---------------------------------------------------------------------------------------------------------
 
-test("buildProposal: expired stale_after advances, moves need a normalized new_path, reused labels replace old sources", () => {
+test("buildProposal: expired stale_after advances, moves need a normalized new_path, reused labels never clobber old sources", () => {
   const now = new Date("2026-11-24T00:00:00Z");
   const existing = concept({
     path: "data/rev", stale_after: "2026-01-01T00:00:00Z",
@@ -563,7 +563,11 @@ test("buildProposal: expired stale_after advances, moves need a normalized new_p
   const swept = buildProposal({ ...base, ops: [{ ...update("data/rev", ["1"]), stale_after: "yesterday" }], citations: [{ label: "1", ref: "flag:f1", quote: "" }] } as never, ev, new Map(), parseSettings({}), now);
   const after = swept.draft.ops[0]!.after;
   assert.ok(Date.parse(after.stale_after!) > now.getTime(), "an expired review date moves forward");
-  assert.deepEqual((after.frontmatter!.sources as { id: string; resource: string }[]).map((s) => [s.id, s.resource]), [["keep", "https://keep.example"], ["1", "supaknowledge://flags/f1"]]);
+  assert.deepEqual((after.frontmatter!.sources as { id: string; resource: string }[]).map((s) => [s.id, s.resource]), [
+    ["1", "https://old.example"],
+    ["keep", "https://keep.example"],
+    ["1-2", "supaknowledge://flags/f1"],
+  ]);
 
   const move = (new_path: string | null) =>
     buildProposal({ ...base, ops: [{ ...update("/data/rev.md", []), op: "move", body: null, new_path }], citations: [] } as never, ev, new Map(), parseSettings({}), now);

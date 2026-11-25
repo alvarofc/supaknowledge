@@ -122,6 +122,7 @@ const PARAMETERS: Record<KnowledgeToolName, ToolParameters> = {
       concept_path: { type: "string", description: "Path of the concept this is about (omit for missing knowledge)." },
       query: { type: "string", description: "What you were trying to do or find." },
       suggested_fix: { type: "string", description: "How the knowledge should change, if you know." },
+      evidence: { type: "object", description: "Optional structured details (e.g. the failing query and the exact error) as a JSON object." },
     },
     required: ["kind", "observation"],
     additionalProperties: false,
@@ -253,6 +254,10 @@ export async function handleToolCall(
           query: str(args.query, "query", false),
           suggestedFix: str(args.suggested_fix, "suggested_fix", false),
         };
+        if (args.evidence != null) {
+          if (typeof args.evidence !== "object" || Array.isArray(args.evidence)) throw new Error('"evidence" must be a JSON object');
+          input.evidence = args.evidence as Record<string, unknown>;
+        }
         const r = opts.trace ? await opts.trace.flag(input) : await kf.flag(input);
         result = { content: r?.id ? `Flag recorded (${r.id}). The curator will review it; continue with your task.` : "Flag recorded. Continue with your task." };
         break;

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Type-checks every Edge Function with Deno, against its own deno.json import map and lockfile.
 //   node scripts/check-functions.mjs [name...]
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnNpx } from "./npx.mjs";
 
 const DENO = process.env.DENO ?? "deno@2.9.6";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,11 +17,9 @@ const names = readdirSync(fnDir)
 
 let failed = 0;
 for (const name of names) {
-  const r = spawnSync(
-    "npx",
+  const r = spawnNpx(
     ["--yes", DENO, "check", "--frozen", "--minimum-dependency-age", "0", "--config", `supabase/functions/${name}/deno.json`, `supabase/functions/${name}/index.ts`],
-    // npx is npx.cmd on Windows, which only runs through a shell (no argument here needs quoting)
-    { cwd: root, encoding: "utf8", shell: process.platform === "win32" },
+    { cwd: root, encoding: "utf8" },
   );
   if (r.status === 0) console.log(`ok   ${name}`);
   else {

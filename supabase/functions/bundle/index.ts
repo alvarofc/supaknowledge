@@ -18,6 +18,7 @@ import {
   type ExportConcept,
   exportBundle,
   importBundle,
+  isValidConceptPath,
   lintConcept,
 } from "../_shared/core/formats.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
@@ -29,7 +30,6 @@ import { type InlineFile, isStripped, stripFiles } from "./strip.ts";
 
 const CONCEPT_COLS =
   "id, path, kind, type, title, description, body, frontmatter, tags, status, superseded_by, stale_after, audience, revision, generated_by, generated_at";
-const PATH_RE = /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/;
 const MAX_FILES_BYTES = 8 * 1024 * 1024; // skill files carried inside a proposal
 const PAGE = 1000;
 const DOWNLOAD_CONCURRENCY = 6;
@@ -291,7 +291,7 @@ async function importToSpace(req: Request): Promise<Response> {
     const d = normalizeImported(ic.draft);
     const lint = lintConcept(d, ic.files);
     if (lint.length) problems.push({ path: d.path, problems: lint });
-    if (!PATH_RE.test(d.path) || d.path.includes("..") || d.path.endsWith(".md") || d.path.split("/").some((s) => s === "index" || s === "log")) {
+    if (!isValidConceptPath(d.path) || d.path.split("/").some((s) => s === "index" || s === "log")) {
       warnings.push(`${ic.sourcePath}: skipped, invalid concept path "${d.path}"`);
       continue;
     }

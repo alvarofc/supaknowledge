@@ -184,6 +184,7 @@ def test_tool_helpers():
             return {"skills": [{"path": "skills/revenue-report", "description": "Weekly revenue"}]}
         if name == "flag_knowledge":
             assert args.get("trace_id") == "t-9"
+            assert args.get("evidence") == {"error": "42703"}
             return {"flag_id": "f-9"}
         raise Exception("nope")
 
@@ -201,6 +202,8 @@ def test_tool_helpers():
     plain = kf.knowledge_tools(format="json-schema", include=["flag_knowledge"])
     assert plain == [{"name": "flag_knowledge", "description": plain[0]["description"], "input_schema": plain[0]["input_schema"]}]
     assert plain[0]["input_schema"]["required"] == ["kind", "observation"]
+    assert plain[0]["input_schema"]["properties"]["evidence"]["type"] == "object"
+    assert kf.handle_tool_call("flag_knowledge", {"kind": "missing", "observation": "x", "evidence": "oops"})["is_error"] is True
     assert kf.handle_tool_call("weather", {}) is None
     assert kf.handle_tool_call("flag_knowledge", {"kind": "bad", "observation": "x"})["is_error"] is True
     assert json.loads(kf.handle_tool_call("list_skills", {})["content"]) == [{"name": "revenue-report", "description": "Weekly revenue"}]
@@ -213,7 +216,7 @@ def test_tool_helpers():
     results = kf.handle_tool_calls(
         [
             Obj(id="a", type="function", function=Obj(name="search_knowledge", arguments='{"query": "arr"}')),
-            {"id": "b", "name": "flag_knowledge", "arguments": {"kind": "missing", "observation": "no churn"}},
+            {"id": "b", "name": "flag_knowledge", "arguments": {"kind": "missing", "observation": "no churn", "evidence": {"error": "42703"}}},
             {"id": "c", "name": "other", "arguments": "{}"},
             {"id": "d", "type": "function", "function": {"name": "read_concept", "arguments": "{oops"}},
         ],
@@ -286,6 +289,37 @@ def test_parse_concept_files_trailer():
     )
     assert c["files"] == [{"path": "scripts/q.sql", "size_bytes": 12}, {"path": "README"}]
     assert c["body"] == "Body\n\n```\nFiles:\n\n- fake\n```"
+
+
+_HEAD = "# R\n\npath: skills/r\nkind: skill | type: Skill | status: stable | revision: 1\ntrust: human_reviewed\n\n---\n\n"
+
+
+@pytest.mark.parametrize("body", ["Run ```inline code``` first", "- step\n\n  ```sh\n  echo ok\n  ```", "Unclosed:\n\n```sh\necho ok"])
+def test_parse_trailers_whatever_the_body_fences(body):
+    c = parse_concept_markdown(f"{_HEAD}{body}\n\nFiles:\n\n- scripts/q.sql (12 bytes)")
+    assert (c["body"], c["files"]) == (body, [{"path": "scripts/q.sql", "size_bytes": 12}])
+    s = parse_skill_markdown(
+        f"# Skill: r\n\npath: skills/r | revision: 1\n\ndescription: d.\n\n---\n\n{body}\n\n---\n\n## Files\n\n### scripts/q.sql\n\n```sql\nselect 1\n```"
+    )
+    assert (s["body"], s["files"]) == (body, [{"path": "scripts/q.sql"}])
+
+
+def test_parse_empty_body_trailer_and_body_sections_that_are_not_trailers():
+    empty = parse_concept_markdown(f'{_HEAD}Files:\n\n- a.txt (3 bytes)\n\nUse load_skill("r") to get the file contents.')
+    assert (empty["body"], empty["files"]) == ("", [{"path": "a.txt", "size_bytes": 3}])
+    # the renderer always prints a size: "(0 bytes)" and "(unknown size)" keep a parenthesized file name intact
+    sizes = parse_concept_markdown(f"{_HEAD}Files:\n\n- report (12 bytes) (0 bytes)\n\n- notes (v2) (unknown size)")
+    assert sizes["files"] == [{"path": "report (12 bytes)", "size_bytes": 0}, {"path": "notes (v2)"}]
+    own = parse_concept_markdown(f"{_HEAD}Files:\n- one\n- two\n\nThat is all.")
+    assert own["body"] == "Files:\n- one\n- two\n\nThat is all." and "files" not in own
+    both = parse_concept_markdown(f"{_HEAD}Body\n\n---\n\nLinks:\n\n- a/b\n\n- c/d [missing]\n\nReferenced by:\n\n- e/f (E)\n\nFiles:\n\n- x.md")
+    assert both["body"] == "Body" and both["links"] == [{"path": "a/b", "exists": True}, {"path": "c/d", "exists": False}]
+    assert both["files"] == [{"path": "x.md"}]
+    skill_body = "Intro\n\n---\n\n## Files\n\n### Which files to touch\n\nOnly the SQL ones."
+    skill = parse_skill_markdown(f"# Skill: r\n\npath: skills/r\n\n---\n\n{skill_body}")
+    assert skill["body"] == skill_body and "files" not in skill
+    empty_skill = parse_skill_markdown("# Skill: r\n\npath: skills/r\n\n---\n\n\n\n---\n\n## Files\n\n### a.bin\n\n(binary; 4 bytes; storage: concept-files/x)")
+    assert (empty_skill["body"], empty_skill["files"]) == ("", [{"path": "a.bin"}])
 
 
 def test_recorder_standalone_drops_4xx():

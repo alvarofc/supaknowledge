@@ -215,13 +215,18 @@ Rules (`lib/acl.ts`), which guarantee a document is **never wider than its sourc
 - Source audience empty → document audience = the matched groups (or empty if none match).
 - Source audience restricted → document audience = matched ∩ source. If the intersection is empty (OR-lists
   cannot express "members of both"), an upstream-restricted item is skipped (and retracted), whatever
-  `acl_strict` says, since the source audience would be wider than its upstream ACL; an unrestricted item keeps
-  the source audience.
+  `acl_strict` says, because retaining the source audience could expose content to users outside the upstream
+  ACL; an unrestricted item keeps the source audience.
 - Restricted upstream item with no matching group → source audience, or skipped (and retracted) with
   `acl_strict: true`.
 
-The decision is recorded in `metadata.acl` (`mode`: `inherit` | `mapped` | `unmapped` | `disjoint`). Audience changes
-are re-applied on the next sync even when the content did not change.
+The decision is recorded in `metadata.acl` (`mode`: `inherit` | `mapped` | `unmapped` | `disjoint`, plus the
+upstream `restricted` flag and the mapped `groups`). Audience changes are re-applied on the next sync even when
+the content did not change: connectors skip unchanged upstream items (GitHub blob sha, Notion
+`last_edited_time`...), so every sync first re-applies the current rules, source audience and `acl_strict` to
+what each stored document recorded. A document the rules now skip is retracted and one they now narrow is
+narrowed; a wider audience (for example from a new `external_ref` mapping) only takes effect once the item is
+fetched again because it changed upstream (Drive also counts a permission change as one).
 
 ## Document lifecycle
 

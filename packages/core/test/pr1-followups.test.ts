@@ -167,3 +167,20 @@ test("changed documents of clusters over max_clusters_per_run are counted, not s
   assert.equal(stats.clusters, 1);
   assert.equal(stats.documents_over_cap, 1);
 });
+
+test("a changed document shared by a selected and an over-cap cluster still counts as over the cap", async () => {
+  const store = new MemoryStore({ curator: { max_clusters_per_run: 1 } });
+  for (const n of ["a", "b"]) {
+    store.concepts.push(concept({ path: `data/${n}`, frontmatter: { sources: [{ id: "shared", resource: "supaknowledge://documents/d-shared" }] } }));
+  }
+  store.docs.push(doc("d-shared"));
+  const llm = new ScriptedLLM((req) => {
+    if (is(req, DRAFT_SYSTEM)) return { decision: "no_change", title: "", rationale: "up to date", risk: "low", ops: [], citations: [], resolves_flags: [], dismiss_flags: [] };
+    throw new Error("unexpected prompt");
+  });
+  const task = store.createRun("s");
+  await drain(store, llm);
+  const stats = store.runs.get(task.run_id)!.stats;
+  assert.equal(stats.clusters, 1);
+  assert.equal(stats.documents_over_cap, 1);
+});

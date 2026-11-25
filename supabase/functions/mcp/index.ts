@@ -16,6 +16,7 @@ import { authenticate, type Caller } from "../_shared/auth.ts";
 import { embed, toVector } from "../_shared/embed.ts";
 import { corsHeaders, errorResponse, HttpError, json } from "../_shared/http.ts";
 import { isUuid, listSpaces, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import { flagEvidence } from "./evidence.ts";
 import { baseCacheHeaders, escapeLike, normalizeConceptPath, publicBase } from "./urls.ts";
 
 const SERVER_INFO = { name: "supaknowledge", version: "0.1.0" };
@@ -283,7 +284,7 @@ function buildServer(ctx: Ctx): McpServer {
         }
         if (c.backlinks?.length) parts.push("Referenced by:", ...c.backlinks.map((b) => `- ${b.path} (${b.title})`));
         if (c.files?.length) {
-          parts.push("Files:", ...c.files.map((f) => `- ${f.path}${f.size_bytes ? ` (${f.size_bytes} bytes)` : ""}`));
+          parts.push("Files:", ...c.files.map((f) => `- ${f.path} (${f.size_bytes == null ? "unknown size" : `${f.size_bytes} bytes`})`));
           if (c.kind === "skill") parts.push(`Use load_skill("${skillName(c.path)}") to get the file contents.`);
         }
         return text(parts.filter((x) => x !== "").join("\n\n"));
@@ -453,8 +454,8 @@ function buildServer(ctx: Ctx): McpServer {
           p_query: query ?? null,
           p_suggested_fix: suggested_fix ?? null,
           p_trace: trace,
-          // the caller's evidence, with the server-set keys last so they cannot be spoofed
-          p_evidence: { ...(evidence ?? {}), via: "mcp", client_id: caller.clientId, ...(trace_id && !trace ? { trace_ref: trace_id } : {}) },
+          // the caller's evidence with the server-owned keys (via, client_id, trace_ref) set or stripped by the server
+          p_evidence: flagEvidence(evidence, caller.clientId, trace_id, trace),
         });
         if (error) return fail(`flag_knowledge failed: ${error.message}`);
         return text(asJson({ flag_id: data, space: sp.ref, status: "open", message: "Thanks. The curator will review this flag." }));

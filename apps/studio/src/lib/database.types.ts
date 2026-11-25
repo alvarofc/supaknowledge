@@ -1093,6 +1093,9 @@ isOneToOne: false
 "trust":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: Database["public"]['Enums']["trust_tier"]
                            },
+"update_space_settings":
+{ Args: { "p_expected": Json,"p_settings": Json,"p_space": string }; Returns: string
+                           },
 "verify_concept":
 { Args: { "p_concept": string,"p_note"?: string }; Returns: {
               "actor": string,

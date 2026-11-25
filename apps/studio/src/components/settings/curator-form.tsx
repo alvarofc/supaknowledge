@@ -41,6 +41,9 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
   const router = useRouter();
   const toast = useToast();
   const [s, setS] = useState<SpaceSettings>(initial);
+  // what the form's values were derived from (the merge baseline): the loaded settings, then each save's result,
+  // so a second save before the route reloads (or after a failed reload) does not merge against stale values
+  const [base, setBase] = useState<SpaceSettings>(initial);
   // raw text of the fallback list, so typing a new line is not swallowed by parsing
   const [fallbackText, setFallbackText] = useState(initial.curator.fallback_models.join("\n"));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -50,7 +53,7 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
       if (!Object.keys(x).some((key) => key === k || key.startsWith(`${k}.`))) return x;
       return Object.fromEntries(Object.entries(x).filter(([key]) => key !== k && !key.startsWith(`${k}.`)));
     });
-  const dirty = JSON.stringify(s) !== JSON.stringify(initial);
+  const dirty = JSON.stringify(s) !== JSON.stringify(base);
 
   const setCurator = <TKey extends keyof SpaceSettings["curator"]>(k: TKey, v: SpaceSettings["curator"][TKey]) => {
     setS((x) => ({ ...x, curator: { ...x.curator, [k]: v } }));
@@ -73,10 +76,11 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
       return;
     }
     startTransition(async () => {
-      // `initial` is what this page loaded: fields left unchanged keep what is stored now (another admin may have saved)
-      const res = await saveSpaceSettings({ data: { spaceId, settings: s, base: initial } });
+      // fields left unchanged since `base` keep what is stored now (another admin may have saved)
+      const res = await saveSpaceSettings({ data: { spaceId, settings: s, base } });
       if (res.ok) {
         setS(res.settings);
+        setBase(res.settings);
         setFallbackText(res.settings.curator.fallback_models.join("\n"));
         setErrors({});
         toast.success("Settings saved. The next curator run uses them.");
@@ -409,8 +413,8 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
           {dirty ? (
             <Button
               onClick={() => {
-                setS(initial);
-                setFallbackText(initial.curator.fallback_models.join("\n"));
+                setS(base);
+                setFallbackText(base.curator.fallback_models.join("\n"));
                 setErrors({});
               }}
             >

@@ -2,6 +2,7 @@ import { ExternalLink } from "lucide-react";
 import type { Json } from "@/lib/database.types";
 import { Link } from "@/components/ui/link";
 import { parseSources } from "@/lib/okf-sources";
+import type { EvidenceAccess } from "@/lib/okf-sources";
 import { safeHref } from "@/lib/safe-href";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -63,8 +64,8 @@ export function FrontmatterPanel({ frontmatter }: { frontmatter: Json }) {
   );
 }
 
-export function SourcesList({ frontmatter, base }: { frontmatter: Json; base?: string }) {
-  const items = parseSources(frontmatter, base);
+export function SourcesList({ frontmatter, base, access }: { frontmatter: Json; base?: string; access: EvidenceAccess }) {
+  const items = parseSources(frontmatter, base, access);
   if (!items.length)
     return <p className="px-4 py-3 text-sm text-subtle">No sources declared. Curator-written concepts cite their evidence here and as footnotes.</p>;
   return (

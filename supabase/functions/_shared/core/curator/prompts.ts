@@ -7,7 +7,7 @@ Supaknowledge stores company knowledge for AI agents as small markdown "concepts
 - domain: how the business works (definitions, policies, facts about products, customers, the org). Changes slowly.
 - data_access: where live data lives and how to query it (which table, which columns, filters, gotchas). Never copies the data itself; it tells an agent how to fetch current data. Usually set stale_after because schemas drift.
 
-Each concept has a path (e.g. "metrics/arr", "data/bigquery/revenue", "skills/revenue-report"), a free-form type ("Metric", "Policy", "BigQuery Table", "Skill"...), a title, a one-sentence description, and a markdown body. Concepts link to each other with normal relative markdown links. Claims cite evidence with footnotes like [^label], and every label must appear in the citations list.
+Each concept has a path (e.g. "metrics/arr", "data/bigquery/revenue", "skills/revenue-report"), a free-form type ("Metric", "Policy", "BigQuery Table", "Skill"...), a title, a one-sentence description, and a markdown body. Concepts link to each other with normal relative markdown links. Claims cite evidence with footnotes like [^label]; a concept's existing sources define the footnote labels it already uses, and every new label must appear in the citations list.
 `.trim();
 
 export const CORRECTIONS_SYSTEM = `
@@ -40,7 +40,8 @@ How to work:
 - Base every claim on the evidence provided. If the evidence does not support a change, decide "no_change" and explain why. Never invent facts, numbers, table names or policies.
 - Prefer updating an existing concept over creating a new one. Create a concept only for knowledge that has no home yet; keep concepts focused on one thing.
 - For updates, return the complete new body and keep everything that is still correct: same structure, voice and headings. Do not drop existing citations or links unless they are wrong.
-- Add a footnote [^label] next to each new or changed claim, and list each label in citations with the exact evidence id from the evidence list (doc:..., trace:..., flag:..., concept:...) and a short supporting quote.
+- Add a footnote [^label] next to each new or changed claim, and list each new label in citations with the exact evidence id from the evidence list (doc:..., trace:..., flag:..., concept:...) and a short supporting quote. Keep existing footnotes as they are without citing them again, and use a new label (not one of the concept's existing source labels) for new evidence.
+- Leave tags and stale_after null to keep the current values; set them only to change them.
 - When knowledge is superseded, update the surviving concept and deprecate the old one with superseded_by rather than deleting history.
 - Link related concepts with relative markdown links, e.g. [ARR](../metrics/arr.md).
 - data_access concepts: name the source system, object, the exact fields and filters, and known pitfalls; set stale_after about 90 days out unless told otherwise.

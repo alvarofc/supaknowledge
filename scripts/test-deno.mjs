@@ -2,10 +2,10 @@
 // Runs every Edge Function Deno test suite (supabase/functions/<fn>/test and _shared/test), each against its
 // function's own deno.json (import map) so tests resolve dependencies exactly like the deployed function.
 //   node scripts/test-deno.mjs [name...]      e.g. node scripts/test-deno.mjs connectors _shared
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnNpx } from "./npx.mjs";
 
 const DENO = process.env.DENO ?? "deno@2.9.6";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,11 +28,9 @@ if (!suites.length) {
 let failed = 0;
 for (const s of suites) {
   console.log(`\n=== ${s.name}`);
-  const r = spawnSync(
-    "npx",
+  const r = spawnNpx(
     ["--yes", DENO, "test", "--no-lock", "--minimum-dependency-age", "0", "--allow-read", "--allow-env", "--config", s.config, `supabase/functions/${s.name}/test/`],
-    // npx is npx.cmd on Windows, which only runs through a shell (no argument here needs quoting)
-    { cwd: root, stdio: "inherit", shell: process.platform === "win32" },
+    { cwd: root, stdio: "inherit" },
   );
   if (r.error) console.error(r.error.message);
   if (r.status !== 0) failed++;

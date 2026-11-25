@@ -502,9 +502,9 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   const room = Math.max(0, settings.curator.max_clusters_per_run - Number(run.stats?.clusters ?? 0));
   const selected = clusters.slice(0, room);
   // Clusters over the cap are not drafted. Their flags stay open for the next run; their changed documents do not
-  // come back (the run's watermark moves past them) until they change again, so the run records how many.
-  const selectedDocs = new Set(selected.flatMap((c) => c.document_ids));
-  const docsOverCap = new Set(clusters.slice(room).flatMap((c) => c.document_ids).filter((id) => !selectedDocs.has(id))).size;
+  // come back (the run's watermark moves past them) until they change again, so the run records how many. A
+  // document also cited by a selected cluster counts too: the over-cap concept still never sees it.
+  const docsOverCap = new Set(clusters.slice(room).flatMap((c) => c.document_ids)).size;
   if (docsOverCap) ctx.log("curator triage: max_clusters_per_run reached", { run: run.id, documents_over_cap: docsOverCap });
   // keyed by content: a retried triage never enqueues the same draft twice. Drafts are enqueued BEFORE any
   // dismissal, so a retry of a task that failed half-way sees the same open flags.
@@ -595,11 +595,18 @@ function clip(s: string, n: number) {
 }
 
 function renderConcept(c: Concept): string {
+  // labels only: source titles can come from third-party documents and are not shown outside untrusted blocks
+  const sources = (Array.isArray(c.frontmatter?.sources) ? (c.frontmatter.sources as unknown[]) : [])
+    .map((x) => (x && typeof x === "object" ? (x as Record<string, unknown>).id : undefined))
+    .filter((id): id is string => typeof id === "string" && /^[\w.-]{1,80}$/.test(id))
+    .map((id) => `[^${id}]`);
   return [
     `### concept:${c.path}`,
     `kind: ${c.kind} | type: ${c.type} | revision: ${c.revision} | status: ${c.status}${c.stale_after ? ` | stale_after: ${c.stale_after}` : ""}${c.audience.length ? " | RESTRICTED" : ""}`,
     `title: ${c.title}`,
     `description: ${c.description}`,
+    ...(c.tags?.length ? [`tags: ${c.tags.join(", ")}`] : []),
+    ...(sources.length ? [`existing sources (footnote labels already defined): ${sources.join(", ")}`] : []),
     "body:",
     clip(c.body, 12_000),
   ].join("\n");
@@ -761,6 +768,44 @@ function okfSourceEntry(c: Citation, ev: Evidence): Record<string, unknown> {
   };
 }
 
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
+
+/** Does an existing frontmatter.sources entry already record this evidence? */
+function sameSource(prev: Record<string, unknown>, next: Record<string, unknown>): boolean {
+  const doc = next["x-supaknowledge-document"];
+  if (typeof doc === "string" && prev["x-supaknowledge-document"] === doc) return true;
+  return typeof prev.resource === "string" && typeof next.resource === "string" && sameUrl(prev.resource, next.resource);
+}
+
+/**
+ * frontmatter.sources after citing `cited`, or null when nothing changes. Existing entries stay as they are, in
+ * order. A citation of evidence already listed adds nothing, and neither does one of the concept being changed
+ * (a model re-citing a footnote the body already had, with the concept itself as evidence, must not replace the
+ * real source behind that footnote). New evidence is appended; if its label is already a source id, it gets
+ * the first free "<label>-N" id instead of clobbering that entry.
+ */
+function mergeSources(prev: unknown, cited: Citation[], ev: Evidence, selfId: string | null): Record<string, unknown>[] | null {
+  const out = Array.isArray(prev) ? [...(prev as unknown[])] : [];
+  const entries = () => out.filter((s): s is Record<string, unknown> => !!s && typeof s === "object" && !Array.isArray(s));
+  const ids = new Set(entries().map((s) => s.id).filter((id): id is string => typeof id === "string"));
+  let changed = false;
+  for (const c of cited) {
+    if (c.ref_kind === "concept" && selfId && c.ref_id === selfId) continue;
+    const entry = okfSourceEntry(c, ev);
+    if (entries().some((s) => sameSource(s, entry))) continue;
+    let id = String(entry.id);
+    for (let n = 2; ids.has(id); n++) id = `${entry.id}-${n}`;
+    ids.add(id);
+    out.push({ ...entry, id });
+    changed = true;
+  }
+  return changed ? (out as Record<string, unknown>[]) : null;
+}
+
 export interface BuiltProposal {
   draft: ProposalDraft;
   problems: string[];
@@ -827,12 +872,20 @@ export function buildProposal(
     if (o.title) after.title = o.title;
     if (o.description !== null) after.description = o.description;
     if (o.body !== null) after.body = o.body.trim() + "\n";
-    if (o.tags) after.tags = o.tags;
+    if (o.tags) {
+      // An update keeps its tags unless the model asks for a different, non-empty set: models echo [] or the
+      // same list for "unchanged", and either would churn (or wipe) the reviewed tags.
+      const tags = [...new Set(o.tags.map((t) => t.trim()).filter(Boolean))];
+      if (tags.length && !(existing && sameSet(tags, existing.tags ?? []))) after.tags = tags;
+    }
     if (o.superseded_by) after.superseded_by = normalizeConceptPath(o.superseded_by);
     const staleAt = o.stale_after ? Date.parse(o.stale_after) : Number.NaN;
     const replaced = !!o.stale_after && (Number.isNaN(staleAt) || staleAt <= now.getTime());
-    if (!Number.isNaN(staleAt) && staleAt > now.getTime()) after.stale_after = new Date(staleAt).toISOString();
-    else {
+    if (!Number.isNaN(staleAt) && staleAt > now.getTime()) {
+      // the same instant written differently ("+00:00" vs ".000Z") is not a change
+      const existingAt = existing?.stale_after ? Date.parse(existing.stale_after) : Number.NaN;
+      if (staleAt !== existingAt) after.stale_after = new Date(staleAt).toISOString();
+    } else {
       // no usable date from the model: keep a future review date, otherwise (missing or already expired, as in
       // a staleness sweep) move it to the default so the concept is not stale on arrival
       const existingStale = existing?.stale_after ? Date.parse(existing.stale_after) : Number.NaN;
@@ -847,15 +900,11 @@ export function buildProposal(
       }
     }
 
-    // OKF provenance: merge cited sources into frontmatter.sources (a label now cited replaces an older entry
-    // with the same label: the body's footnote refers to the new evidence)
+    // OKF provenance: append cited sources to frontmatter.sources. Existing entries are never rewritten,
+    // dropped or reordered (they carry reviewed titles and resources), and every other frontmatter key is kept.
     if (opCitations.length && opKind !== "deprecate" && opKind !== "move") {
-      const fm = { ...(existing?.frontmatter ?? {}) };
-      const prev = Array.isArray(fm.sources) ? (fm.sources as Record<string, unknown>[]) : [];
-      const fresh = opCitations.map((c) => okfSourceEntry(c, ev));
-      const freshIds = new Set(fresh.map((s) => s.id));
-      fm.sources = [...prev.filter((s) => !freshIds.has(s?.id)), ...fresh];
-      after.frontmatter = fm;
+      const sources = mergeSources(existing?.frontmatter?.sources, opCitations, ev, existing?.id ?? null);
+      if (sources) after.frontmatter = { ...(existing?.frontmatter ?? {}), sources };
     }
 
     if (opKind === "create") {

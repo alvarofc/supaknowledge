@@ -49,7 +49,7 @@ function SettingsPage() {
     body = (
       <div className="flex flex-col gap-6">
         <GeneralForm key={ctx.space.id} space={ctx.space} canEdit={spaceAdmin} />
-        {wsAdmin ? <DeleteSpace key={ctx.space.id} space={ctx.space} wsSlug={ctx.workspace.slug} /> : null}
+        {wsAdmin ? <DeleteSpace key={`delete-${ctx.space.id}`} space={ctx.space} wsSlug={ctx.workspace.slug} /> : null}
       </div>
     );
   } else if (data.tab === "curator") {

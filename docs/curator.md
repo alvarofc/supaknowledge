@@ -70,9 +70,10 @@ would exceed its CPU limit). Clusters that touch the same concept are merged. Up
 clusters per run are queued as `draft` tasks, highest priority first, before any flag is dismissed (a retried
 triage sees the same open flags). Flags in clusters over the cap stay open for the next run; changed documents
 in them are not carried over (the watermark moves on) and are counted as `documents_over_cap` in the run stats,
-so raise the cap if that number is not zero. Changed documents are read 100 at a time: later pages, and audience passes that
-do not fit one task (at most 6 passes per task), continue in further `triage` tasks of the same run, so no changed
-document is skipped by the run's watermark.
+so raise the cap if that number is not zero (a document cited by both a drafted and an over-cap cluster counts
+too). Changed documents are read 100 at a time: later pages, and audience passes that do not fit one task (at
+most 6 passes per task), continue in further `triage` tasks of the same run, so apart from those over-cap
+clusters no changed document is skipped by the run's watermark.
 
 **3. Sweep** (staleness runs). Every stable concept past `stale_after` becomes a `draft` task asking the model to
 re-validate it: either move `stale_after` forward (low risk) or fix it.
@@ -130,6 +131,12 @@ sources:
     title: "#finance, 2026-11-20"
     last_modified: "2026-11-20T16:02:11Z"
 ```
+
+An update only appends to `sources`: existing entries keep their ids, titles, resources and order, and every
+other frontmatter key (`tags`, `resource`, `x-*`...) is left as it was. Evidence already listed is not added
+again, a citation of the concept being changed adds nothing, and a new source whose label is already taken gets
+the next free `<label>-N` id. Tags and `stale_after` change only when the model sets a different value (an empty
+tag list or the same review date in another format is not a change).
 
 The citations are also how changed sources find their concepts: when a document cited by a concept changes, the
 next run drafts against that concept.

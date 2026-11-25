@@ -253,7 +253,7 @@ describe("withSupaknowledge and instructions", () => {
     assert.equal(createSupaknowledgeInstructions({ include: [] }), "");
 
     const cfg = withSupaknowledge({ instructions: "base" }, kf, { include: ["load_skill"] });
-    assert.doesNotMatch(cfg.instructions as string, /search_knowledge|flag_knowledge|list_skills/);
+    assert.doesNotMatch(cfg.instructions as string, /search_knowledge|flag_knowledge|list_skills|read_concept/);
     assert.match(cfg.instructions as string, /load it with load_skill/);
     assert.equal(withSupaknowledge({ instructions: "base" }, kf, { include: [] }).instructions, "base");
   });

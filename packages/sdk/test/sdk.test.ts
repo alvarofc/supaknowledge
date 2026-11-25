@@ -231,7 +231,7 @@ describe("tool helpers (OpenAI-compatible and JSON Schema)", () => {
     assert.equal(isKnowledgeTool("get_weather"), false);
     const results = await handleToolCalls([
       { id: "c1", type: "function", function: { name: "search_knowledge", arguments: '{"query":"arr"}' } },
-      { id: "c2", name: "flag_knowledge", arguments: { kind: "missing", observation: "no churn def" } },
+      { id: "c2", name: "flag_knowledge", arguments: { kind: "missing", observation: "no churn def", evidence: { error: "42703" } } },
       { id: "c3", name: "other_tool", arguments: "{}" },
       { id: "c4", function: { name: "read_concept", arguments: "{not json" } },
     ]);
@@ -243,6 +243,11 @@ describe("tool helpers (OpenAI-compatible and JSON Schema)", () => {
     // the flag went out with the trace id (trace flushed first)
     const flagCall = calls.find((c) => c.body?.params?.name === "flag_knowledge")!;
     assert.equal(flagCall.body.params.arguments.trace_id, "t-5");
+    assert.deepEqual(flagCall.body.params.arguments.evidence, { error: "42703" });
+    // evidence is in the schema, and a non-object is rejected rather than dropped
+    assert.equal((kf.knowledgeTools({ include: ["flag_knowledge"] })[0]!.function.parameters as any).properties.evidence.type, "object");
+    const bad = await kf.handleToolCall("flag_knowledge", { kind: "missing", observation: "x", evidence: "oops" });
+    assert.equal(bad?.is_error, true);
     await trace.end();
   });
 });
@@ -330,6 +335,41 @@ describe("MCP markdown parsing", () => {
     );
     assert.deepEqual(c.files, [{ path: "scripts/q.sql", size_bytes: 12 }, { path: "README" }]);
     assert.equal(c.body, "Body\n\n```\nFiles:\n\n- fake\n```");
+  });
+
+  it("finds the trailers whatever the body's fences look like (inline ``` spans, list-item fences, unclosed fences)", async () => {
+    const { parseConceptMarkdown, parseSkillMarkdown } = await import("../src/index.ts");
+    const head = "# R\n\npath: skills/r\nkind: skill | type: Skill | status: stable | revision: 1\ntrust: human_reviewed\n\n---\n\n";
+    const skillHead = "# Skill: r\n\npath: skills/r | revision: 1\n\ndescription: d.\n\n---\n\n";
+    const skillTrailer = "\n\n---\n\n## Files\n\n### scripts/q.sql\n\n```sql\nselect 1\n```";
+    for (const body of ["Run ```inline code``` first", "- step\n\n  ```sh\n  echo ok\n  ```", "Unclosed:\n\n```sh\necho ok"]) {
+      const c = parseConceptMarkdown(`${head}${body}\n\nFiles:\n\n- scripts/q.sql (12 bytes)`);
+      assert.deepEqual([c.body, c.files], [body, [{ path: "scripts/q.sql", size_bytes: 12 }]], body);
+      const s = parseSkillMarkdown(`${skillHead}${body}${skillTrailer}`);
+      assert.deepEqual([s.body, s.files], [body, [{ path: "scripts/q.sql" }]], body);
+    }
+  });
+
+  it("parses a Files: trailer that follows an empty body, and leaves body sections that are not the trailer alone", async () => {
+    const { parseConceptMarkdown, parseSkillMarkdown } = await import("../src/index.ts");
+    const head = "# R\n\npath: skills/r\nkind: skill | type: Skill | status: stable | revision: 1\ntrust: human_reviewed\n\n---\n\n";
+    const empty = parseConceptMarkdown(`${head}Files:\n\n- a.txt (3 bytes)\n\nUse load_skill("r") to get the file contents.`);
+    assert.deepEqual([empty.body, empty.files], ["", [{ path: "a.txt", size_bytes: 3 }]]);
+    // the renderer always prints a size: "(0 bytes)" and "(unknown size)" keep a parenthesized file name intact
+    const sizes = parseConceptMarkdown(`${head}Files:\n\n- report (12 bytes) (0 bytes)\n\n- notes (v2) (unknown size)`);
+    assert.deepEqual(sizes.files, [{ path: "report (12 bytes)", size_bytes: 0 }, { path: "notes (v2)" }]);
+    // the body's own "Files:" section (a tight list, then prose) is not an attachment list
+    const own = parseConceptMarkdown(`${head}Files:\n- one\n- two\n\nThat is all.`);
+    assert.deepEqual([own.body, own.files], ["Files:\n- one\n- two\n\nThat is all.", undefined]);
+    // links, backlinks and files together
+    const all = parseConceptMarkdown(`${head}Body\n\n---\n\nLinks:\n\n- a/b\n\n- c/d [missing]\n\nReferenced by:\n\n- e/f (E)\n\nFiles:\n\n- x.md`);
+    assert.deepEqual([all.body, all.links, all.files], ["Body", [{ path: "a/b", exists: true }, { path: "c/d", exists: false }], [{ path: "x.md" }]]);
+    // a skill body section headed "## Files" that is not followed by rendered file blocks is not the trailer
+    const skill = parseSkillMarkdown("# Skill: r\n\npath: skills/r\n\n---\n\nIntro\n\n---\n\n## Files\n\n### Which files to touch\n\nOnly the SQL ones.");
+    assert.deepEqual([skill.body, skill.files], ["Intro\n\n---\n\n## Files\n\n### Which files to touch\n\nOnly the SQL ones.", undefined]);
+    // an empty skill body still yields the files
+    const emptySkill = parseSkillMarkdown("# Skill: r\n\npath: skills/r\n\n---\n\n\n\n---\n\n## Files\n\n### a.bin\n\n(binary; 4 bytes; storage: concept-files/x)");
+    assert.deepEqual([emptySkill.body, emptySkill.files], ["", [{ path: "a.bin" }]]);
   });
 });
 

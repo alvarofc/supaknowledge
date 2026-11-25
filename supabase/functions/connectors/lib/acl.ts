@@ -68,18 +68,31 @@ export function resolveAudience(
   groups: GroupRef[],
   opts: { strict?: boolean } = {},
 ): AudienceDecision {
+  return decideAudience(sourceAudience, acl ? matchAcl(acl, groups) : [], !!acl?.restricted, opts);
+}
+
+/**
+ * The audience rules applied to already-matched groups. Also used to re-check stored documents (whose matched
+ * groups and upstream restriction are recorded in metadata.acl) against the current source audience and rules,
+ * since connectors do not re-emit unchanged upstream items.
+ */
+export function decideAudience(
+  sourceAudience: string[],
+  matched: string[],
+  restricted: boolean,
+  opts: { strict?: boolean } = {},
+): AudienceDecision {
   const source = [...new Set(sourceAudience ?? [])].sort();
-  const matched = acl ? matchAcl(acl, groups) : [];
   if (!matched.length) {
-    if (acl?.restricted && opts.strict) {
+    if (restricted && opts.strict) {
       return { kind: "skip", reason: "restricted upstream object with no group mapped through groups.external_ref (acl_strict)" };
     }
-    return { kind: "ok", audience: source, mode: acl?.restricted ? "unmapped" : "inherit", groups: [] };
+    return { kind: "ok", audience: source, mode: restricted ? "unmapped" : "inherit", groups: [] };
   }
   if (!source.length) return { kind: "ok", audience: matched, mode: "mapped", groups: matched };
   const inter = matched.filter((g) => source.includes(g));
   if (inter.length) return { kind: "ok", audience: inter, mode: "mapped", groups: matched };
-  if (acl?.restricted) {
+  if (restricted) {
     // whatever acl_strict says: the upstream readers are known and none of their groups may read the source
     return { kind: "skip", reason: "restricted upstream object whose mapped groups do not overlap the source audience" };
   }

@@ -6,7 +6,7 @@ JWT. Edge Functions do not re-implement permissions; they call the database as t
 and the CLI only hide buttons.
 
 The model was designed in [DESIGN.md §5a](DESIGN.md#5a-access-control-supabase-auth--rls) and is pinned down by
-721 pgTAP tests ([below](#tests)).
+739 pgTAP tests ([below](#tests)).
 
 ## Principals
 
@@ -276,6 +276,8 @@ material; every test file runs inside a transaction that is rolled back.
 | `11_round2_embed.test.sql` | 28 | The `embed` worker's compare-and-swap chunk writes (`kf_embed_write_concept()` / `kf_embed_write_document()`, service role only) and once-per-entity re-queueing (`kf_embed_requeue()`) |
 | `12_pr1_followups.test.sql` | 11 | `traces.on_behalf_of` updates (workspace members only, sender only, needs current space access), soft-deleted restricted documents hidden with their chunks and files, agents never recorded as human reviewers |
 | `13_pr1_db_followups.test.sql` | 8 | `search_sources(p_source)` filtering before the limit without widening visibility, concept paths without empty or `.` segments |
+| `14_pr5_followups.test.sql` | 12 | `p_source` finding a source's documents outside the space-wide candidate sets (text, vector, hybrid), proposal path validation |
+| `15_settings_cas.test.sql` | 6 | `update_space_settings()` compare-and-swap: saved, conflict, forbidden for non-admins, not found |
 
 Run them against a running local stack:
 

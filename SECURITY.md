@@ -22,7 +22,7 @@ Please give us a reasonable time to ship a fix before disclosing.
 ## What Supaknowledge guarantees
 
 These are the properties we treat as security bugs when broken. They are described in
-[docs/access-control.md](docs/access-control.md) and enforced by row level security, with 702 pgTAP tests in
+[docs/access-control.md](docs/access-control.md) and enforced by row level security, with 739 pgTAP tests in
 `supabase/tests/database`.
 
 1. **RLS is the single enforcement point.** People, OAuth-connected MCP clients and agents query with their own

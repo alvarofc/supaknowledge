@@ -226,7 +226,7 @@ function ConceptPage() {
           <aside className="space-y-4" aria-label="Concept details">
             <Card>
               <CardHeader title={`Sources${sourcesCount ? ` (${sourcesCount})` : ""}`} />
-              <SourcesList frontmatter={concept.frontmatter} base={ctx.base} />
+              <SourcesList frontmatter={concept.frontmatter} base={ctx.base} access={{ documents: canEdit, traces: canVerify }} />
             </Card>
             <Card>
               <CardHeader title="Links" description="Parsed from the markdown body" />

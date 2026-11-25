@@ -15,63 +15,32 @@ function field(header: string, name: string): string | undefined {
   return undefined;
 }
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// The trailers below are recognised by their exact rendered shape, anchored at the END of the text, rather than by
+// scanning the body for markers: the body is free-form markdown (unclosed fences, fences inside list items, inline
+// ``` spans, its own "Files:" / "## Files" sections), so its fence state must not decide where the trailer starts.
+// A section only counts when everything from it to the end of the text is a well-formed renderer trailer.
 
-/** Start offsets of the lines of `text` that open, close or sit inside a fenced code block (CommonMark rules). */
-function fencedLines(text: string): Set<number> {
-  const fenced = new Set<number>();
-  let open: string | null = null;
-  let pos = 0;
-  for (const line of text.split("\n")) {
-    const m = FENCE.exec(line);
-    if (open !== null) {
-      fenced.add(pos);
-      // closed by a fence of the same character, at least as long, with nothing after it
-      if (m && m[1]![0] === open[0] && m[1]!.length >= open.length && !m[2]!.trim()) open = null;
-    } else if (m) {
-      fenced.add(pos);
-      open = m[1]!;
-    }
-    pos += line.length + 1;
-  }
-  return fenced;
+// read_concept: "---" "Links:" "- <path>[ (<anchor>)][ [missing]]"..., "Referenced by:" "- <path> (<title>)"...,
+// "Files:" "- <path> (<n> bytes|unknown size)"... [`Use load_skill("<name>") to get the file contents.`], each part separated by
+// a blank line and each optional; with an empty body the first one starts the remainder.
+const ITEMS = String.raw`((?:\n\n- [^\n]+)+)`;
+const FILES_TRAILER = new RegExp(String.raw`(?:^|\n\n)Files:${ITEMS}(?:\n\nUse load_skill\("[^"\n]*"\) to get the file contents\.)?$`);
+const BACKLINKS_TRAILER = new RegExp(String.raw`(?:^|\n\n)Referenced by:${ITEMS}$`);
+const LINKS_TRAILER = new RegExp(String.raw`(?:^|\n\n)---\n\nLinks:${ITEMS}$`);
+
+// load_skill: "---" "## Files", then per file "### <path>" and either a ```-fenced block (the renderer escapes ``` in
+// the content, so no content line starts with ```) or a "(binary|not inlined; <n> bytes; storage: ...)" note.
+const T = "```";
+const SKILL_FILE = String.raw`\n\n### ([^\n]+)\n\n(?:${T}[^\n]*\n(?:(?!${T})[^\n]*\n)*${T}|\((?:binary|not inlined); [^\n]*\))`;
+const SKILL_TRAILER = new RegExp(String.raw`(?:^|\n\n)---\n\n## Files((?:${SKILL_FILE})+)$`);
+
+/** Split `text` into the part before a trailer matching `re` (anchored at the end) and the trailer's first group. */
+function splitTrailer(text: string, re: RegExp): [string, string | undefined] {
+  const m = re.exec(text);
+  return m ? [text.slice(0, m.index), m[1]] : [text, undefined];
 }
 
-/**
- * Last index of `marker` in `text` where the marker's last line is a whole line outside any fenced code block
- * (so a "## Files" or "Files:" inside a code sample in the body never counts), or -1.
- */
-function lastMarker(text: string, marker: string, fenced = fencedLines(text)): number {
-  const lineStartInMarker = marker.lastIndexOf("\n") + 1;
-  for (let i = text.lastIndexOf(marker); i >= 0; i = i > 0 ? text.lastIndexOf(marker, i - 1) : -1) {
-    const lineStart = i + lineStartInMarker;
-    const end = i + marker.length;
-    if ((lineStart === 0 || text[lineStart - 1] === "\n") && (end === text.length || text[end] === "\n") && !fenced.has(lineStart)) return i;
-  }
-  return -1;
-}
-
-function cutTrailer(rest: string, markers: string[]): string {
-  const fenced = fencedLines(rest);
-  let end = rest.length;
-  for (const m of markers) {
-    const i = lastMarker(rest, m, fenced);
-    if (i >= 0 && i < end) end = i;
-  }
-  return rest.slice(0, end).trim();
-}
-
-/** Lines of `text` outside fenced code blocks. */
-function linesOutsideFences(text: string): string[] {
-  const fenced = fencedLines(text);
-  const out: string[] = [];
-  let pos = 0;
-  for (const line of text.split("\n")) {
-    if (!fenced.has(pos)) out.push(line);
-    pos += line.length + 1;
-  }
-  return out;
-}
+const items = (list: string | undefined): string[] => (list ? list.split("\n\n").filter(Boolean).map((l) => l.slice(2)) : []);
 
 export function parseConceptMarkdown(text: string): Concept {
   const i = text.indexOf(SEP);
@@ -80,18 +49,18 @@ export function parseConceptMarkdown(text: string): Concept {
   const title = /^#\s+(.+)$/m.exec(header)?.[1]?.trim() ?? "";
   const description = /^_(.+)_$/m.exec(header)?.[1]?.trim() ?? "";
   const trustLine = /^trust:\s*(.+)$/m.exec(header)?.[1] ?? ""; // whole line: "human_reviewed | STALE (...)"
-  const li = rest.lastIndexOf(`${SEP}Links:`);
-  const linksText = li >= 0 ? cutTrailer(rest.slice(li + SEP.length), ["\n\nReferenced by:", "\n\nFiles:"]) : "";
-  const links = [...linksText.matchAll(/^- (\S+)(.*)$/gm)].map((m) => ({ path: m[1]!, exists: !m[2]!.includes("[missing]") }));
-  // read_concept ends with "Files:" and one "- <path> (<n> bytes)" line per attached file
-  const fi = lastMarker(rest, "\n\nFiles:");
-  const files =
-    fi >= 0
-      ? linesOutsideFences(rest.slice(fi + 2)).flatMap((line) => {
-          const m = /^- (.+?)(?: \((\d+) bytes\))?$/.exec(line);
-          return m ? [{ path: m[1]!, ...(m[2] ? { size_bytes: Number(m[2]) } : {}) }] : [];
-        })
-      : [];
+  const [beforeFiles, filesList] = splitTrailer(rest, FILES_TRAILER);
+  const [beforeBacklinks] = splitTrailer(beforeFiles, BACKLINKS_TRAILER);
+  const [body, linksList] = splitTrailer(beforeBacklinks, LINKS_TRAILER);
+  const links = items(linksList).flatMap((l) => {
+    const m = /^(\S+)(.*)$/.exec(l);
+    return m ? [{ path: m[1]!, exists: !m[2]!.includes("[missing]") }] : [];
+  });
+  // the renderer always prints a size suffix ("(<n> bytes)" or "(unknown size)"); older servers omitted it for 0 / unknown
+  const files = items(filesList).map((l) => {
+    const m = /^(.+?)(?: \((?:(\d+) bytes|unknown size)\))?$/.exec(l)!;
+    return { path: m[1]!, ...(m[2] ? { size_bytes: Number(m[2]) } : {}) };
+  });
   return {
     path: field(header, "path") ?? "",
     kind: (field(header, "kind") ?? "domain") as ConceptKind,
@@ -102,7 +71,7 @@ export function parseConceptMarkdown(text: string): Concept {
     revision: Number(field(header, "revision")) || undefined,
     trust: (trustLine.split(" ")[0] || undefined) as TrustTier | undefined,
     stale: /STALE/.test(trustLine),
-    body: cutTrailer(rest, [`${SEP}Links:`, "\n\nReferenced by:", "\n\nFiles:"]),
+    body: body.trim(),
     ...(links.length ? { links } : {}),
     ...(files.length ? { files } : {}),
     markdown: text,
@@ -114,16 +83,8 @@ export function parseSkillMarkdown(text: string): Skill {
   const header = i >= 0 ? text.slice(0, i) : text;
   const rest = i >= 0 ? text.slice(i + SEP.length) : "";
   const name = /^#\s+Skill:\s*(.+)$/m.exec(header)?.[1]?.trim() ?? "";
-  // load_skill ends with "---", "## Files" and one "### <path>" heading (then a fenced block or a note) per file;
-  // headings in the instructions or inside file contents are not files
-  const ti = lastMarker(rest, `${SEP}## Files`);
-  const files =
-    ti >= 0
-      ? linesOutsideFences(rest.slice(ti + SEP.length)).flatMap((line) => {
-          const m = /^### (.+)$/.exec(line);
-          return m ? [{ path: m[1]!.trim() }] : [];
-        })
-      : [];
+  const [body, filesTrailer] = splitTrailer(rest, SKILL_TRAILER);
+  const files = filesTrailer ? [...filesTrailer.matchAll(new RegExp(SKILL_FILE, "g"))].map((m) => ({ path: m[1]!.trim() })) : [];
   return {
     name,
     path: field(header, "path") ?? name,
@@ -133,7 +94,7 @@ export function parseSkillMarkdown(text: string): Skill {
     description: field(header, "description") ?? "",
     status: (field(header, "status") ?? "stable") as ConceptStatus,
     revision: Number(field(header, "revision")) || undefined,
-    body: cutTrailer(rest, [`${SEP}## Files`]),
+    body: body.trim(),
     ...(files.length ? { files } : {}),
     markdown: text,
   };
