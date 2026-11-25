@@ -48,6 +48,18 @@ npx supabase secrets set \
   AI_GATEWAY_API_KEY=...
 ```
 
+> [!WARNING]
+> The Supabase CLI also reads `supabase/.env` when it deploys functions or sets secrets, and uploads the values it
+> finds there. If your checkout has a local-development `supabase/.env`, its `KF_INTERNAL_SECRET`,
+> `KF_CURATOR_TASK_BUDGET_MS` and model settings can silently replace the ones you meant for the hosted project.
+> The cron jobs then fail with `invalid internal secret`. Run these commands from a checkout without
+> `supabase/.env`, or point `--workdir` at a directory that holds only `supabase/config.jsonc`. Then compare
+> digests: `npx supabase secrets list` shows the SHA-256 of each value, which must equal
+> `printf %s '<value>' | shasum -a 256`.
+
+The curator bundle is the largest function (about 19 MB unminified with Mastra). Supabase's limit is 20 MB per
+function, so check the size `functions deploy` prints when you upgrade dependencies.
+
 Optional model secrets: `KF_LLM_FAST_MODEL` (cheaper model for trace mining), `KF_LLM_FALLBACK_MODELS`
 (comma-separated, tried in order), `KF_LLM_HEADERS` (JSON object of extra headers for your endpoint), `KF_LLM_API`
 (`chat` or `responses`), `OPENROUTER_API_KEY` (for `openrouter/...` ids). Secrets apply to new invocations; no
@@ -67,7 +79,7 @@ Optional secrets (all listed in `edge_runtime.secrets` of `supabase/config.jsonc
 | `KF_PUBLIC_URL` | unset | Public origin of the API as MCP clients see it, e.g. `https://<project-ref>.supabase.co` or `https://kb.example.com`. The `mcp` function builds its OAuth metadata and resource URLs from it. Recommended for every deployment, required behind a custom domain or proxy. Without it the function uses `SUPABASE_PUBLIC_URL`, then `SUPABASE_URL` unless that is an internal host (`kong`, `*.internal`…), then validated request headers (those answers are sent `Cache-Control: no-store`) |
 | `SUPABASE_PUBLIC_URL` | unset | Fallback for `KF_PUBLIC_URL` (some self-hosted setups already define it) |
 | `KF_LLM_ALLOWED_MODELS` | any | Comma-separated model ids (`prefix/*` wildcards) that space admins may choose in curator settings; empty = any. See [model configuration](curator.md#model-configuration) |
-| `KF_CURATOR_TASK_BUDGET_MS` | `110000` | Wall-clock budget per curator task (clamped to 30000–380000); raise it on plans whose functions may run 400 s |
+| `KF_CURATOR_TASK_BUDGET_MS` | `110000` | Wall-clock budget per curator task (clamped to 30000–380000). Keep it below your plan's Edge Function wall-clock limit: at most `140000` on the Free plan (150 s), up to `380000` on paid plans (400 s). Slow self-hosted models benefit from the higher value |
 | `KF_LLM_MAX_TOKENS_PER_RUN` | unset | Operator ceiling on model tokens (input + output) per curator run; a space's `curator.max_tokens_per_run` can go lower, never higher. Unset/`0` = the space setting alone. See [curator settings](curator.md#model-configuration) |
 | `KF_CURATOR_RUN_COOLDOWN_S` | `120` | Minimum seconds between two manual runs of one space through `POST /curator/run` (`kf curate`, scripts); earlier requests get HTTP 429 with `Retry-After`. Studio's Run now calls the `request_curator_run` RPC, which only keeps one active run per space |
 | `GITHUB_TOKEN` | unset | Default token for GitHub sources without their own (higher rate limit for public repos); only ever sent to `api.github.com`, see [connectors](connectors.md#github-github) |
@@ -96,6 +108,30 @@ In **Authentication → Hooks**, add a **Before User Created** hook of type Post
 configures it in `supabase/config.jsonc`). It refuses public sign-up, OAuth and SSO with the e-mail domain reserved
 for agents (`@agents.supaknowledge.internal`) with a clean 403. The database enforces the same rule with a trigger,
 so without the hook such sign-ups still fail, just with a generic error.
+
+**From the command line instead of the dashboard.** The Management API sets all of the above in one call,
+without `supabase config push` (which would upload the local stack's settings, including email confirmations
+off). Create a personal access token at
+[supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens), then:
+
+```bash
+curl -X PATCH "https://api.supabase.com/v1/projects/<project-ref>/config/auth" \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "site_url": "https://studio.example.com",
+    "uri_allow_list": "https://studio.example.com/**",
+    "oauth_server_enabled": true,
+    "oauth_server_allow_dynamic_registration": true,
+    "oauth_server_authorization_path": "/oauth/consent",
+    "hook_before_user_created_enabled": true,
+    "hook_before_user_created_uri": "pg-functions://postgres/private/hook_before_user_created",
+    "security_update_password_require_reauthentication": true,
+    "mailer_autoconfirm": false
+  }'
+```
+
+The OAuth metadata (`/.well-known/oauth-authorization-server/auth/v1`) can take a minute to switch from
+`OAuth server is disabled` to the real document.
 
 Decide whether anyone may sign up (**Authentication → Sign In / Providers**). People only see what they are
 granted: a new account belongs to no workspace until it accepts an invitation (Studio → Settings → Members, or
@@ -157,7 +193,13 @@ select status_code, content from net._http_response order by created desc limit 
 ```
 
 A `401 internal secret required` / `invalid internal secret` means `KF_INTERNAL_SECRET` and the Vault
-`kf_internal_secret` differ.
+`kf_internal_secret` differ (see the `supabase/.env` warning in [Edge Functions](#3-edge-functions)). After you
+fix it, queued jobs retry by themselves once their visibility timeout passes (about two minutes for embeddings).
+
+**Studio on your machine against the hosted project** (before you deploy it, or to debug): put
+`VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` of the hosted project in `apps/studio/.env.hosted.local`
+(ignored by git), add `http://localhost:3000/**` to the redirect URLs, and run
+`npm run dev -w @supaknowledge/studio -- --mode hosted`.
 
 ## Updating
 
