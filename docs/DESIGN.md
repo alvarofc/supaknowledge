@@ -303,7 +303,7 @@ supabase/
     connectors/        notion, slack, github, gdrive, web, upload (+ Deno tests)
     _shared/           clients, caller auth, queue helpers, embedder; core/ = copy of packages/core/src
     _lib/              space resolution and error mapping for caller-facing functions
-  tests/database/      537 pgTAP tests of the access model
+  tests/database/      702 pgTAP tests of the access model
   seed.sql             local Vault secrets for cron (no demo data; see examples/)
 packages/
   core/                @supaknowledge/core: OKF + SKILL.md formats, links, chunking, access rules, settings + policy,

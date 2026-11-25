@@ -20,7 +20,7 @@ function SignupPage() {
     <div className="w-full">
       <div className="mb-8">
         <h1 className="text-[28px] leading-tight font-normal tracking-tight">Get started</h1>
-        <p className="mt-1 text-sm text-muted">Create an account, then create a workspace or ask an admin to add you to theirs.</p>
+        <p className="mt-1 text-sm text-muted">Create an account, then create a workspace or ask an admin to invite you to theirs.</p>
       </div>
       <AuthForm mode="signup" next={next} />
     </div>

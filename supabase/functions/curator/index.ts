@@ -32,6 +32,30 @@ interface CuratorMessage {
  */
 const BUDGET_MS = Math.min(Math.max(Number(Deno.env.get("KF_CURATOR_TASK_BUDGET_MS") ?? "") || 110_000, 30_000), 380_000);
 const DONE = ["succeeded", "failed", "cancelled"];
+/**
+ * Operator ceiling on model tokens per curator run (KF_LLM_MAX_TOKENS_PER_RUN). Space admins can set
+ * curator.max_tokens_per_run lower, never higher. Unset/0 = only the space setting applies.
+ */
+const MAX_TOKENS_PER_RUN = Math.max(0, Math.floor(Number(Deno.env.get("KF_LLM_MAX_TOKENS_PER_RUN") ?? "") || 0));
+/**
+ * POST /curator/run: a new manual run of a space at most once per KF_CURATOR_RUN_COOLDOWN_S (default 120 s)
+ * after the previous manual run started (asking again while a run is active returns that run), and at most
+ * RUN_REQUESTS_PER_MINUTE requests per caller per worker.
+ */
+const RUN_COOLDOWN_MS = Math.max(0, Number(Deno.env.get("KF_CURATOR_RUN_COOLDOWN_S") ?? "") || 120) * 1000;
+const RUN_REQUESTS_PER_MINUTE = 10;
+const runRequests = new Map<string, number[]>();
+
+function limitRunRequests(userId: string) {
+  const now = Date.now();
+  const recent = (runRequests.get(userId) ?? []).filter((t) => t > now - 60_000);
+  if (recent.length >= RUN_REQUESTS_PER_MINUTE) {
+    throw new HttpError(429, "too many curator run requests; try again in a minute", { "Retry-After": "60" });
+  }
+  recent.push(now);
+  runRequests.set(userId, recent);
+  if (runRequests.size > 10_000) runRequests.clear(); // bounded memory
+}
 
 // Admin client: this is an internal worker (requireInternal) and the curator must see all evidence;
 // access is preserved by the engine recording audiences and by the DB escalation guard on proposals.
@@ -85,8 +109,10 @@ async function work(msg: CuratorMessage, job: QueueJob<CuratorMessage>) {
     return; // ack: retrying cannot succeed
   }
 
-  const mark = await db.from("curator_tasks").update({ status: "running" }).eq("id", row.id);
+  // only a task that is still queued/running is (re)started: one cancelled or reaped since it was read stays so
+  const mark = await db.from("curator_tasks").update({ status: "running" }).eq("id", row.id).in("status", ["queued", "running"]).select("id");
   if (mark.error) throw new Error(`mark running: ${mark.error.message}`);
+  if (!mark.data?.length) return; // ack
 
   const task: CuratorTask = { id: row.id, run_id: row.run_id, space_id: row.space_id, step: row.step, input: row.input ?? {}, attempts: row.attempts };
   // runTask records success/failure + attempts on the task and closes the run when it was the last one.
@@ -95,6 +121,7 @@ async function work(msg: CuratorMessage, job: QueueJob<CuratorMessage>) {
     store,
     llm,
     budgetMs: BUDGET_MS,
+    maxTokensPerRun: MAX_TOKENS_PER_RUN,
     log: (m, d) => console.log(`[curator] ${m}`, d ? JSON.stringify(d) : ""),
   }, task);
 }
@@ -104,8 +131,19 @@ Deno.serve(handler(async (req) => {
 
   if (req.method === "POST" && path === "/run") {
     const caller = await authenticate(req);
+    limitRunRequests(caller.userId);
     const body = await readJson<{ space?: string }>(req);
     const space = await resolveSpace(caller.db, body.space);
+    if (RUN_COOLDOWN_MS > 0) {
+      const last = await db.from("curator_runs").select("status, created_at").eq("space_id", space.id).eq("trigger", "manual")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (last.error) throw dbError(last.error, "curator_runs");
+      const age = last.data ? Date.now() - Date.parse(last.data.created_at) : Number.POSITIVE_INFINITY;
+      if (last.data && !["queued", "running"].includes(last.data.status) && age < RUN_COOLDOWN_MS) {
+        const wait = Math.ceil((RUN_COOLDOWN_MS - age) / 1000);
+        throw new HttpError(429, `a manual curator run of this space started ${Math.floor(age / 1000)}s ago; try again in ${wait}s`, { "Retry-After": String(wait) });
+      }
+    }
     // as the caller: the RPC requires reviewer+ on the space
     const { data, error } = await caller.db.rpc("request_curator_run", { p_space: space.id });
     if (error) throw dbError(error, "request_curator_run");

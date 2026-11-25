@@ -19,11 +19,11 @@ const SLUG_RE_SPACE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export function OnboardingWizard({
   initial,
-  userId,
+  email,
   firstTime,
 }: {
   initial: { step: Step; workspace?: Ws; space?: { slug: string; name: string } };
-  userId: string;
+  email: string | null;
   firstTime: boolean;
 }) {
   const router = useRouter();
@@ -60,7 +60,7 @@ export function OnboardingWizard({
       {step === "workspace" ? (
         <WorkspaceStep
           firstTime={firstTime}
-          userId={userId}
+          email={email}
           onDone={(ws) => {
             setWorkspace(ws);
             setStep("space");
@@ -82,7 +82,7 @@ export function OnboardingWizard({
   );
 }
 
-function WorkspaceStep({ onDone, firstTime, userId }: { onDone: (ws: Ws) => void; firstTime: boolean; userId: string }) {
+function WorkspaceStep({ onDone, firstTime, email }: { onDone: (ws: Ws) => void; firstTime: boolean; email: string | null }) {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -152,10 +152,13 @@ function WorkspaceStep({ onDone, firstTime, userId }: { onDone: (ws: Ws) => void
             <div className="flex items-center gap-1.5 font-medium">
               <Users className="size-4 text-subtle" /> Joining your team instead?
             </div>
-            <p className="mt-0.5 text-xs text-subtle">Send this user ID to a workspace admin; they add you in Settings → Members.</p>
-            <code className="mt-1 block font-mono text-xs break-all text-muted">{userId}</code>
+            <p className="mt-0.5 text-xs text-subtle">
+              Ask a workspace admin to invite your e-mail address (Settings → Members). Once they have, reload: the invitation shows up at the top of
+              this page, ready to accept.
+            </p>
+            {email ? <code className="mt-1 block font-mono text-xs break-all text-muted">{email}</code> : null}
           </div>
-          <CopyButton value={userId} label="Copy ID" />
+          {email ? <CopyButton value={email} label="Copy e-mail" /> : null}
         </Card>
       ) : null}
     </>

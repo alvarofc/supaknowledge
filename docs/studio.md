@@ -251,8 +251,17 @@ PORT=3000 node apps/studio/.output/server/index.mjs
 ```
 
 `.output/` is self-contained: copy it to the server or image and run `node .output/server/index.mjs`. Put a TLS proxy
-in front, and forward `Host` / `X-Forwarded-Host` / `X-Forwarded-Proto`. The auth callbacks redirect to the host the
-browser used, which is where the session cookies live.
+in front. The auth callbacks and sign-out redirect to the origin the browser used, which is where the session cookies
+live, and behind a TLS-terminating proxy Studio itself only sees plain `http`. Tell it the public origin one of two
+ways:
+
+- **`SITE_URL=https://studio.example.com`** (recommended): redirects always go there, whatever the request headers say.
+- **`TRUST_PROXY=1`**: Studio reads `X-Forwarded-Proto` (and `X-Forwarded-Host` when present). Set it only when the proxy
+  overwrites those headers on every request (nginx `proxy_set_header X-Forwarded-Proto $scheme;`, Caddy, ALB, Fly,
+  Render); otherwise a client could spoof them.
+
+With neither, Studio uses the `Host` header with the scheme of the connection it received, so behind a TLS proxy
+sign-in would redirect to `http://…`.
 
 Every HTML response is sent with `Cache-Control: private, no-store`, because pages carry per-user data. Don't let a
 CDN cache them.

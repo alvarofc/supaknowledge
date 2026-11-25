@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildMcpConfig, Supaknowledge, SupaknowledgeError, parseSse, TraceRecorder, withSupaknowledge } from "../src/index.ts";
+import { buildMcpConfig, parseRetryAfter, retryPolicy, Supaknowledge, SupaknowledgeError, parseSse, TraceRecorder, withSupaknowledge } from "../src/index.ts";
 import { json, mcpRoute, mockFetch } from "./helpers.ts";
 
 const URL = "http://kf.test";
@@ -404,10 +404,110 @@ describe("review fixes", () => {
     assert.equal(usage!.body.p_trace, null, "non-uuid trace ids are not sent to the uuid parameter");
   });
 
+  it("REST fallback: loadSkill accepts a full path (skills/<name>) like the MCP tool", async () => {
+    const { fetch, calls } = mockFetch([
+      (c) => (c.url.includes("/rest/v1/concepts?") ? json([{ path: "skills/revenue-report" }]) : undefined),
+      (c) => (c.url.endsWith("/rpc/read_concept") ? json({ id: "c1", path: c.body.p_path, kind: "skill", title: "R", body: "" }) : undefined),
+      (c) => (c.url.endsWith("/rpc/log_concept_usage") ? json(1) : undefined),
+    ]);
+    const kf = new Supaknowledge({ url: URL, space: SPACE_ID, accessToken: "jwt", publishableKey: "pk", transport: "rest", fetch });
+    for (const ref of ["skills/revenue-report", "/skills/revenue-report/SKILL.md", "revenue-report"]) {
+      const s = await kf.loadSkill(ref);
+      assert.equal(s?.path, "skills/revenue-report", ref);
+      assert.equal(s?.name, "revenue-report");
+    }
+    assert.match(decodeURIComponent(calls[0]!.url), /path\.eq\.skills\/revenue-report,path\.like\.\*\/skills\/revenue-report\)/);
+    assert.equal(await kf.loadSkill("../etc"), null);
+  });
+
   it("reportError routes to the client's onError", () => {
     const errors: unknown[] = [];
     const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch: mockFetch([]).fetch, onError: (e) => errors.push(e) });
     kf.reportError(new Error("x"));
     assert.equal(errors.length, 1);
+  });
+});
+
+describe("429 retries", () => {
+  /** answers 429 (Retry-After: `after`) for the first `n` matching calls, then defers to the next route */
+  const throttle = (match: (c: any) => boolean, n: number, after = "0") => {
+    let left = n;
+    return (c: any) => (match(c) && left-- > 0 ? json({ error: "too many failed sign-ins for this agent; retry later" }, 429, { "retry-after": after }) : undefined);
+  };
+  const isTool = (name: string) => (c: any) => c.body?.method === "tools/call" && c.body.params.name === name;
+
+  it("parses Retry-After and clamps the policy to 2 retries / 30 s", () => {
+    assert.equal(parseRetryAfter("3"), 3000);
+    assert.equal(parseRetryAfter(null), undefined);
+    assert.equal(parseRetryAfter("soon"), undefined);
+    assert.equal(parseRetryAfter(new Date(Date.UTC(2030, 0, 1, 0, 0, 10)).toUTCString(), Date.UTC(2030, 0, 1)), 10_000);
+    assert.deepEqual(retryPolicy(undefined), { retries: 2, maxWaitMs: 30_000 });
+    assert.deepEqual(retryPolicy({ retries: 9, maxWaitMs: 120_000 }), { retries: 2, maxWaitMs: 30_000 });
+    assert.deepEqual(retryPolicy({ retries: 1, maxWaitMs: 500 }), { retries: 1, maxWaitMs: 500 });
+    assert.deepEqual(retryPolicy(false), { retries: 0, maxWaitMs: 0 });
+  });
+
+  it("retries read-only MCP calls (and initialize) on 429", async () => {
+    const { fetch, calls } = mockFetch([
+      throttle((c) => c.body?.method === "initialize", 1),
+      throttle(isTool("search_knowledge"), 2),
+      mcpRoute(() => [{ path: "metrics/arr", title: "ARR", kind: "domain" }]),
+    ]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    const rows = await kf.search("arr");
+    assert.equal(rows.length, 1);
+    assert.equal(calls.filter(isTool("search_knowledge")).length, 3, "two retries");
+    assert.equal(calls.filter((c) => c.body?.method === "initialize").length, 2);
+  });
+
+  it("gives up after 2 retries with status 429 and retryAfterMs", async () => {
+    const { fetch, calls } = mockFetch([throttle(isTool("read_concept"), 10), mcpRoute(() => ({ path: "x" }))]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    await assert.rejects(kf.read("x"), (e: any) => e instanceof SupaknowledgeError && e.status === 429 && e.retryAfterMs === 0);
+    assert.equal(calls.filter(isTool("read_concept")).length, 3);
+  });
+
+  it("does not wait for a Retry-After over the limit", async () => {
+    const { fetch, calls } = mockFetch([throttle(isTool("list_skills"), 10, "120"), mcpRoute(() => [])]);
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
+    const t0 = Date.now();
+    await assert.rejects(kf.listSkills(), (e: any) => e.status === 429 && e.retryAfterMs === 120_000);
+    assert.ok(Date.now() - t0 < 1000);
+    assert.equal(calls.filter(isTool("list_skills")).length, 1);
+  });
+
+  it("never retries writes: flags and trace appends", async () => {
+    const { fetch, calls } = mockFetch([
+      throttle(isTool("flag_knowledge"), 10),
+      throttle((c) => c.url.endsWith("/functions/v1/traces"), 10),
+      mcpRoute(() => ({ id: "f-1" })),
+    ]);
+    const errors: unknown[] = [];
+    const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch, onError: (e) => errors.push(e) });
+    await assert.rejects(kf.flag({ kind: "missing", observation: "no ARR definition" }), (e: any) => e.status === 429);
+    assert.equal(calls.filter(isTool("flag_knowledge")).length, 1);
+    const trace = kf.trace({ flushIntervalMs: 0 });
+    trace.user("hi");
+    await trace.end();
+    assert.equal(calls.filter((c) => c.url.endsWith("/functions/v1/traces")).length, 1, "trace create is not repeated");
+  });
+
+  it("retries REST reads but not REST writes; retry: false turns retries off", async () => {
+    const restRpc = (fn: string) => (c: any) => c.url.endsWith(`/rest/v1/rpc/${fn}`);
+    const { fetch, calls } = mockFetch([
+      throttle(restRpc("search_knowledge"), 1),
+      throttle(restRpc("flag_knowledge"), 1),
+      (c) => (restRpc("search_knowledge")(c) ? json([]) : undefined),
+      (c) => (restRpc("flag_knowledge")(c) ? json("f-1") : undefined),
+    ]);
+    const kf = new Supaknowledge({ url: URL, space: SPACE_ID, accessToken: "jwt", publishableKey: "pk", transport: "rest", fetch });
+    assert.deepEqual(await kf.search("arr"), []);
+    assert.equal(calls.filter(restRpc("search_knowledge")).length, 2);
+    await assert.rejects(kf.flag({ kind: "missing", observation: "x" }), (e: any) => e.status === 429);
+    assert.equal(calls.filter(restRpc("flag_knowledge")).length, 1);
+
+    const off = mockFetch([throttle(isTool("search_knowledge"), 1), mcpRoute(() => [])]);
+    const kf2 = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch: off.fetch, retry: false });
+    await assert.rejects(kf2.search("arr"), (e: any) => e.status === 429);
   });
 });

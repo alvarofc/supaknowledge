@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { runSync } from "../lib/engine.ts";
-import { prepareUpload, UploadError, uploadExt } from "../lib/upload.ts";
+import { assertUploadCaller, prepareUpload, UploadError, uploadExt } from "../lib/upload.ts";
 import { MemoryStore, scripted } from "./helpers.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -61,3 +61,21 @@ Deno.test("upload: url must be an absolute http(s) URL", async () => {
     await assertRejects(() => prepareUpload({ text: "# x", url }), UploadError, "url");
   }
 });
+
+Deno.test("upload: OAuth client tokens are refused with 403 before anything is written", () => {
+  const e = assertThrowsUpload(() => assertUploadCaller({ clientId: "mcp-client-123" }));
+  assertEquals(e.status, 403);
+  assertStringIncludes(e.message, "OAuth client tokens");
+  // user sessions and agent keys (clientId null) pass
+  assertUploadCaller({ clientId: null });
+});
+
+function assertThrowsUpload(fn: () => void): UploadError {
+  try {
+    fn();
+  } catch (e) {
+    if (e instanceof UploadError) return e;
+    throw e;
+  }
+  throw new Error("expected an UploadError");
+}

@@ -19,7 +19,7 @@ import { Markdown } from "@/components/kf/markdown";
 import { conceptHref } from "@/components/inbox/flag-list";
 import { OpCard } from "@/components/inbox/op-card";
 import type { ConceptState } from "@/components/inbox/op-card";
-import { ReviewActions } from "@/components/inbox/review-actions";
+import { RetryFileSync, ReviewActions } from "@/components/inbox/review-actions";
 import { Badge } from "@/components/ui/badge";
 import type { Tone } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, EmptyState } from "@/components/ui/card";
@@ -320,6 +320,7 @@ function ProposalPage() {
                   </p>
                 )}
                 {p.review_note ? <p className="mt-2 border-l-2 border-line-strong pl-2">{p.review_note}</p> : null}
+                {canReview && data.filesUnsynced ? <RetryFileSync proposalId={p.id} /> : null}
               </div>
             )}
           </Card>

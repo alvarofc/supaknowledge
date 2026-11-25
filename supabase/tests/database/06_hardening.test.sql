@@ -1,7 +1,7 @@
 -- Catalog-level hardening: grants, search_path, RLS coverage, service-role detection.
 begin;
 \ir _fixture.psql
-select plan(19);
+select plan(20);
 
 select is_empty($$
   select n.nspname || '.' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -23,7 +23,9 @@ select is_empty($$
   select p from unnest(array['public.kf_get_source_secret(uuid)', 'public.kf_queue_ack(text,bigint[])', 'public.kf_queue_send(text,jsonb[],integer)',
                              'public.kf_queue_archive(text,bigint[])', 'public.kf_enqueue_curator_task(uuid,text,jsonb)',
                              'public.kf_add_run_stats(uuid,jsonb)', 'public.kf_finish_task(uuid,text,jsonb,text)',
-                             'public.kf_maybe_finish_run(uuid)', 'public.kf_trace_events(uuid[],integer)']) p
+                             'public.kf_maybe_finish_run(uuid)', 'public.kf_trace_events(uuid[],integer)',
+                             'public.kf_revoke_user_sessions(uuid)', 'public.kf_storage_gc_objects(text,text,text,integer)',
+                             'public.kf_strip_proposal_files(uuid,jsonb)', 'public.kf_allow_agent_password_change(uuid)']) p
   where has_function_privilege('authenticated', p::regprocedure, 'execute') or has_function_privilege('anon', p::regprocedure, 'execute')
 $$, 'service-only RPCs are not executable by authenticated or anon');
 
@@ -62,7 +64,10 @@ $$, 'helpers used inside RLS policies are executable by authenticated');
 select is_empty($$
   select p from unnest(array['private.recompute_proposal_access(uuid)', 'private.start_curator_run(uuid,text,uuid)',
                              'private.audit(uuid,text,text,uuid,jsonb)', 'private.hook_before_user_created(jsonb)',
-                             'private.finish_run_if_done(uuid)', 'util.cleanup()', 'util.reap_curator_runs()']) p
+                             'private.finish_run_if_done(uuid)', 'util.cleanup()', 'util.reap_curator_runs()',
+                             'private.is_revoked_agent()', 'private.guard_agent_password()', 'private.guard_agent_membership()',
+                             'private.audience_error(uuid,uuid[])', 'private.storage_object_live(text,text)',
+                             'private.replace_group(uuid[],uuid,uuid)', 'util.cleanup_invitations()']) p
   where has_function_privilege('authenticated', p::regprocedure, 'execute')
 $$, 'internal helpers are not executable by authenticated');
 
@@ -94,6 +99,12 @@ select tests.as_user('s_admin');
 select throws_ok($$select public.kf_get_source_secret(tests.id('src_fin'))$$, '42501', null, 'secret RPC refused for authenticated even when called by name');
 select tests.as_postgres();
 select is(private.is_service_role(), true, 'direct postgres connection (cron, migrations) counts as service');
+
+select is_empty($$
+  select t from unnest(array['private.agent_password_changes', 'private.rate_events']) t
+  where has_table_privilege('authenticated', t::regclass, 'select') or has_table_privilege('authenticated', t::regclass, 'insert')
+     or has_table_privilege('service_role', t::regclass, 'select') or has_table_privilege('anon', t::regclass, 'select')
+$$, 'private bookkeeping tables are not readable or writable by API roles');
 
 select * from finish();
 rollback;

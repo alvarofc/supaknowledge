@@ -26,7 +26,7 @@ running run per space. Runs start from:
 
 | Trigger | How |
 |---|---|
-| `manual` | Studio (Activity → Run now), `kf curate [--watch]`, `POST /functions/v1/curator/run {"space": "<ws>/<space>"}` or `select request_curator_run('<space-id>')`. Needs the reviewer role (not through an OAuth client token) |
+| `manual` | Studio (Activity → Run now), `kf curate [--watch]` (through `POST /curator/run`, so the cooldown applies), `POST /functions/v1/curator/run {"space": "<ws>/<space>"}` or `select request_curator_run('<space-id>')`. Needs the reviewer role (not through an OAuth client token) |
 | `flag_threshold` | A trigger on `flags`: `curator.flag_threshold` open flags on one concept, or that many `missing` flags in the space (default 3; 0 disables) |
 | `cron` | 02:00 UTC, for every space with open flags, uncurated traces or documents changed since the last run |
 | `staleness` | 03:00 UTC, for every space with stable concepts past `stale_after` |
@@ -61,9 +61,16 @@ to the fast model, which extracts **durable lessons** (one-off preferences are d
 **2. Triage.** Open flags attached to a concept are grouped per concept (`incorrect` / `outdated` raise the
 priority). Changed documents cited by a concept (through its OKF `sources`) go to that concept. The remaining
 "loose" signals (flags without a concept, other changed documents) go to the model, together with candidate
-concepts found by search, which groups them into clusters, points each at concepts and writes a research query;
-signals it marks as noise are dismissed with a reason. Up to `max_clusters_per_run` clusters are queued as
-`draft` tasks, highest priority first.
+concepts found by search, which groups them into clusters, points each at concepts and writes a topic and a
+research query; signals it marks as noise are dismissed with a reason. The model works in **one pass per
+audience**: unrestricted signals together, each distinct restricted audience on its own, and each pass only sees
+candidate concepts that every reader of its audience may read (see [Access](#access)). Candidate searches are
+keyword searches, except for the first few of a task (embedding many queries in one Edge Function invocation
+would exceed its CPU limit). Clusters that touch the same concept are merged. Up to `max_clusters_per_run`
+clusters per run are queued as `draft` tasks, highest priority first, before any flag is dismissed (a retried
+triage sees the same open flags). Changed documents are read 100 at a time: later pages, and audience passes that
+do not fit one task (at most 6 passes per task), continue in further `triage` tasks of the same run, so no changed
+document is skipped by the run's watermark.
 
 **3. Sweep** (staleness runs). Every stable concept past `stale_after` becomes a `draft` task asking the model to
 re-validate it: either move `stale_after` forward (low risk) or fix it.
@@ -72,7 +79,11 @@ re-validate it: either move `stale_after` forward (low risk) or fix it.
 
 - *Evidence.* Load the cluster's flags, up to 5 traces they link to, its documents, the target concepts (full
   text), related concepts (search) and source excerpts (search over `source_chunks`), plus recent **rejected**
-  proposals on the same concepts with their review notes, so a rejection teaches the next run.
+  proposals on the same concepts with their review notes, so a rejection teaches the next run. Searches are
+  limited to the research scope in SQL (`p_visible_to`), before the result limit. Source excerpts are only
+  pre-fetched when they match the cluster's research query by keyword or with a cosine similarity of at least
+  0.8, and never from untrusted source kinds (`auto_apply.untrusted_source_kinds`, `web` by default): the model
+  can still find those with `search_sources`, which then makes the changeset ineligible for auto-apply.
 - *Research and draft.* The drafting model runs as a Mastra agent that starts from that evidence and may pull more
   with research tools before it answers: `search_knowledge`, `read_concept`, `search_sources`, `read_document` and
   `read_trace` (up to `curator.max_research_steps` agent steps). Whatever a tool returns joins the evidence, so a
@@ -134,6 +145,35 @@ policy says. The proposal, its ops and its citations are written in one transact
 nothing is visible before the escalation check has run. The prompts also tell the model to summarise only what agents need from
 restricted evidence. See [access control](access-control.md#the-escalation-guard).
 
+### The invariant: everything a model saw is evidence
+
+Model output can repeat anything that was in the model's context. So every input of every curator prompt either
+travels with the proposal as cited or consulted evidence with its audience (the database escalation guard then
+sees it), or is never shown:
+
+| Prompt input | How it is handled |
+|---|---|
+| Trace being mined (`gather`) | One trace per call; the lessons become flags with the trace's audience |
+| Triage signals and candidate concepts | One pass per audience; candidates limited to what every reader of that audience may read. The model's topic, research query and concept paths therefore carry exactly that audience: the cluster records it (`audiences` in the draft task input) and the draft adds it as consulted evidence. The cluster's own flags and documents are consulted rows too. |
+| Triage dismissal reasons | Written only by a pass whose whole context is readable by the flag's audience, so the reason is shown as written |
+| Topic in the drafting prompt | Fenced as untrusted data (it is model-written from untrusted signals) |
+| Cluster flags, linked traces, documents, target concepts | Consulted rows (live audience) |
+| Pre-fetched related concepts and source excerpts | Research scope only (filtered in SQL and again in the engine); consulted rows |
+| Research tool results | Research scope only; everything returned joins the evidence and is consulted |
+| Rejected proposals' titles and review notes | `kf_rejected_proposals()` returns the audiences of everything each one touched (citations, consulted evidence, target concepts; live and as recorded). A rejection is shown only when all of them are in the research scope; its restricted audiences are added as consulted evidence. Fenced as untrusted data. |
+| Repair round and self-review | The same evidence plus the model's own changeset: nothing new |
+| `curator.instructions` | Written by space admins; clipped to 8000 characters |
+
+Evidence that is not a row (a triage pass, a rejected proposal's note) is stored as a consulted citation without
+a `ref_id` (`ref_kind = url`, no URL, a note saying what it stands for); the database keeps the audience the
+curator states for it (service role only; the groups must belong to the workspace) and counts it like any other
+evidence. Rows are preferred where they exist, because the database follows their live audience.
+
+**Flag dismissals** are written to `flags.resolution`, which the flag's readers see outside any proposal. The
+drafting model's reason is used only when everything in its context (including research results and taint) is
+readable by the flag's audience; otherwise the resolution is the fixed
+`curator: dismissed (reason withheld: restricted_context)`.
+
 ## Settings and policy
 
 Per space, in `spaces.settings` (validated by `SpaceSettingsSchema` in `packages/core/src/settings.ts`). Edit them in
@@ -151,17 +191,17 @@ update public.spaces set settings = '{
 | `curator.enabled` | `true` | Scheduled and threshold runs for this space |
 | `curator.flag_threshold` | `3` | Open flags on one concept (or `missing` flags in the space) that start a run (0–1000000); `0` disables |
 | `curator.flag_cooldown_minutes` | `60` | Minimum minutes between flag-threshold runs of one space (0–10080), so a misbehaving agent cannot trigger runs continuously |
-| `curator.model` | `""` (= `KF_LLM_MODEL`) | Model id for triage, drafting and self-review, e.g. `vercel/openai/gpt-6.2-sol` or `acme/your-model` |
+| `curator.model` | `""` (= `KF_LLM_MODEL`) | Model id for triage, drafting and self-review, e.g. `vercel/openai/gpt-6.2-sol` or `acme/your-model` (at most 200 characters) |
 | `curator.fast_model` | `""` (= `KF_LLM_FAST_MODEL`, else the model) | Cheaper model for correction mining in traces |
-| `curator.fallback_models` | `[]` (= `KF_LLM_FALLBACK_MODELS`) | Tried in order when the model errors |
+| `curator.fallback_models` | `[]` (= `KF_LLM_FALLBACK_MODELS`) | Tried in order when the model errors (at most 5) |
 | `curator.max_research_steps` | `8` | Agent steps (model calls that may use research tools) per draft (1–20) |
 | `curator.max_clusters_per_run` | `25` | Drafts per run (1–200); the rest wait for the next run |
 | `curator.max_traces_per_run` | `200` | Traces scanned per run (0–5000) |
-| `curator.max_tokens_per_run` | `3000000` | Model tokens (input + output) one run may spend across its tasks (0–2000000000); when spent, the remaining tasks fail with a clear error. `0` = unlimited |
+| `curator.max_tokens_per_run` | `3000000` | Model tokens (input + output) one run may spend across its tasks (0–2000000000); when spent, the remaining tasks fail with a clear error. `0` = unlimited. The operator ceiling `KF_LLM_MAX_TOKENS_PER_RUN` (env) caps it: a space can go lower, never higher. Tokens of failed calls (e.g. a research phase whose answer failed) count too |
 | `curator.research_scope` | `target_audience` | What the drafting model may research: `target_audience` shows only results readable by everyone who can read the concepts being changed; `all` searches everything (restricted items it reads still escalate) |
 | `curator.auto_dismiss_flags` | `true` | Let the curator dismiss flags it judges mistaken or noise; `false` leaves them open for a person |
-| `curator.instructions` | `""` | House rules appended to every curator system prompt |
-| `curator.stuck_after_minutes` | `30` | A run or task without progress for this long is failed by the reaper (5–1440) |
+| `curator.instructions` | `""` | House rules appended to every curator system prompt (at most 8000 characters) |
+| `curator.stuck_after_minutes` | `30` | A run or task without progress for this long is failed by the reaper (10–1440; the queue's visibility timeout is 400 s) |
 | `auto_apply.enabled` | `false` | Let the curator apply proposals that match the rules below |
 | `auto_apply.max_risk` | `low` | `low` or `medium` |
 | `auto_apply.kinds` | `["data_access"]` | Kinds of knowledge that may change without review |
@@ -199,6 +239,14 @@ conventions, risk levels) and `REVIEW_SYSTEM` (the second reviewer). `curator.in
 "house rules". Change the prompts in `packages/core`, run `npm run sync:shared`, and check the scripted story in
 `packages/core/test/curator.test.ts` and `examples/revenue-report` still passes.
 
+`packages/core/test/curator-safety.test.ts` replays the access scenarios from the security reviews (triage and
+rejection leaks, dismissal reasons, research scope) with a scripted model. `packages/core/test/curator-eval.test.ts`
+runs the main leak scenario against a real model; it is skipped unless you opt in:
+
+```bash
+cd packages/core && set -a && . ../../supabase/.env && set +a && KF_EVAL_LLM=1 node --test test/curator-eval.test.ts
+```
+
 Each call asks Mastra for structured output with a zod schema from `schemas.ts`, so the engine never parses free
 text. Models without native structured output still work: `jsonPromptInjection: "auto"` falls back to putting the
 JSON schema in the prompt, and Mastra validates the answer against the schema either way.
@@ -221,6 +269,8 @@ Endpoints and API keys only ever come from these secrets; space settings can onl
 | `KF_LLM_API` | Wire format of your endpoint: `chat` (chat completions, default) or `responses` |
 | `KF_LLM_EXTRA_BODY` | JSON merged into every request body to your endpoint, for server-specific switches (single-quote it in `.env`) |
 | `KF_LLM_ALLOWED_MODELS` | Comma-separated model ids that space settings may choose (`curator.model`, `fast_model`, `fallback_models`); a trailing `*` matches a prefix, e.g. `acme/*`. Empty or unset = any id. A space that picks another model fails its tasks with a clear error. The environment's own `KF_LLM_*` ids are not checked |
+| `KF_LLM_MAX_TOKENS_PER_RUN` | Operator ceiling on model tokens per curator run; `curator.max_tokens_per_run` can only go lower. Unset/`0` = the space setting alone |
+| `KF_CURATOR_RUN_COOLDOWN_S` | Minimum seconds between two manual runs of one space through `POST /curator/run` (default `120`; asking while a run is active returns that run). Each caller may also send at most 10 run requests a minute per worker (HTTP 429 with `Retry-After`) |
 | `KF_CURATOR_TASK_BUDGET_MS` | Wall-clock budget per curator task in ms (default `110000`, clamped to 30000–380000). The engine stops model calls when it runs out and keeps a reserve to record the result. Raise it (e.g. `300000`) on plans whose functions may run 400 s |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway key, for `vercel/...` model ids |
 | `OPENROUTER_API_KEY` | OpenRouter key, for `openrouter/...` model ids |

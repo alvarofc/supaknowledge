@@ -150,6 +150,17 @@ export function registerMembers(program: Command, run: Runner): void {
         const uid = await userIdArg(ctx, user);
         const sp = await ctx.space();
         const db = await ctx.db();
+        if (opts.workspace) {
+          // an agent without its workspace membership would be stranded (active, but unable to rejoin): the
+          // database refuses it, and agents are managed with `kf agents` instead
+          const profile = (await must(db.from("profiles").select("kind").eq("id", uid).limit(1)))[0] as { kind?: string } | undefined;
+          if (profile?.kind === "agent") {
+            throw new CliError("agents can't be removed from the workspace", {
+              exitCode: 2,
+              hint: `revoke or delete the agent instead: kf agents revoke ${uid} | kf agents delete ${uid}`,
+            });
+          }
+        }
         const rows = (await must(
           opts.workspace
             ? db.from("workspace_members").delete().eq("workspace_id", sp.workspace_id).eq("user_id", uid).select("user_id")
@@ -215,7 +226,7 @@ export function registerMembers(program: Command, run: Runner): void {
         const db = await ctx.db();
         await mustRows(
           db.from("workspace_invitations").delete().eq("id", id).select("id"),
-          "nothing revoked (no such invitation, or you are not a workspace admin)",
+          "nothing revoked (no such invitation, or you are not a workspace admin; owner invitations need an owner)",
         );
         ctx.out({ id, revoked: true }, () => `${ctx.c.red("revoked")} invitation ${id}`);
       }),

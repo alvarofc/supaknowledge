@@ -8,9 +8,9 @@
 -- Cron calls Edge Functions with an internal shared secret read from Vault ("kf_internal_secret"). The
 -- functions compare it against their KF_INTERNAL_SECRET env var. Local setup: see supabase/seed.sql.
 
-select pgmq.create('kf_embed');
-select pgmq.create('kf_ingest');
-select pgmq.create('kf_curator');
+-- (guarded so re-applying the file does not fail on existing queues)
+select pgmq.create(q.name) from unnest(array['kf_embed', 'kf_ingest', 'kf_curator']) as q(name)
+ where not exists (select 1 from pgmq.meta m where m.queue_name = q.name);
 
 -- ---------------------------------------------------------------------------------------------------------
 -- plumbing

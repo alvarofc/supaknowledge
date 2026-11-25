@@ -1,13 +1,10 @@
 import { notFound } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { actorUserId } from "@/lib/format";
 import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
 import { getProfiles, getSpaceContext } from "@/server/space.server";
 import { getSupabase } from "@/server/supabase.server";
-
-function humanUserId(actor: string | null | undefined): string | null {
-  return actor?.startsWith("human:") ? actor.slice(6) : null;
-}
 
 /** A concept page: the concept, its links and backlinks, files, open flags, verifications and (on the History tab) revisions. */
 export const loadConcept = createServerFn({ method: "GET" })
@@ -68,7 +65,7 @@ export const loadConcept = createServerFn({ method: "GET" })
     const revisions = revRes.data ?? [];
     const flags = flagsRes.data ?? [];
     const profiles = await getProfiles([
-      humanUserId(concept.generated_by),
+      actorUserId(concept.generated_by),
       ...verifications.map((v) => v.actor_user_id),
       ...revisions.map((r) => r.actor_user_id),
       ...flags.map((f) => f.created_by),

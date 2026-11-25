@@ -24,6 +24,7 @@ import { authenticate, type Caller } from "../_shared/auth.ts";
 import { adminClient } from "../_shared/env.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { dbError, isUuid, must, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import { isSafeFilePath } from "./paths.ts";
 import { type InlineFile, isStripped, stripFiles } from "./strip.ts";
 
 const CONCEPT_COLS =
@@ -305,7 +306,7 @@ async function importToSpace(req: Request): Promise<Response> {
       continue;
     }
     seenPaths.set(d.path, ic.sourcePath);
-    const badFile = ic.files.find((f) => f.path.includes("..") || f.path.startsWith("/") || !f.path.trim());
+    const badFile = ic.files.find((f) => !isSafeFilePath(f.path));
     if (badFile) {
       warnings.push(`${ic.sourcePath}: skipped, invalid file path "${badFile.path}"`);
       continue;
@@ -393,9 +394,27 @@ async function importToSpace(req: Request): Promise<Response> {
 }
 
 /**
+ * Did a revision after `revision` come from another proposal that carried its own files for this concept?
+ * Service role on purpose (see the caller); returns a boolean only.
+ */
+async function laterFilesExist(admin: ReturnType<typeof adminClient>, conceptId: string, revision: number, proposalId: string): Promise<boolean> {
+  const later = must(
+    await admin.from("concept_revisions").select("proposal_id").eq("concept_id", conceptId).gt("revision", revision),
+    "load later revisions",
+  ) as { proposal_id: string | null }[];
+  const ids = [...new Set(later.map((r) => r.proposal_id).filter((x): x is string => !!x && x !== proposalId))];
+  if (!ids.length) return false;
+  const newer = must(
+    await admin.from("proposal_ops").select("proposal_id").in("proposal_id", ids).eq("concept_id", conceptId).not("after->files", "is", null).limit(1),
+    "check later file changes",
+  ) as unknown[];
+  return newer.length > 0;
+}
+
+/**
  * Copy skill files carried in an APPLIED proposal's ops (`after.files`) into Storage + concept_files.
- * Safe to call by anyone who can see the proposal: the bytes come from the reviewed proposal, not from the
- * caller. Idempotent (upserts by path, checksums recorded). An op is synced unless a LATER applied proposal
+ * Callers: space reviewers / admins (checked server-side) with a user session or an agent key, never OAuth-client
+ * tokens; the bytes come from the reviewed proposal, not from the caller. Idempotent (upserts by path, checksums recorded). An op is synced unless a LATER applied proposal
  * carried its own files for the same concept (that one is authoritative); later text-only edits do not block
  * it, so calling sync-files late (Studio calls it right after apply_proposal) still converges.
  * Once an op's files are in Storage (or superseded by a later proposal), its inline content is stripped
@@ -404,16 +423,25 @@ async function importToSpace(req: Request): Promise<Response> {
  */
 async function syncProposalFiles(caller: Caller, proposalId: string): Promise<{ files_synced: number; concepts: string[] }> {
   const db = caller.db;
+  // MCP / OAuth-client tokens only read and flag; this route writes with the service role below
+  if (caller.clientId !== null) {
+    throw new HttpError(403, "OAuth client tokens cannot sync proposal files; use a Studio / CLI session or an agent key");
+  }
   const p = must(await db.from("proposals").select("id, space_id, status").eq("id", proposalId).limit(1), "load proposal") as { id: string; space_id: string; status: string }[];
   if (!p.length) throw new HttpError(404, "proposal not found");
-  if (p[0].status !== "applied") throw new HttpError(409, `proposal is ${p[0].status}; files are synced only after it is applied`);
   const spaceId = p[0].space_id;
+  // Server-side role check before any admin-client write: only people who can apply proposals in this space
+  // (reviewer / admin, the same callers that just applied it) copy its files into Storage.
+  const role = must(await db.rpc("my_space_role", { p_space: spaceId }), "check space role") as string | null;
+  if (role !== "reviewer" && role !== "admin") throw new HttpError(403, "space reviewer or admin required to sync proposal files");
+  if (p[0].status !== "applied") throw new HttpError(409, `proposal is ${p[0].status}; files are synced only after it is applied`);
   const ops = must(await db.from("proposal_ops").select("id, concept_id, path, after").eq("proposal_id", proposalId).order("ord"), "load ops") as
     { id: string; concept_id: string | null; path: string; after: { files?: ConceptFile[] } }[];
 
-  // Admin client: Storage writes and concept_files have no user write policies. Guarded by: the proposal
-  // is applied (a reviewer approved these exact files), the caller can see it and the concept (RLS), and
-  // the concept is still at the revision this proposal wrote.
+  // Admin client: Storage writes and concept_files have no user write policies. Guarded by: no OAuth-client
+  // token, the caller is a reviewer/admin of the space (my_space_role above), the proposal is applied (a reviewer
+  // approved these exact files), the caller can see it and the concept (RLS), and the concept is still at the
+  // revision this proposal wrote (or no later proposal carried files for it).
   const admin = adminClient();
   let n = 0;
   const touched: string[] = [];
@@ -445,25 +473,20 @@ async function syncProposalFiles(caller: Caller, proposalId: string): Promise<{ 
     if (rev[0].revision !== c[0].revision) {
       // Later revisions exist. Text-only edits (no `after.files`) do not touch the skill directory, so this
       // proposal's files are still the newest; only a later proposal that carried files supersedes them.
-      const later = must(
-        await db.from("concept_revisions").select("proposal_id").eq("concept_id", op.concept_id).gt("revision", rev[0].revision),
-        "load later revisions",
-      ) as { proposal_id: string | null }[];
-      const ids = [...new Set(later.map((r) => r.proposal_id).filter((x): x is string => !!x && x !== proposalId))];
-      const newer = ids.length
-        ? must(
-          await db.from("proposal_ops").select("proposal_id").in("proposal_id", ids).eq("concept_id", op.concept_id).not("after->files", "is", null).limit(1),
-          "check later file changes",
-        ) as unknown[]
-        : [];
-      if (newer.length) {
+      // Admin client: the caller may not see a later restricted proposal/revision, and missing it would write
+      // these (older) files over newer ones. Only a boolean leaves this block; nothing about the later
+      // proposals is returned to the caller.
+      if (await laterFilesExist(admin, op.concept_id, rev[0].revision, proposalId)) {
         console.warn(`sync-files: ${op.path} got newer files after proposal ${proposalId}; skipping (sync that proposal instead)`);
         // these files can never be synced any more: do not keep their content around
         await strip(op, () => metaOf(op.after.files!));
         continue;
       }
     }
-    const wanted = op.after.files.filter((f) => typeof f?.path === "string" && !f.path.includes("..") && !f.path.startsWith("/"));
+    // never upload unsafe paths (empty, whitespace, backslashes, `..`, absolute): proposals can be created
+    // through PostgREST directly, so the files are not necessarily the ones the import validated
+    const wanted = op.after.files.filter((f) => isSafeFilePath(f?.path) && typeof f.content === "string");
+    for (const f of op.after.files) if (!wanted.includes(f)) console.warn(`sync-files: ${op.path}: skipping invalid file entry ${JSON.stringify(f?.path)}`);
     const prefix = `${spaceId}/${op.concept_id}/`;
     const meta = new Map<string, { size_bytes: number; sha256: string; content_type?: string }>();
     for (const f of wanted) {

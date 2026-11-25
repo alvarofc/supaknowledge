@@ -7,9 +7,12 @@ export const corsHeaders: Record<string, string> = {
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** extra response headers (e.g. Retry-After on 429) */
+  headers: Record<string, string>;
+  constructor(status: number, message: string, headers: Record<string, string> = {}) {
     super(message);
     this.status = status;
+    this.headers = headers;
   }
 }
 
@@ -21,7 +24,7 @@ export function json(data: unknown, status = 200, headers: Record<string, string
 }
 
 export function errorResponse(e: unknown): Response {
-  if (e instanceof HttpError) return json({ error: e.message }, e.status);
+  if (e instanceof HttpError) return json({ error: e.message }, e.status, e.headers);
   console.error(e);
   return json({ error: e instanceof Error ? e.message : String(e) }, 500);
 }

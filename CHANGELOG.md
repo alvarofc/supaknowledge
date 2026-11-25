@@ -19,7 +19,7 @@ First public release, planned as **0.1.0**. Highlights:
   tiers, staleness, an audit log, and hybrid search (pgvector + full-text) with gte-small embeddings computed in
   the Edge Runtime (no API key).
 - **Access control in the database.** Humans, OAuth-connected MCP clients and headless agents are all Supabase
-  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 537 pgTAP tests.
+  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 702 pgTAP tests.
 - **Remote MCP server** (`mcp` Edge Function) with OAuth 2.1 through Supabase Auth, and agent API keys
   (`skn_...`) for headless agents.
 - **Trace ingest** (JSON and OTLP) and correction mining from agent traces.
@@ -80,6 +80,49 @@ Fixes from the pre-release security review:
   (sources, citations, OAuth client sites, frontmatter) rendered as links only when http(s), and a same-origin
   check on sign-out. `kf import` never uploads dotfiles such as `.env` (they are listed as skipped).
 
+Fixes from the second (verification) review round:
+
+- **Curator taint.** A draft carries the audiences of every triage pass that shaped it, and the review notes of
+  earlier rejections on the same paths (`kf_rejected_proposals()`, service role) are shown to the model only within
+  its research scope and taint the new proposal with the audiences of what those rejections touched. Material
+  without a row still escalates (one rowless consulted citation per audience). Searches filter by audience and
+  similarity in SQL before the limit (`p_visible_to`, `p_min_similarity`), so restricted results cannot starve or
+  leak into a wider draft. Topics written by the model from untrusted signals are treated as data, and untrusted
+  sources are never pre-fetched.
+- **Citation audiences never relax.** Client-supplied citation audiences are ignored for people, every audience
+  group must belong to the space's workspace (also for traces and sources), snapshots of open proposals follow the
+  evidence when it changes audience (a cited row deleted later keeps its last, not a stale wider, audience), URL
+  citations resolve only to visible, live documents, and `apply_proposal` no longer clears the escalation of the
+  proposal it applies.
+- **Revoked agents lose database access immediately**: they hold no role, space, workspace or group, so an access
+  token minted before the revoke reads nothing. Agent passwords (their keys) change only through key rotation (a
+  trigger refuses any other password change), `agents.last_seen_at` is not client-writable, and an agent's
+  workspace membership cannot be deleted on its own. Repeated failed agent-key sign-ins get HTTP 429 with
+  `Retry-After`.
+- People removed from a space or workspace no longer read their old restricted traces, flags or usage, nor append
+  trace events.
+- **SSRF hardening.** Connector hostnames are resolved and refused when any address is non-public (fail closed,
+  IPv4-mapped / NAT64 / 6to4 / Teredo ranges included), re-checked after the response arrives against DNS
+  rebinding, and `KF_CONNECTORS_EGRESS_PROXY` routes every connector request through an egress proxy that
+  enforces the policy on the address it connects to.
+- **Invitation owner protection**: only owners refresh or revoke owner invitations, the hourly invitation limit
+  survives the workspace, and removing or demoting an owner locks the workspace row (two owners cannot leave at
+  once).
+- **Storage GC safety**: the GC never removes live objects (revived or re-uploaded documents, existing concept
+  files). Groups still referenced by revisions or open proposal citations cannot be deleted; `retire_group()`
+  (Studio: Settings → Groups → Retire group…) replaces a group by another group of the same workspace everywhere,
+  then deletes it.
+- `bundle/sync-files` requires a space reviewer or admin and refuses OAuth-client tokens. Manual curator runs
+  through `POST /curator/run` have a per-space cooldown (`KF_CURATOR_RUN_COOLDOWN_S`, default 120 s) and a
+  per-caller limit (429 with `Retry-After`); operators can cap tokens per run (`KF_LLM_MAX_TOKENS_PER_RUN`).
+- Settings have length limits (model ids 200 characters, at most 5 fallback models, house rules 8000 characters;
+  `curator.stuck_after_minutes` at least 10), enforced by the database, the core schema and the Studio form.
+- Apply / reject / revert authorise before taking locks and answer one uniform 42501 for "not found" and "not
+  allowed"; service-only RPCs check the service role themselves; `usage_counts()` only counts visible concepts;
+  `flag_knowledge()` normalizes concept paths so a flag through REST attaches to (and takes the audience of) its
+  concept. The `embed` worker writes chunks compare-and-swap, so an older embedding cannot overwrite a newer
+  version, and duplicate re-queues collapse.
+
 ### Changed
 
 - Curator runs fail when any of their tasks failed (instead of succeeding and skipping that evidence), at most
@@ -111,8 +154,15 @@ Fixes from the pre-release security review:
   `kf import --apply` exits 1 when the proposal conflicts on the PostgREST fallback; membership and group commands
   fail when RLS changed nothing; `kf sources secret` prompts only when stdin is a terminal.
 - SDKs: the first knowledge call of a tool loop is linked to its trace, and `read` / `loadSkill` accept a trace id;
-  trace recorders back off after failures and respect `maxBuffer`; Python/TypeScript parity fixes (see
-  [SDKs](docs/sdk.md)).
+  trace recorders back off after failures (at least the server's `Retry-After`) and respect `maxBuffer`;
+  Python/TypeScript parity fixes (see [SDKs](docs/sdk.md)). Both SDKs retry idempotent requests (reads, read-only
+  MCP tools) on HTTP 429, honouring `Retry-After`, at most twice and never waiting more than 30 s; writes (flags,
+  traces) are never retried automatically (`retry` / `max_retries` options).
+- CLI: `kf curate` goes through `POST /curator/run` (RPC fallback when the function is not deployed) and on a 429
+  prints `curator was run recently; try again in N s` (exit 1; one JSON document with `--json`).
+- Studio: the curator settings form checks the settings limits before saving and shows the server's field errors;
+  a 403 from skill-file sync explains that a space reviewer or admin has to sync them; Settings → Groups can retire
+  a group.
 - Docs: `supaknowledge-title` is exported for skills whose title differs from their first heading, so titles
   round-trip.
 

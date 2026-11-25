@@ -931,6 +931,18 @@ isOneToOne: false
 "kf_add_run_stats":
 { Args: { "p_delta": Json,"p_run": string }; Returns: Json
                            },
+"kf_allow_agent_password_change":
+{ Args: { "p_agent": string }; Returns: undefined
+                           },
+"kf_embed_requeue":
+{ Args: { "p_delay"?: number,"p_message": Json,"p_msg_id": number }; Returns: boolean
+                           },
+"kf_embed_write_concept":
+{ Args: { "p_body_sha256": string,"p_chunks": Json,"p_concept": string,"p_links"?: Json,"p_path": string,"p_revision": number,"p_total"?: number }; Returns: boolean
+                           },
+"kf_embed_write_document":
+{ Args: { "p_chunks": Json,"p_content_hash": string,"p_document": string,"p_live": boolean,"p_total"?: number }; Returns: boolean
+                           },
 "kf_enqueue_curator_task":
 { Args: { "p_input": Json,"p_run": string,"p_step": string }; Returns: string
                            },
@@ -952,6 +964,11 @@ isOneToOne: false
 "kf_queue_send":
 { Args: { "p_delay"?: number,"p_messages": (Json)[],"p_queue": string }; Returns: (number)[]
                            },
+"kf_rejected_proposals":
+{ Args: { "p_limit"?: number,"p_paths": (string)[],"p_space": string }; Returns: {
+              "audiences": Json,"id": string,"paths": (string)[],"review_note": string,"reviewed_at": string,"title": string
+            }[]
+                           },
 "kf_revoke_user_sessions":
 { Args: { "p_user": string }; Returns: number
                            },
@@ -959,6 +976,9 @@ isOneToOne: false
 { Args: { "p_after"?: string,"p_bucket": string,"p_limit"?: number,"p_prefix": string }; Returns: {
               "name": string
             }[]
+                           },
+"kf_strip_proposal_files":
+{ Args: { "p_files": Json,"p_op": string }; Returns: boolean
                            },
 "kf_trace_events":
 { Args: { "p_max_per_trace"?: number,"p_trace_ids": (string)[] }; Returns: Json
@@ -1054,13 +1074,16 @@ isOneToOne: false
 "request_source_sync":
 { Args: { "p_source": string }; Returns: undefined
                            },
+"retire_group":
+{ Args: { "p_group": string,"p_replacement": string }; Returns: undefined
+                           },
 "search_knowledge":
-{ Args: { "p_embedding"?: string,"p_include_deprecated"?: boolean,"p_kinds"?: (Database["public"]['Enums']["concept_kind"])[],"p_limit"?: number,"p_query": string,"p_space": string }; Returns: {
+{ Args: { "p_embedding"?: string,"p_include_deprecated"?: boolean,"p_kinds"?: (Database["public"]['Enums']["concept_kind"])[],"p_limit"?: number,"p_min_similarity"?: number,"p_query": string,"p_space": string,"p_visible_to"?: (string)[] }; Returns: {
               "concept_id": string,"description": string,"kind": Database["public"]['Enums']["concept_kind"],"path": string,"revision": number,"score": number,"snippet": string,"stale": boolean,"status": Database["public"]['Enums']["concept_status"],"title": string,"trust": Database["public"]['Enums']["trust_tier"],"type": string
             }[]
                            },
 "search_sources":
-{ Args: { "p_embedding"?: string,"p_limit"?: number,"p_query": string,"p_space": string }; Returns: {
+{ Args: { "p_embedding"?: string,"p_limit"?: number,"p_min_similarity"?: number,"p_query": string,"p_space": string,"p_visible_to"?: (string)[] }; Returns: {
               "changed_at": string,"document_id": string,"score": number,"snippet": string,"source_id": string,"title": string,"url": string
             }[]
                            },

@@ -2,14 +2,10 @@ import { SpaceSettingsSchema, parseSettings } from "@supaknowledge/core";
 import type { SpaceSettings } from "@supaknowledge/core";
 import type { Json } from "@/lib/database.types";
 import { errorMessage } from "@/lib/format";
+import { friendlyIssue } from "@/lib/settings-form";
 import { getSupabase } from "@/server/supabase.server";
 
 export type SaveSettingsResult = { ok: true } | { ok: false; message: string; fieldErrors?: Record<string, string> };
-
-function friendly(code: string, message: string): string {
-  if (code === "invalid_type" && /number/.test(message)) return "Enter a number";
-  return message.replace(/^Too small: expected number to be >=?/, "Must be at least ").replace(/^Too big: expected number to be <=?/, "Must be at most ");
-}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -30,8 +26,10 @@ export async function saveSettings(spaceId: string, input: unknown): Promise<Sav
   if (!parsed.success) {
     const fieldErrors: Record<string, string> = {};
     for (const issue of parsed.error.issues) {
-      const key = issue.path.map(String).join(".");
-      fieldErrors[key] ??= friendly(issue.code, issue.message);
+      // report an error on one fallback model ("curator.fallback_models.2") on the list field the form shows
+      const path = issue.path.map(String);
+      const key = (path[1] === "fallback_models" ? path.slice(0, 2) : path).join(".");
+      fieldErrors[key] ??= friendlyIssue(issue.code, issue.message);
     }
     return { ok: false, message: "Some settings are invalid. Fix the highlighted fields.", fieldErrors };
   }
@@ -49,7 +47,8 @@ export async function saveSettings(spaceId: string, input: unknown): Promise<Sav
   }
 
   const { data, error } = await supabase.from("spaces").update({ settings: merged as NonNullable<Json> }).eq("id", spaceId).select("id");
-  if (error) return { ok: false, message: errorMessage(error) };
+  // the database re-validates (private.validate_space_settings); its message names the offending key
+  if (error) return { ok: false, message: `Could not save settings: ${errorMessage(error)}` };
   if (!data?.length) return { ok: false, message: "Only space admins can change settings." };
   return { ok: true };
 }

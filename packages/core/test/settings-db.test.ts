@@ -63,9 +63,16 @@ test("types and bounds agree", () => {
     } else if (s.typ === "string") {
       assert.ok(ok(f, "x"), where);
       assert.ok(!ok(f, 1), where);
+      // (min, max) of a string are length bounds
+      if (s.hi !== null) assert.ok(ok(f, "x".repeat(s.hi)) && !ok(f, "x".repeat(s.hi + 1)), `${where}: length <= ${s.hi}`);
     } else if (s.typ === "string[]") {
       assert.ok(ok(f, ["a", "b"]) && ok(f, []), where);
       assert.ok(!ok(f, [1]) && !ok(f, "a"), where);
+      // (min, max) of a list are item counts; every item is a model id of at most 200 characters
+      if (s.hi !== null) {
+        assert.ok(ok(f, Array(s.hi).fill("m")) && !ok(f, Array(s.hi + 1).fill("m")), `${where}: at most ${s.hi} items`);
+        assert.ok(ok(f, ["x".repeat(200)]) && !ok(f, ["x".repeat(201)]), `${where}: items <= 200 chars`);
+      }
     } else if (s.typ === "integer" || s.typ === "integer?") {
       assert.ok(ok(f, s.lo) && ok(f, s.hi), `${where}: accepts ${s.lo}..${s.hi}`);
       assert.ok(!ok(f, s.lo! - 1) && !ok(f, s.hi! + 1), `${where}: rejects outside ${s.lo}..${s.hi}`);

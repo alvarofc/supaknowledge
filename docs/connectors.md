@@ -91,7 +91,7 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
 
 | Config | Type | Default |
 |---|---|---|
-| `repo` | `"owner/name"` | required |
+| `repo` | `"owner/name"` (GitHub's charset: owner `A-Z a-z 0-9 - _`, name `A-Z a-z 0-9 . - _`, never `.`/`..`) | required |
 | `ref` | branch/tag/sha | default branch |
 | `paths` | globs (`**`, `*`, `?`, `{a,b}`; no `/` = match basename anywhere) | `["**/*.md", "docs/**"]` |
 | `include_issues` | boolean (closed issues + PRs, with labels and comments) | `false` |
@@ -130,7 +130,8 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
 - **Folder mappings are hierarchical:** the most specific mapped folder wins. A file in `finance/q3` where
   `finance` maps to group `finance` and the synced root maps to `all-staff` gets only `finance`, not both. The
   shared drive (`gdrive_drive`) counts only when no folder matched, and Google groups the file is shared with
-  directly (`google_group`) narrow that result (intersection; if it is empty, the folder mapping is kept).
+  directly (`google_group`) narrow that result (intersection; if it is empty, the direct `google_group` mapping
+  wins, never the wider folder tier).
 - Lists files with `modifiedTime >= cursor.since` (ascending) and applies the `changes` feed for deletions,
   trashing and moves out of the synced folders. Google Docs export as `text/markdown` (fallback `text/plain`),
   Sheets as CSV (first sheet), Slides as text; `.md`/`.txt`/`.html`/`.pdf` files are downloaded.
@@ -153,6 +154,13 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
   footers, sidebars, cookie banners, scripts and styles removed) and converted to markdown.
 - `ETag`/`Last-Modified` are kept in `cursor.pages` and sent as `If-None-Match`/`If-Modified-Since`.
   404/410 pages are deleted. On a completed run, pages no longer in the config/sitemap are deleted.
+- Redirects are followed by hand, for pages **and** sitemaps. Every page hop must stay in scope: the configured
+  origins (`same_origin_only`) and `include`/`exclude`; every sitemap hop must stay on the configured origins and
+  outside `exclude`. A page that redirects out of scope is dropped (deleted); a sitemap that does is ignored and
+  the run does not reconcile deletions.
+- A configured URL (`urls`, `sitemap`) that the outbound guard refuses (e.g. its name resolves to a private
+  address) fails the run with a config error, so the source goes to `error` with the reason in `last_error`.
+  Refused URLs discovered through sitemaps or links are dropped and the run carries on.
 - External id: the URL.
 
 ### Upload (`upload`)
@@ -161,8 +169,11 @@ No sync. Documents come from Studio or the CLI through the authenticated route o
 
 ```
 POST /functions/v1/connectors/upload
-Authorization: Bearer <user JWT | OAuth token | skn_ agent key>
+Authorization: Bearer <user JWT | skn_ agent key>
 ```
+
+OAuth client tokens (MCP clients signed in through the consent screen) are refused with 403: they only read and
+flag.
 
 - multipart/form-data: `source_id`, `file` (`.md`, `.txt`, `.html`, `.pdf`; max 20 MB), optional `title`,
   `external_id`, `url`
@@ -173,8 +184,8 @@ The caller must see the source through RLS (space **editor+** inside the source 
 replaces the document. PDFs are stored as-is with text extracted best effort (`unpdf`); when extraction fails the
 document has empty content and `metadata.extraction_error`.
 Response: `201 { document, changed: true }` on a new/changed document, `200 { …, changed: false }` when the content
-hash did not change. Errors: 400 bad input, 401 no/invalid token, 403 not an editor, 404 source not visible,
-409 not an upload source / paused, 413 too large, 415 unsupported type.
+hash did not change. Errors: 400 bad input, 401 no/invalid token, 403 not an editor or an OAuth client token,
+404 source not visible, 409 not an upload source / paused, 413 too large, 415 unsupported type.
 
 ```bash
 curl -X POST "$SUPABASE_URL/functions/v1/connectors/upload" -H "Authorization: Bearer $JWT" \
@@ -227,15 +238,36 @@ Source configs come from space admins, so every outbound connector request goes 
 
 - only `http(s)`, and `https` whenever credentials (`Authorization`, `Cookie`) are attached;
 - no loopback, private, CGNAT, link-local / cloud-metadata, multicast or reserved addresses (IPv4 and IPv6,
-  including IPv4-mapped, NAT64 and 6to4 forms), and no internal host names (single-label names such as `kong` or
-  `db`, `localhost`, `*.internal`, `*.local`, `*.svc`, `*.home.arpa`…);
-- host names are resolved (A + AAAA) and refused when any address is not public;
+  including IPv4-mapped `::ffff:a.b.c.d`, SIIT `::ffff:0:a.b.c.d`, NAT64 `64:ff9b::/96` (by embedded IPv4) and
+  `64:ff9b:1::/48` (always), 6to4, Teredo `2001::/32`, benchmarking `2001:2::/48`, ORCHID `2001:10::/28` and
+  `2001:20::/28`, documentation `2001:db8::/32` and `3fff::/20`), and no internal host names (single-label names
+  such as `kong` or `db`, `localhost`, `*.internal`, `*.local`, `*.svc`, `*.home.arpa`…). Trailing dots are
+  ignored (`localhost..` is `localhost`) and names with empty labels (`a..b`) are refused;
+- host names are resolved (A + AAAA) and refused when any address is not public. The check **fails closed**: a
+  lookup error or an empty answer refuses the request. That refusal is a transient error (retried, then
+  `last_error`), not a config error, so a DNS hiccup does not put the source in `error`;
+- after the response headers arrive the name is resolved again, and the response is discarded (never read) if
+  it now points at a non-public address (DNS rebinding);
 - redirects are followed by hand (at most 5 hops), each hop is checked again, and credentials are dropped when a
   hop changes origin.
 
 A refused URL is a config error (the sync fails with a message and is not retried until the config changes).
 Self-hosted setups that need to sync intranet sites can set the function secret
 `KF_CONNECTORS_ALLOW_PRIVATE_NETWORK=true`, which disables the private-network checks for every source.
+
+**Egress proxy (recommended in production).** Deno's `fetch` resolves the host name itself and cannot be pinned to
+the address the guard checked (for `https` the certificate must match the name, and Deno has no resolver
+override). The re-check after the response narrows DNS rebinding but cannot close it: a name with a zero TTL can
+answer "public, private, public" to the three lookups, and the request (a `GET`, plus headers) has already
+reached the private address by the time it is noticed; only the body is kept from the connector. To close the
+gap, set the function secret `KF_CONNECTORS_EGRESS_PROXY=http://[user:pass@]proxy-host:port`: every connector
+request then goes through that HTTP proxy (`Deno.createHttpClient({ proxy })`, `CONNECT` for https), and the
+proxy, which is what actually connects to the resolved address, must refuse non-public destinations itself (e.g.
+[Smokescreen](https://github.com/stripe/smokescreen) with its default deny-private policy, or a firewall that
+only allows public egress). The in-function checks still run in front of it. If the variable is set but the
+runtime has no `Deno.createHttpClient`, requests fail as config errors instead of bypassing the proxy. Plain
+`http` is not pinned to the checked IP either (connecting to the IP with a `Host` header would break redirects,
+virtual hosting and robots.txt per origin); the proxy covers it as well.
 
 ## Limits and tuning
 

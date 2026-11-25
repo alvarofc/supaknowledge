@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import quote
 from typing import Any, Callable, Iterable, Literal
 
 import httpx
 
-from ._http import McpClient, SupaknowledgeError, is_not_deployed, request_json
+from ._http import MAX_RETRIES, MAX_RETRY_WAIT, McpClient, RetryPolicy, SupaknowledgeError, is_not_deployed, request_json
 from ._parse import parse_concept_markdown, parse_skill_markdown
 from .mcp_config import McpClientKind, build_mcp_config, mcp_endpoint
 from .tools import ToolFormat, handle_tool_call, handle_tool_calls, knowledge_tools
@@ -34,6 +35,17 @@ def _skill_name(path: str) -> str:
     return path.rstrip("/").split("/")[-1]
 
 
+def _skill_lookup_path(name: str) -> str | None:
+    """A load_skill argument as the MCP tool reads it: a skill name ("revenue-report") or its full path
+    ("skills/revenue-report", "/skills/revenue-report/SKILL.md"). None when it can't be a concept path."""
+    n = str(name or "").strip().lstrip("/")
+    n = re.sub(r"/SKILL\.md$", "", n, flags=re.I)
+    n = re.sub(r"\.md$", "", n, flags=re.I)
+    n = re.sub(r"/SKILL$", "", n, flags=re.I)
+    n = n.rstrip("/")
+    return n if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", n) and ".." not in n else None
+
+
 class Supaknowledge:
     """Client for one Supaknowledge space.
 
@@ -47,6 +59,11 @@ class Supaknowledge:
             user tokens only) or "auto" (MCP, falling back to REST when the mcp function is not deployed).
         http_client: bring your own ``httpx.Client`` (tests: ``httpx.Client(transport=httpx.MockTransport(...))``).
         on_error: receives background trace errors (default: a warning on the ``supaknowledge`` logger).
+        max_retries / max_retry_wait: retries when the server answers 429 Too Many Requests (e.g. after repeated
+            failed agent-key sign-ins), honouring Retry-After. Only idempotent requests are retried: reads
+            (search, read, skills, read-only MCP tools, REST reads); writes (flags, traces) raise the 429 as a
+            ``SupaknowledgeError`` with ``status`` 429 and ``retry_after``. Default and maximum: 2 retries,
+            waiting at most 30 s for one (a longer Retry-After raises right away). ``max_retries=0`` turns them off.
     """
 
     def __init__(
@@ -62,6 +79,8 @@ class Supaknowledge:
         http_client: httpx.Client | None = None,
         headers: dict[str, str] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        max_retries: int = MAX_RETRIES,
+        max_retry_wait: float = MAX_RETRY_WAIT,
     ) -> None:
         if not url:
             raise SupaknowledgeError("url is required")
@@ -82,7 +101,8 @@ class Supaknowledge:
         self._http = http_client or httpx.Client(timeout=timeout)
         self._owns_http = http_client is None
         self._space_id: str | None = None
-        self._mcp = McpClient(self._http, mcp_endpoint(self.url, space), self._auth_headers, __version__)
+        self._retry = RetryPolicy.bounded(max_retries, max_retry_wait)
+        self._mcp = McpClient(self._http, mcp_endpoint(self.url, space), self._auth_headers, __version__, self._retry)
 
     def close(self) -> None:
         if self._owns_http:
@@ -111,7 +131,7 @@ class Supaknowledge:
 
         def via_rest() -> list[SearchResult]:
             sid = self.space_id()
-            rows = self._rpc("search_knowledge", {"p_space": sid, "p_query": query, "p_kinds": kinds_l, "p_limit": limit or 8}) or []
+            rows = self._rpc("search_knowledge", {"p_space": sid, "p_query": query, "p_kinds": kinds_l, "p_limit": limit or 8}, idempotent=True) or []
             self._log_usage(sid, [r["concept_id"] for r in rows if r.get("concept_id")], "search", query, trace_id)
             return rows
 
@@ -133,7 +153,7 @@ class Supaknowledge:
 
         def via_rest() -> Concept | None:
             sid = self.space_id()
-            c = self._rpc("read_concept", {"p_space": sid, "p_path": path})
+            c = self._rpc("read_concept", {"p_space": sid, "p_path": path}, idempotent=True)
             if c and c.get("id"):
                 self._log_usage(sid, [c["id"]], "read", path, trace_id)
             return c or None
@@ -167,17 +187,21 @@ class Supaknowledge:
             return s
 
         def via_rest() -> Skill | None:
-            if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+            # a name or a full path, like the MCP tool
+            n = _skill_lookup_path(name)
+            if not n:
                 return None
             sid = self.space_id()
             # same set list_skills shows (stable skills only); an exact path wins over a "<dir>/<name>" match
+            # (LIKE's `_` wildcard can over-match: the exact checks below decide)
+            v = quote(n, safe="")
             rows = self._rest_get(
-                f"concepts?select=path&space_id=eq.{sid}&kind=eq.skill&status=eq.stable&or=(path.eq.{name},path.like.*/{name})&order=path&limit=5"
+                f"concepts?select=path&space_id=eq.{sid}&kind=eq.skill&status=eq.stable&or=(path.eq.{v},path.like.*/{v})&order=path&limit=20"
             ) or []
-            match = next((r for r in rows if r["path"] == name), None) or next((r for r in rows if _skill_name(r["path"]) == name), None)
+            match = next((r for r in rows if r["path"] == n), None) or next((r for r in rows if r["path"].endswith(f"/{n}")), None)
             if not match:
                 return None
-            c = self._rpc("read_concept", {"p_space": sid, "p_path": match["path"]})
+            c = self._rpc("read_concept", {"p_space": sid, "p_path": match["path"]}, idempotent=True)
             if not c:
                 return None
             self._log_usage(sid, [c["id"]], "load_skill", name, trace_id)
@@ -227,9 +251,10 @@ class Supaknowledge:
 
         return self._route(via_mcp, via_rest)
 
-    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        """Call any tool on the Supaknowledge MCP server."""
-        return self._mcp.call_tool(name, arguments or {})
+    def call_tool(self, name: str, arguments: dict[str, Any] | None = None, *, idempotent: bool | None = None) -> Any:
+        """Call any tool on the Supaknowledge MCP server. A 429 is retried for read-only tools only, unless
+        ``idempotent`` says this call is safe to repeat (or not)."""
+        return self._mcp.call_tool(name, arguments or {}, idempotent=idempotent)
 
     # ------------------------------------------------------------------ traces
     def trace(
@@ -241,11 +266,14 @@ class Supaknowledge:
         max_batch: int = 50,
         max_buffer: int = 1000,
         on_error: Callable[[BaseException], None] | None = None,
+        retry_base: float = 1.0,
+        retry_max: float = 60.0,
     ) -> TraceRecorder:
         """Start recording a trace. Recording never raises; flush()/end() send it.
 
         ``on_error`` overrides the client's ``on_error`` for this trace; ``max_buffer`` caps events kept while the
-        server is unreachable (oldest dropped)."""
+        server is unreachable (oldest dropped). After a failed flush, automatic flushes back off ``retry_base``
+        seconds, doubling up to ``retry_max``."""
         client = self
 
         class _T:
@@ -259,7 +287,15 @@ class Supaknowledge:
                 return client.flag(**kwargs)
 
         return TraceRecorder(
-            _T(), name=name, external_id=external_id, metadata=metadata, max_batch=max_batch, max_buffer=max_buffer, on_error=on_error or self._on_error
+            _T(),
+            name=name,
+            external_id=external_id,
+            metadata=metadata,
+            max_batch=max_batch,
+            max_buffer=max_buffer,
+            on_error=on_error or self._on_error,
+            retry_base=retry_base,
+            retry_max=retry_max,
         )
 
     # ------------------------------------------------------------------ integrations
@@ -323,10 +359,12 @@ class Supaknowledge:
             return via_rest()
 
     def _rest_get(self, path: str) -> Any:
-        return request_json(self._http, "GET", f"{self.url}/rest/v1/{path}", headers=self._auth_headers())
+        """PostgREST GET (a read: retried on 429)."""
+        return request_json(self._http, "GET", f"{self.url}/rest/v1/{path}", headers=self._auth_headers(), retry=self._retry)
 
-    def _rpc(self, fn: str, args: dict[str, Any]) -> Any:
-        return request_json(self._http, "POST", f"{self.url}/rest/v1/rpc/{fn}", headers=self._auth_headers(), body=args)
+    def _rpc(self, fn: str, args: dict[str, Any], *, idempotent: bool = False) -> Any:
+        """PostgREST RPC; only reads (``idempotent``) are retried on 429."""
+        return request_json(self._http, "POST", f"{self.url}/rest/v1/rpc/{fn}", headers=self._auth_headers(), body=args, retry=self._retry if idempotent else None)
 
     def _log_usage(self, space: str, ids: list[str], via: str, query: str | None, trace_id: str | None) -> None:
         if not ids:

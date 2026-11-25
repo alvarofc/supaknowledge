@@ -152,9 +152,9 @@ Deno.test("gdrive: most specific mapped folder wins (no union with broader ances
   // shared drive only when no folder matched
   assertEquals(matchAcl(driveAcl(file([], "DRIVE9"), ["UNMAPPED"]), groups), ["g-drive"]);
   assertEquals(matchAcl(driveAcl(file([], "DRIVE9"), ["FINANCE_SUB", "ROOT"]), groups), ["g-finance"]);
-  // file shared directly with a group: narrows (disjoint -> the folder mapping), never unions
+  // file shared directly with a group: narrows, never unions; disjoint -> the direct (narrower) group
   const shared = driveAcl(file([{ type: "group", role: "reader", emailAddress: "sales@acme.example" }]), ["FINANCE_SUB", "ROOT"]);
-  assertEquals(matchAcl(shared, groups), ["g-finance"]);
+  assertEquals(matchAcl(shared, groups), ["g-sales"]);
   assertEquals(matchAcl(driveAcl(file([{ type: "group", role: "reader", emailAddress: "sales@acme.example" }]), []), groups), ["g-sales"]);
   const both = [...groups, { id: "g-fin-sales", external_ref: { gdrive_folder: "FINANCE_SUB", google_group: "sales@acme.example" } }];
   assertEquals(matchAcl(shared, both), ["g-fin-sales"]); // intersection

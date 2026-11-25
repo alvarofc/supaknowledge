@@ -2,6 +2,8 @@ import { notFound } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import type { OpRow } from "@/components/inbox/op-card";
 import type { Database, Json } from "@/lib/database.types";
+import { actorUserId } from "@/lib/format";
+import { skillFiles } from "@/lib/skill-files";
 import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
 import { getProfiles, getSpaceContext } from "@/server/space.server";
@@ -120,7 +122,7 @@ export const loadProposal = createServerFn({ method: "GET" })
       getProfiles([
         p.created_by,
         p.reviewed_by,
-        p.author.startsWith("human:") ? p.author.slice(6) : null,
+        actorUserId(p.author),
         ...reviews.map((r) => r.reviewer),
       ]),
     ]);
@@ -139,6 +141,8 @@ export const loadProposal = createServerFn({ method: "GET" })
         const after = o.after as { files?: unknown } | null;
         return Array.isArray(after?.files) && after.files.length > 0;
       }),
+      // applied, but some skill files still carry inline content: bundle/sync-files has not (fully) run yet
+      filesUnsynced: p.status === "applied" && ops.some((o) => skillFiles(o.after).some((f) => !f.stripped)),
       citations,
       reviews,
       run: runRes.data,

@@ -72,15 +72,17 @@ export function requestOrigin(request: Request, env: OriginEnv = serverEnv()): s
   const site = originOf(env.SITE_URL);
   if (site) return site;
   const h = request.headers;
-  const ownProto = fallback.protocol.replace(":", "");
-  if (env.TRUST_PROXY === "1" || env.TRUST_PROXY?.toLowerCase() === "true") {
-    const fwdHost = validHost(firstValue(h.get("x-forwarded-host")));
-    const fwdProto = firstValue(h.get("x-forwarded-proto"))?.toLowerCase();
-    const proto = fwdProto === "http" || fwdProto === "https" ? fwdProto : ownProto;
-    if (fwdHost) return `${proto}://${fwdHost}`;
+  const trustProxy = env.TRUST_PROXY === "1" || env.TRUST_PROXY?.toLowerCase() === "true";
+  // Behind a trusted TLS proxy the scheme comes from X-Forwarded-Proto even when the proxy keeps the Host header
+  // and sends no X-Forwarded-Host (ALB, Fly, Render, Caddy, nginx `proxy_set_header Host $host`).
+  const fwdProto = trustProxy ? firstValue(h.get("x-forwarded-proto"))?.toLowerCase() : null;
+  const proto = fwdProto === "http" || fwdProto === "https" ? fwdProto : fallback.protocol.replace(":", "");
+  const fwdHost = trustProxy ? validHost(firstValue(h.get("x-forwarded-host"))) : null;
+  for (const host of [fwdHost, validHost(h.get("host"))]) {
+    // originOf validates the port / IPv6 literal and normalizes default ports (:443 / :80)
+    const origin = host ? originOf(`${proto}://${host}`) : null;
+    if (origin) return origin;
   }
-  const host = validHost(h.get("host"));
-  if (host) return `${ownProto}://${host}`;
   return fallback.origin;
 }
 

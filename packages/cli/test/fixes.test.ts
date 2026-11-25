@@ -14,7 +14,7 @@ describe("kf curate --watch --json", () => {
     const h = harness();
     h.routes.push(
       spaceRoute,
-      (c) => (c.url.endsWith("/rpc/request_curator_run") ? json({ id: RUN_ID, status: "queued", trigger: "manual", stats: {}, error: null }) : undefined),
+      (c) => (c.url.endsWith("/functions/v1/curator/run") ? json({ run: { id: RUN_ID, status: "queued", trigger: "manual", stats: {}, error: null } }, 202) : undefined),
       (c) => (c.url.includes("/rest/v1/curator_runs?") ? json({ id: RUN_ID, status: "failed", trigger: "manual", stats: { clusters: 2 }, error: "task research failed" }) : undefined),
     );
     const r = await h.run("curate", "--watch", "--json");
@@ -22,6 +22,54 @@ describe("kf curate --watch --json", () => {
     const doc = JSON.parse(r.stdout); // throws if two documents were printed
     assert.equal(doc.status, "failed");
     assert.equal(doc.error, "task research failed");
+    assert.deepEqual(h.calls.find((c) => c.url.endsWith("/functions/v1/curator/run"))!.body, { space: "acme/finance" });
+  });
+});
+
+describe("kf curate rate limits (429)", () => {
+  const cooldown = (c: { url: string }) =>
+    c.url.endsWith("/functions/v1/curator/run")
+      ? json({ error: "a manual curator run of this space started 30s ago; try again in 90s" }, 429, { "retry-after": "90" })
+      : undefined;
+
+  it("prints a friendly message and exits 1", async () => {
+    const h = harness();
+    h.routes.push(spaceRoute, cooldown);
+    const r = await h.run("curate");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /curator was run recently; try again in 90 s/);
+    assert.equal(h.calls.filter((c) => c.url.endsWith("/functions/v1/curator/run")).length, 1, "a run request is not retried");
+    assert.ok(!h.calls.some((c) => c.url.endsWith("/rpc/request_curator_run")), "no RPC fallback around the cooldown");
+  });
+
+  it("--json prints one JSON document with status and retry_after_s", async () => {
+    const h = harness();
+    h.routes.push(spaceRoute, cooldown);
+    const r = await h.run("curate", "--watch", "--json");
+    assert.equal(r.code, 1);
+    const doc = JSON.parse(r.stdout);
+    assert.equal(doc.status, 429);
+    assert.equal(doc.retry_after_s, 90);
+    assert.match(doc.error, /try again in 90 s/);
+  });
+
+  it("uses the message when Retry-After is missing", async () => {
+    const h = harness();
+    h.routes.push(spaceRoute, (c) => (c.url.endsWith("/functions/v1/curator/run") ? json({ error: "a manual curator run of this space started 100s ago; try again in 20s" }, 429) : undefined));
+    const r = await h.run("curate");
+    assert.match(r.stderr, /try again in 20 s/);
+  });
+
+  it("falls back to rpc request_curator_run when the curator function is not deployed", async () => {
+    const h = harness();
+    h.routes.push(
+      spaceRoute,
+      (c) => (c.url.endsWith("/functions/v1/curator/run") ? json({ code: "NOT_FOUND", message: "Requested function was not found" }, 404) : undefined),
+      (c) => (c.url.endsWith("/rpc/request_curator_run") ? json({ id: RUN_ID, status: "queued", trigger: "manual", stats: {}, error: null }) : undefined),
+    );
+    const r = await h.run("curate", "--json");
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).id, RUN_ID);
   });
 });
 

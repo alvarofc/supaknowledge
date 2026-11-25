@@ -10,11 +10,17 @@ export class CliError extends Error {
   hint?: string;
   /** the command already printed its JSON result; --json mode prints nothing more */
   reported: boolean;
-  constructor(message: string, opts: { exitCode?: number; hint?: string; reported?: boolean } = {}) {
+  /** HTTP status behind the error (printed in the --json error document) */
+  status?: number;
+  /** extra fields for the --json error document (e.g. retry_after_s) */
+  data?: Record<string, unknown>;
+  constructor(message: string, opts: { exitCode?: number; hint?: string; reported?: boolean; status?: number; data?: Record<string, unknown> } = {}) {
     super(message);
     this.exitCode = opts.exitCode ?? 1;
     this.hint = opts.hint;
     this.reported = opts.reported ?? false;
+    if (opts.status !== undefined) this.status = opts.status;
+    if (opts.data) this.data = opts.data;
   }
 }
 

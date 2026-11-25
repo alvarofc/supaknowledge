@@ -12,7 +12,7 @@ import { LinkButton } from "@/components/ui/button";
 import { Callout, Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
 import { LinkTabs } from "@/components/ui/tabs";
-import { actorLabel, shortId } from "@/lib/format";
+import { actorLabel, cancelledBy, shortId } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
@@ -102,6 +102,7 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
               const st = RUN_STATUS[r.status];
               const runTasks = tasks.filter((t) => t.run_id === r.id);
               const d = duration(r.started_at, r.finished_at);
+              const canceller = cancelledBy(r.error);
               return (
                 <li key={r.id} id={`run-${r.id}`} className="scroll-mt-20 px-4 py-3.5">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -119,7 +120,15 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
                       {d ? ` · ${r.finished_at ? "took" : "running for"} ${d}` : r.status === "queued" ? " · waiting for a worker" : ""}
                     </span>
                   </div>
-                  {r.error ? (
+                  {r.status === "cancelled" ? (
+                    <Callout tone="neutral" className="mt-2" title="Run cancelled">
+                      {canceller ? (
+                        `Cancelled by ${canceller === "system" ? "the system" : actorLabel(canceller, profiles)}.`
+                      ) : r.error ? (
+                        <span className="font-mono text-xs">{r.error}</span>
+                      ) : null}
+                    </Callout>
+                  ) : r.error ? (
                     <Callout tone="danger" className="mt-2" title="Run failed">
                       <span className="font-mono text-xs">{r.error}</span>
                     </Callout>
@@ -147,7 +156,10 @@ function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; 
                               <span className="font-mono text-fg">{t.step}</span>
                               <span className="text-subtle">{RUN_STATUS[t.status].label}</span>
                               {t.attempts > 1 ? <Badge tone="warn">{t.attempts} attempts</Badge> : null}
-                              <span className="ml-auto text-subtle">{duration(t.created_at, t.finished_at) ?? ""}</span>
+                              {/* unfinished tasks measure against the clock, which differs between the server render and hydration */}
+                              <span className="ml-auto text-subtle" suppressHydrationWarning>
+                                {duration(t.created_at, t.finished_at) ?? ""}
+                              </span>
                             </div>
                             {t.error ? <p className="mt-1 font-mono text-danger">{t.error}</p> : null}
                             <TaskPayload workspace={ctx.workspace.slug} space={ctx.space.slug} taskId={t.id} />

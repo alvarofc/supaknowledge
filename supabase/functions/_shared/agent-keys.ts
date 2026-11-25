@@ -1,8 +1,13 @@
 // Agent API keys: format, secret generation and the small bounded caches auth.ts uses for key exchange.
 // Pure helpers (no Supabase client) so they can be unit tested with `deno test`.
 
-/** skn_<agent uuid>_<secret>. The agent id has a fixed length, so `_` inside the secret is unambiguous. */
-export const AGENT_KEY_RE = /^skn_([0-9a-f-]{36})_([A-Za-z0-9_-]{32,})$/;
+/**
+ * skn_<agent uuid>_<secret>. The agent id is a strict lowercase UUID (crypto.randomUUID()), so a malformed id is
+ * refused with 401 before any DB lookup (a loose id used to reach Postgres as 22P02 -> 503, uncached), and its
+ * fixed length makes `_` inside the secret unambiguous. Secrets are 43 characters; 128 bounds the input (bcrypt
+ * only reads 72 bytes anyway).
+ */
+export const AGENT_KEY_RE = /^skn_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_([A-Za-z0-9_-]{32,128})$/;
 
 export function agentEmail(agentId: string): string {
   return `agent-${agentId}@agents.supaknowledge.internal`;
@@ -80,6 +85,36 @@ export class LruCache<V> {
 
   get size(): number {
     return this.map.size;
+  }
+}
+
+/**
+ * Fixed-window failure counter: after `max` failures for a key within `windowMs`, `blocked()` is true until the
+ * window that started with the first failure ends. Bounded (LRU) so a flood of distinct keys cannot grow memory.
+ * Per isolate: N isolates allow up to N * max failures per window in total.
+ */
+export class FailureLimiter {
+  private hits: LruCache<{ count: number; resetAt: number }>;
+  constructor(private max: number, private windowMs: number, size = 5000, private now: () => number = Date.now) {
+    this.hits = new LruCache(size, now);
+  }
+
+  /** Milliseconds until `k` may try again (0 = not blocked). */
+  retryAfterMs(k: string): number {
+    const e = this.hits.get(k);
+    if (!e || e.count < this.max) return 0;
+    return Math.max(0, e.resetAt - this.now());
+  }
+
+  fail(k: string): void {
+    const t = this.now();
+    const e = this.hits.get(k);
+    if (!e) this.hits.set(k, { count: 1, resetAt: t + this.windowMs }, this.windowMs);
+    else this.hits.set(k, { count: e.count + 1, resetAt: e.resetAt }, Math.max(1, e.resetAt - t));
+  }
+
+  reset(k: string): void {
+    this.hits.delete(k);
   }
 }
 

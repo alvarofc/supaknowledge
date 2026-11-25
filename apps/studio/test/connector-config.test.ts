@@ -52,3 +52,16 @@ test("web form validation", () => {
   assert.ok(draftToConfig("web", { ...base, urls: "https://a.example", max_pages: "5000" }).errors.max_pages);
   assert.ok(draftToConfig("web", { ...base, urls: "https://a.example", max_pages: "0" }).errors.max_pages);
 });
+
+test("URL and glob lists split on newlines only (commas are part of the value); ID lists also take commas", () => {
+  const { config, errors } = draftToConfig("web", {
+    ...configToDraft("web", {}),
+    urls: "https://example.com/search?q=a,b\nhttps://example.com/x",
+  });
+  assert.deepEqual(errors, {});
+  assert.deepEqual(config.urls, ["https://example.com/search?q=a,b", "https://example.com/x"]);
+  const gh = draftToConfig("github", { repo: "acme/handbook", paths: "docs/{a,b}/**\nREADME.md" });
+  assert.deepEqual(gh.config.paths, ["docs/{a,b}/**", "README.md"]);
+  const slack = draftToConfig("slack", { channels: "C1, C2\nC3" });
+  assert.deepEqual(slack.config.channels, ["C1", "C2", "C3"]);
+});

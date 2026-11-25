@@ -1,9 +1,16 @@
 // Minimal MCP client for the Streamable HTTP transport (JSON-RPC 2.0 over POST, responses as JSON or SSE).
 // Only what the SDK needs: initialize, tools/list, tools/call. No server-initiated requests.
-import { errorFrom, SupaknowledgeError } from "./http.ts";
+import { errorFrom, SupaknowledgeError, withRetry } from "./http.ts";
+import type { RetryPolicy } from "./http.ts";
 import type { FetchLike } from "./types.ts";
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+/**
+ * Tools the Supaknowledge MCP server marks read-only (readOnlyHint): calling them twice is harmless, so a 429 is
+ * retried. Writes (flag_knowledge, ...) are never retried automatically.
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["list_spaces", "search_knowledge", "read_concept", "list_skills", "load_skill"]);
 
 interface JsonRpcResponse {
   jsonrpc: "2.0";
@@ -25,6 +32,8 @@ export interface McpClientOptions {
   clientName?: string;
   clientVersion?: string;
   timeoutMs?: number;
+  /** 429 retries for initialize, tools/list and read-only tool calls */
+  retry?: RetryPolicy;
 }
 
 /** Parse an SSE body and return every JSON-RPC message in it. */
@@ -59,13 +68,16 @@ export class McpClient {
   }
 
   async listTools(): Promise<{ name: string; description?: string; inputSchema?: unknown }[]> {
-    const r = (await this.request("tools/list", {})) as { tools?: { name: string }[] };
+    const r = (await this.request("tools/list", {}, true)) as { tools?: { name: string }[] };
     return r?.tools ?? [];
   }
 
-  /** Call a tool and return its structured result (structuredContent, else parsed JSON text, else text). */
-  async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const r = (await this.request("tools/call", { name, arguments: args })) as McpToolResult;
+  /**
+   * Call a tool and return its structured result (structuredContent, else parsed JSON text, else text). A 429 is
+   * retried only for idempotent calls (default: the read-only tools).
+   */
+  async callTool(name: string, args: Record<string, unknown>, opts: { idempotent?: boolean } = {}): Promise<unknown> {
+    const r = (await this.request("tools/call", { name, arguments: args }, opts.idempotent ?? READ_ONLY_TOOLS.has(name))) as McpToolResult;
     const text = (r?.content ?? [])
       .filter((c) => c.type === "text" && typeof c.text === "string")
       .map((c) => c.text)
@@ -82,13 +94,13 @@ export class McpClient {
 
   private ensureInit(): Promise<void> {
     this.init ??= (async () => {
-      const r = (await this.send("initialize", {
+      const r = (await this.sendRetrying("initialize", {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: this.o.clientName ?? "supaknowledge-sdk", version: this.o.clientVersion ?? "0.1.0" },
       })) as { protocolVersion?: string };
       if (r?.protocolVersion) this.protocolVersion = r.protocolVersion;
-      await this.send("notifications/initialized", undefined, true);
+      await withRetry(() => this.send("notifications/initialized", undefined, true), this.o.retry);
     })().catch((e) => {
       this.init = null;
       throw e;
@@ -96,20 +108,25 @@ export class McpClient {
     return this.init;
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, idempotent: boolean): Promise<unknown> {
     await this.ensureInit();
+    const send = () => (idempotent ? this.sendRetrying(method, params) : this.send(method, params));
     try {
-      return await this.send(method, params);
+      return await send();
     } catch (e) {
       // session expired on the server: start over once
       if (e instanceof SupaknowledgeError && e.status === 404 && this.sessionId) {
         this.sessionId = null;
         this.init = null;
         await this.ensureInit();
-        return this.send(method, params);
+        return send();
       }
       throw e;
     }
+  }
+
+  private sendRetrying(method: string, params: unknown): Promise<unknown> {
+    return withRetry(() => this.send(method, params), this.o.retry);
   }
 
   private async send(method: string, params: unknown, notification = false): Promise<unknown> {

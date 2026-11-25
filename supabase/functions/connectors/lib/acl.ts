@@ -43,7 +43,9 @@ export function matchGroups(refs: AclHint["refs"], groups: GroupRef[]): string[]
 
 /**
  * Groups an AclHint maps to: object-level `refs` (union) combined with the most specific matching `tiers`
- * entry. Combining narrows (intersection); disjoint sets keep the most specific hierarchical mapping.
+ * entry. Combining narrows (intersection). When both map but are disjoint, the object-level mapping wins: it
+ * describes this very object (e.g. a Drive file shared directly with a Google group), while a tier is an
+ * inherited container mapping that is typically wider (e.g. the synced root folder -> all-staff).
  */
 export function matchAcl(acl: AclHint, groups: GroupRef[]): string[] {
   const direct = matchGroups(acl.refs ?? [], groups);
@@ -55,7 +57,7 @@ export function matchAcl(acl: AclHint, groups: GroupRef[]): string[] {
   if (!tier.length) return direct;
   if (!direct.length) return tier;
   const inter = direct.filter((g) => tier.includes(g));
-  return inter.length ? inter : tier;
+  return inter.length ? inter : direct;
 }
 
 export function resolveAudience(

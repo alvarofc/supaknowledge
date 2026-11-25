@@ -27,5 +27,5 @@ export const loadOnboarding = createServerFn({ method: "GET" })
     else if (ws && adminOf.has(ws.id)) initial = { step: "space", workspace: ws };
     else initial = { step: "workspace" };
 
-    return { initial, userId: user.id, hasAny: nav.workspaces.length > 0, invitations };
+    return { initial, email: user.email, hasAny: nav.workspaces.length > 0, invitations };
   });

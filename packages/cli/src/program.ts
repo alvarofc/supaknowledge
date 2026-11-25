@@ -94,7 +94,8 @@ export async function main(argv: string[], io: Io): Promise<number> {
     if (wantsJson && e instanceof CliError && e.reported) {
       // result JSON (with the failure details) was already printed
     } else if (wantsJson) {
-      io.stdout(JSON.stringify({ error: message, ...(err.hint ? { hint: err.hint } : {}), ...(err.status ? { status: err.status } : {}) }, null, 2) + "\n");
+      const data = e instanceof CliError ? e.data : undefined;
+      io.stdout(JSON.stringify({ error: message, ...(err.hint ? { hint: err.hint } : {}), ...(err.status ? { status: err.status } : {}), ...data }, null, 2) + "\n");
     } else {
       io.stderr(`error: ${message}\n`);
       if (err.hint) io.stderr(`hint: ${err.hint}\n`);

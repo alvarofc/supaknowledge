@@ -234,7 +234,9 @@ class TraceRecorder:
                     # dropped) and back off; drop them on 4xx so a bad payload cannot wedge the recorder
                     if _retryable(e):
                         self._failures += 1
-                        delay = min(self._retry_max, self._retry_base * (2 ** min(self._failures - 1, 30)))
+                        # a 429 means nothing was written; wait at least as long as its Retry-After asks
+                        asked = (e.retry_after or 0.0) if isinstance(e, SupaknowledgeError) else 0.0
+                        delay = min(self._retry_max, max(asked, self._retry_base * (2 ** min(self._failures - 1, 30))))
                         self._retry_at = time.monotonic() + delay
                         if not self._ended:
                             self._buffer = events + self._buffer

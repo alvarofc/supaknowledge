@@ -12,6 +12,7 @@ import { useMutation } from "@/lib/use-mutation";
 import { useConfirm } from "@/components/ui/confirm";
 import { Timestamp } from "@/components/kf/timestamp";
 import { invitationErrorMessage, invitationState, normalizeEmail } from "@/lib/invitations";
+import { addableSpaceRoles, canRevokeInvitation, workspaceMemberLock } from "@/lib/members";
 
 export type Person = { user_id: string; name: string; kind: "human" | "agent" };
 
@@ -61,6 +62,9 @@ export function SpaceMembers({
   const supabase = createClient();
   const available = candidates.filter((c) => !members.some((m) => m.user_id === c.user_id));
   const idValid = UUID_RE.test(addId.trim());
+  const addKind = candidates.find((c) => c.user_id === addId.trim())?.kind;
+  const addRoles = addableSpaceRoles(addKind);
+  const effectiveAddRole = addRoles.includes(addRole) ? addRole : "reviewer";
 
   return (
     <Card>
@@ -142,7 +146,7 @@ export function SpaceMembers({
             e.preventDefault();
             const id = addId.trim();
             if (!idValid) return;
-            const res = await run(async () => supabase.from("space_members").insert({ space_id: spaceId, user_id: id, role: addRole }), {
+            const res = await run(async () => supabase.from("space_members").insert({ space_id: spaceId, user_id: id, role: effectiveAddRole }), {
               success: "Member added",
             });
             if (res.ok) setAddId("");
@@ -164,8 +168,9 @@ export function SpaceMembers({
             </div>
           </Field>
           <Field label="Role" htmlFor="sm-add-role">
-            <Select id="sm-add-role" value={addRole} onChange={(e) => setAddRole(e.target.value as SpaceRole)} className="w-32" title={ROLE_HELP[addRole]}>
-              {SPACE_ROLES.map((r) => (
+            <Select id="sm-add-role" value={effectiveAddRole} onChange={(e) => setAddRole(e.target.value as SpaceRole)} className="w-32" title={ROLE_HELP[effectiveAddRole]}>
+              {/* agents can never be space admins (enforced by the database) */}
+              {addRoles.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
@@ -223,17 +228,19 @@ export function WorkspaceMembers({
       />
       <ul className="divide-y divide-line">
         {members.map((m) => {
-          const lastOwner = m.role === "owner" && owners <= 1;
-          const locked = !canManage || (m.role === "owner" && !isOwner) || lastOwner;
+          const lock = workspaceMemberLock(m, { canManage, isOwner, owners });
           return (
             <li key={m.user_id} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
               <div className="min-w-0 flex-1">
                 <PersonName p={m} me={me} />
               </div>
-              {locked ? (
-                <Badge tone={m.role === "owner" ? "violet" : m.role === "admin" ? "accent" : "neutral"} title={lastOwner ? "The last owner can't be changed or removed" : WS_ROLE_HELP[m.role]}>
-                  {m.role}
-                </Badge>
+              {lock !== null ? (
+                <>
+                  {m.kind === "agent" && canManage ? <span className="text-xs text-subtle">Managed on the Agents page</span> : null}
+                  <Badge tone={m.role === "owner" ? "violet" : m.role === "admin" ? "accent" : "neutral"} title={lock || WS_ROLE_HELP[m.role]}>
+                    {m.role}
+                  </Badge>
+                </>
               ) : (
                 <>
                   <label className="sr-only" htmlFor={`wm-role-${m.user_id}`}>
@@ -255,8 +262,7 @@ export function WorkspaceMembers({
                       )
                     }
                   >
-                    {/* agents can never be workspace admins or owners (enforced by the database) */}
-                    {roles.filter((r) => m.kind !== "agent" || r === "member" || r === m.role).map((r) => (
+                    {roles.map((r) => (
                       <option key={r} value={r}>
                         {r}
                       </option>
@@ -318,20 +324,22 @@ export function WorkspaceMembers({
                       </div>
                       {state === "expired" ? <Badge tone="neutral">expired</Badge> : null}
                       <Badge tone={i.role === "owner" ? "violet" : i.role === "admin" ? "accent" : "neutral"}>{i.role}</Badge>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Revoke the invitation for ${i.email}`}
-                        disabled={pending}
-                        onClick={() =>
-                          run(async () => await supabase.from("workspace_invitations").delete().eq("id", i.id).select("id"), {
-                            success: `Invitation for ${i.email} revoked`,
-                            expectRows: "Only workspace admins can revoke invitations",
-                          })
-                        }
-                      >
-                        <Trash className="size-3.5" /> Revoke
-                      </Button>
+                      {canRevokeInvitation(i, { canManage, isOwner }) ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Revoke the invitation for ${i.email}`}
+                          disabled={pending}
+                          onClick={() =>
+                            run(async () => await supabase.from("workspace_invitations").delete().eq("id", i.id).select("id"), {
+                              success: `Invitation for ${i.email} revoked`,
+                              expectRows: "Only workspace admins can revoke invitations",
+                            })
+                          }
+                        >
+                          <Trash className="size-3.5" /> Revoke
+                        </Button>
+                      ) : null}
                     </li>
                   );
                 })}

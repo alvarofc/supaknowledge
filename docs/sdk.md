@@ -76,6 +76,7 @@ Options (`new Supaknowledge({...})`):
 | `transport` | `"auto"` (default), `"mcp"` or `"rest"` (see below). |
 | `fetch`, `headers`, `timeoutMs` | Custom fetch (tests, proxies), extra headers, per-request timeout (default 30 s). |
 | `onError` | Receives background errors (trace flushes). Defaults to `console.warn`. `kf.reportError(err)` sends an error there (used by `@supaknowledge/mastra`). |
+| `retry` | 429 retries for idempotent requests: `{ retries, maxWaitMs }`, default and maximum `{ retries: 2, maxWaitMs: 30000 }`; `false` turns them off. See [Rate limits](#rate-limits-429). |
 
 **Transports.** Knowledge calls go to the `mcp` Edge Function by default: it embeds the query with gte-small
 and runs hybrid (vector + full-text) search, and it logs usage. With a user `accessToken` **and** a
@@ -85,11 +86,26 @@ function is not deployed (404/501). Agent keys always use MCP (they are not JWTs
 
 `read` and `loadSkill` over MCP return the parsed fields plus `markdown`: the server's model-ready
 rendering, which is what the tool helpers hand back to the model. Pass `{ traceId }` to attribute the read to a
-trace (its concept usage then shows on the trace); the tool helpers do this for you. Over the REST transport,
+trace (its concept usage then shows on the trace); the tool helpers do this for you. `loadSkill` takes a skill name
+(`"revenue-report"`) or its full path (`"skills/revenue-report"`) on both transports. Over the REST transport,
 `loadSkill` only returns `stable` skills and both calls wait for the usage log to be written (so it is not lost when
 a serverless function freezes right after the call).
 
-Errors are `SupaknowledgeError` with `status` (HTTP) and `code` (Postgres / JSON-RPC / `"tool_error"`).
+Errors are `SupaknowledgeError` with `status` (HTTP), `code` (Postgres / JSON-RPC / `"tool_error"`) and, when the
+server sent `Retry-After`, `retryAfterMs`.
+
+#### Rate limits (429)
+
+The server answers `429 Too Many Requests` with a `Retry-After` header when an agent key failed to sign in too
+often in a short window (the key exchange in the Edge Functions locks that agent out for a while), and on
+`POST /functions/v1/curator/run` (per-space cooldown `KF_CURATOR_RUN_COOLDOWN_S`, plus a per-caller limit). The SDKs
+retry **idempotent** requests on 429, honouring `Retry-After` (1 s, then 2 s when it is missing): at most 2
+retries, and a `Retry-After` longer than 30 s is not waited for. Idempotent means reads: `search`, `read`,
+`listSkills`, `loadSkill`, the MCP handshake, read-only MCP tools (`callTool` decides by the tool's name; pass
+`{ idempotent }` to override) and REST reads. Writes are never retried automatically: `flag` and trace creates /
+appends (posting a trace again with the same `externalId` re-uses the trace but appends its events again) surface
+the 429 as a `SupaknowledgeError` (`status` 429, `retryAfterMs`). The trace recorder keeps a batch that failed with
+429 and sends it again on its next flush, no sooner than `Retry-After` (a 429 means nothing was written).
 
 ### Traces
 
@@ -118,7 +134,7 @@ await trace.end({ outcome: "corrected" });   // unknown | success | failure | co
 | `flushIntervalMs` | 2000 | Flush this long after the first buffered event (0 = only on `maxBatch`, `flush()`, `end()`). The timer is `unref`ed in Node. |
 | `maxBatch` | 50 | Flush as soon as this many events are buffered. |
 | `maxBuffer` | 1000 | Cap while the server is unreachable (oldest dropped, also after a failed batch is put back). |
-| `retryBaseMs`, `retryMaxMs` | 1000, 60000 | Backoff after a failed flush. |
+| `retryBaseMs`, `retryMaxMs` | 1000, 60000 | Backoff after a failed flush (at least the server's `Retry-After` on a 429). |
 | `externalId` | | Your id for the run. The server is idempotent on it, and MCP tools accept it as `trace_id`. |
 
 #### OpenTelemetry (OTLP) export
@@ -391,11 +407,14 @@ kf.flag("incorrect", "revenue_usd does not exist; found revenue_usd_net",
 ```
 
 Constructor: `Supaknowledge(url, space, *, api_key=None, access_token=None, publishable_key=None, transport="auto",
-timeout=30.0, http_client=None, headers=None, on_error=None)`. `on_error` defaults to a warning on the
+timeout=30.0, http_client=None, headers=None, on_error=None, max_retries=2, max_retry_wait=30.0)`. `on_error` defaults to a warning on the
 `supaknowledge` logger (like `console.warn` in TypeScript). `access_token` may be a callable. Pass your own
 `httpx.Client` to share connection pools or to test with `httpx.MockTransport`. The client is a context manager
 (`with Supaknowledge(...) as kf:`). Results are plain dicts typed with `TypedDict`s (`SearchResult`, `Concept`, `Skill`).
-The transports behave as in TypeScript.
+The transports behave as in TypeScript, and so do [429 retries](#rate-limits-429): `max_retries` (0 turns them
+off) and `max_retry_wait` (seconds) can only lower the bounds of 2 retries / 30 s; a write's 429 raises
+`SupaknowledgeError` with `status` 429 and `retry_after` (seconds). `call_tool(..., idempotent=True)` overrides the
+read-only tool list.
 
 ### Traces
 

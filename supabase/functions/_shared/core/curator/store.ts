@@ -66,6 +66,31 @@ export interface RejectedProposal {
   paths: string[];
   review_note: string | null;
   reviewed_at: string | null;
+  /**
+   * Restricted audiences of everything the rejected proposal touched (its citations, consulted evidence and
+   * target concepts, live and as recorded). Its title and review note may repeat any of it, so the curator
+   * shows a rejection only when every audience is in its research scope, and taints the new proposal with them.
+   */
+  audiences: Audience[];
+}
+
+/**
+ * Narrow a search to material that every reader of `visibleTo` may read: `[]` = unrestricted material only,
+ * `[g1, g2]` = unrestricted material and material whose audience contains g1 and g2 (readers of g1 or g2 can
+ * read it). Omitted / null = no audience filter (the service role sees everything).
+ */
+export interface SearchOptions {
+  visibleTo?: Audience | null;
+  /** keyword (full-text) search only: no embedding call (triage runs many searches in one invocation) */
+  keywordOnly?: boolean;
+  /** drop vector-only matches below this cosine similarity (keyword matches always count) */
+  minSimilarity?: number;
+}
+
+/** Keyset position in the changed-documents list (ordered by changed_at, id). */
+export interface DocCursor {
+  changed_at: string;
+  id: string;
 }
 
 export const MAX_TASK_ATTEMPTS = 3;
@@ -122,7 +147,8 @@ export interface CuratorStore {
   listUncuratedTraces(spaceId: string, limit: number): Promise<Trace[]>;
   getTraces(ids: string[]): Promise<Trace[]>;
   markTracesCurated(ids: string[]): Promise<void>;
-  listChangedDocuments(spaceId: string, since: string | null, until: string | null, limit: number): Promise<SourceDocument[]>;
+  /** live documents changed in (since, until], ordered by (changed_at, id), after `after` when given */
+  listChangedDocuments(spaceId: string, since: string | null, until: string | null, limit: number, after?: DocCursor | null): Promise<SourceDocument[]>;
   getDocuments(ids: string[]): Promise<SourceDocument[]>;
   /**
    * Insert flags mined from traces. Idempotent: a flag whose `evidence.dedupe_key` already exists for the same
@@ -134,8 +160,8 @@ export interface CuratorStore {
   // knowledge
   getConcepts(spaceId: string, paths: string[]): Promise<Concept[]>;
   listStaleConcepts(spaceId: string, limit: number): Promise<Concept[]>;
-  searchConcepts(spaceId: string, query: string, limit: number): Promise<ConceptHit[]>;
-  searchSources(spaceId: string, query: string, limit: number): Promise<SourceHit[]>;
+  searchConcepts(spaceId: string, query: string, limit: number, opts?: SearchOptions): Promise<ConceptHit[]>;
+  searchSources(spaceId: string, query: string, limit: number, opts?: SearchOptions): Promise<SourceHit[]>;
   /**
    * Concepts citing each document (frontmatter `sources[]` entries with `x-supaknowledge-document: <id>`,
    * `resource: supaknowledge://documents/<id>`, or the document's URL). One batched lookup: doc id -> paths.

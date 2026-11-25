@@ -6,12 +6,65 @@ export class SupaknowledgeError extends Error {
   /** PostgREST / Postgres error code or JSON-RPC error code */
   code?: string | number;
   details?: unknown;
-  constructor(message: string, init: { status?: number; code?: string | number; details?: unknown } = {}) {
+  /** how long the server asked us to wait before retrying (Retry-After), in ms, when it said */
+  retryAfterMs?: number;
+  constructor(message: string, init: { status?: number; code?: string | number; details?: unknown; retryAfterMs?: number } = {}) {
     super(message);
     this.name = "SupaknowledgeError";
     this.status = init.status;
     this.code = init.code;
     this.details = init.details;
+    if (init.retryAfterMs !== undefined) this.retryAfterMs = init.retryAfterMs;
+  }
+}
+
+/** Upper bounds of the 429 retry policy: at most 2 retries, never waiting longer than 30 s for one. */
+export const MAX_RETRIES = 2;
+export const MAX_RETRY_WAIT_MS = 30_000;
+
+/**
+ * Retries of idempotent requests answered with 429 Too Many Requests. `retries` 0 turns them off. A Retry-After
+ * longer than `maxWaitMs` is not waited for: the 429 is thrown right away (with `retryAfterMs` set).
+ */
+export interface RetryPolicy {
+  retries: number;
+  maxWaitMs: number;
+  /** test hook */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Clamp user options to the bounds above (default: 2 retries, 30 s). `false` disables retries. */
+export function retryPolicy(opts?: { retries?: number; maxWaitMs?: number } | false): RetryPolicy {
+  if (opts === false) return { retries: 0, maxWaitMs: 0 };
+  const clamp = (v: number | undefined, max: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(0, Math.floor(v))) : max);
+  return { retries: clamp(opts?.retries, MAX_RETRIES), maxWaitMs: clamp(opts?.maxWaitMs, MAX_RETRY_WAIT_MS) };
+}
+
+/** Parse Retry-After (delay in seconds or an HTTP date) into milliseconds; undefined when absent or invalid. */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const v = value.trim();
+  if (/^\d+(\.\d+)?$/.test(v)) return Math.round(Number(v) * 1000);
+  const at = Date.parse(v);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - now);
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Run `attempt` and retry it while it fails with HTTP 429, honouring Retry-After (else 1 s, 2 s backoff).
+ * Only for idempotent requests: the caller decides.
+ */
+export async function withRetry<T>(attempt: () => Promise<T>, policy: RetryPolicy | undefined): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!policy || i >= policy.retries || !(e instanceof SupaknowledgeError) || e.status !== 429) throw e;
+      const wait = e.retryAfterMs ?? 1000 * 2 ** i;
+      if (wait > policy.maxWaitMs) throw e;
+      await (policy.sleep ?? defaultSleep)(wait);
+    }
   }
 }
 
@@ -31,6 +84,8 @@ export interface RequestOptions {
   /** raw body (already serialized); wins over `body` */
   rawBody?: BodyInit;
   timeoutMs?: number;
+  /** retry on 429 (idempotent requests only; `rawBody` must be re-sendable, e.g. a string) */
+  retry?: RetryPolicy;
 }
 
 function withTimeout(ms: number | undefined): { signal?: AbortSignal; done: () => void } {
@@ -56,11 +111,16 @@ async function errorFrom(res: Response): Promise<SupaknowledgeError> {
     status: res.status,
     code: (parsed?.code as string | undefined) ?? undefined,
     details: parsed ?? text,
+    retryAfterMs: parseRetryAfter(res.headers.get("retry-after")),
   });
 }
 
 /** fetch + JSON in/out + uniform errors. Returns `undefined` for empty bodies. */
 export async function requestJson<T>(fetchFn: FetchLike, url: string, opts: RequestOptions = {}): Promise<T> {
+  return withRetry(() => requestOnce<T>(fetchFn, url, opts), opts.retry);
+}
+
+async function requestOnce<T>(fetchFn: FetchLike, url: string, opts: RequestOptions): Promise<T> {
   const t = withTimeout(opts.timeoutMs);
   const headers: Record<string, string> = { Accept: "application/json", ...opts.headers };
   let body: BodyInit | undefined = opts.rawBody;

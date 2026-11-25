@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
 import { runSync } from "../lib/engine.ts";
+import { BlockedUrlError, guardedFetch } from "../lib/net-guard.ts";
 import { ConfigError } from "../lib/types.ts";
 import { parseRobots, parseSitemap, robotsAllows, web } from "../lib/web.ts";
 import { collect, fakeFetch, fixtureText, lastCursor, makeCtx, MemoryStore, upserts } from "./helpers.ts";
@@ -187,4 +188,109 @@ Deno.test("web: oversized responses are skipped, internal URLs are config errors
     assertThrows(() => web.parseConfig({ urls: [u] }), ConfigError, undefined, u);
     assertThrows(() => web.parseConfig({ sitemap: u }), ConfigError, undefined, u);
   }
+});
+
+// a resolver where *.intranet.acme.example points at private space (e.g. split-horizon DNS)
+const splitDns = async (h: string) => (h.endsWith("intranet.acme.example") ? ["10.0.0.5"] : ["93.184.216.34"]);
+
+Deno.test("web: a configured URL the outbound guard refuses fails the run (config error), never a silent skip", async () => {
+  const inner = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/ok`, html("<p>fine</p>")],
+  ]);
+  const f = guardedFetch({ fetch: inner, resolve: splitDns, allowPrivate: false });
+  const ctx = makeCtx(web, { urls: [`${BASE}/ok`, "https://wiki.intranet.acme.example/secret"] }, { fetch: f, token: null, full: true });
+  const e = await assertRejects(() => collect(web, ctx), BlockedUrlError, "config.urls");
+  assert(e instanceof ConfigError, "the engine treats it as permanent: the source goes to 'error'");
+  assertStringIncludes(e.message, "10.0.0.5");
+  assert(!inner.calls.some((c) => c.url.includes("intranet")), "the private host is never contacted");
+
+  // through the engine: the run fails instead of finishing 'active' with nothing synced
+  const store = new MemoryStore();
+  const run = runSync({
+    source: { id: "s", space_id: "sp", connector: "web", config: { urls: ["https://wiki.intranet.acme.example/secret"] }, audience: [], cursor: {}, status: "active" },
+    connector: web,
+    store,
+    groups: [],
+    token: null,
+    full: true,
+    fetch: f,
+    log: () => {},
+  });
+  await assertRejects(() => run, ConfigError, "config.urls");
+
+  // a configured sitemap on a refused host is a config error too
+  await assertRejects(
+    () => collect(web, makeCtx(web, { sitemap: "https://maps.intranet.acme.example/sitemap.xml" }, { fetch: f, token: null, full: true })),
+    BlockedUrlError,
+    "config.sitemap",
+  );
+});
+
+Deno.test("web: discovered URLs the guard refuses are dropped, the run carries on", async () => {
+  const inner = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/sitemap.xml`, () => new Response(`<urlset><url><loc>${BASE}/a</loc></url><url><loc>https://wiki.intranet.acme.example/x</loc></url></urlset>`)],
+    [`GET ${BASE}/a`, html("<p>A</p>")],
+  ]);
+  const f = guardedFetch({ fetch: inner, resolve: splitDns, allowPrivate: false });
+  const changes = await collect(web, makeCtx(web, { sitemap: `${BASE}/sitemap.xml`, same_origin_only: false }, { fetch: f, token: null, full: true }));
+  assertEquals(upserts(changes).map((d) => d.externalId), [`${BASE}/a`]);
+  assert(changes.some((c) => c.type === "delete" && c.externalId === "https://wiki.intranet.acme.example/x"));
+  assert(!inner.calls.some((c) => c.url.includes("intranet")));
+});
+
+Deno.test("web: redirect hops must match include/exclude, not just the origin", async () => {
+  const f = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/docs/a`, () => new Response(null, { status: 302, headers: { location: "/admin/export" } })],
+    [`GET ${BASE}/docs/b`, () => new Response(null, { status: 301, headers: { location: "/blog/post" } })],
+    [`GET ${BASE}/docs/c/`, html("<p>C</p>")],
+    [`GET ${BASE}/docs/c`, () => new Response(null, { status: 301, headers: { location: "/docs/c/" } })],
+    [`GET ${BASE}/admin/`, () => {
+      throw new Error("excluded page must not be fetched");
+    }],
+    [`GET ${BASE}/blog/`, () => {
+      throw new Error("page outside include must not be fetched");
+    }],
+  ]);
+  const logs: string[] = [];
+  const ctx = makeCtx(web, { urls: [`${BASE}/docs/a`, `${BASE}/docs/b`, `${BASE}/docs/c`], include: ["example/docs/"], exclude: ["/admin/"] }, { fetch: f, token: null, full: true });
+  ctx.log = (m) => logs.push(m);
+  const changes = await collect(web, ctx);
+  assertEquals(upserts(changes).map((d) => d.externalId), [`${BASE}/docs/c`]);
+  assert(changes.some((c) => c.type === "delete" && c.externalId === `${BASE}/docs/a`));
+  assert(changes.some((c) => c.type === "delete" && c.externalId === `${BASE}/docs/b`));
+  assert(logs.some((l) => l.includes("excluded by config.include/exclude")));
+});
+
+Deno.test("web: sitemaps follow redirects by hand, only within origin + exclude", async () => {
+  const f = fakeFetch([
+    [`GET ${BASE}/robots.txt`, () => new Response("", { status: 404 })],
+    [`GET ${BASE}/sitemap.xml`, () => new Response(null, { status: 301, headers: { location: "https://other.example/sitemap.xml" } })],
+    [`GET ${BASE}/moved-map.xml`, () => new Response(null, { status: 302, headers: { location: "/maps/real.xml" } })],
+    [`GET ${BASE}/maps/real.xml`, () => new Response(`<urlset><url><loc>${BASE}/p</loc></url></urlset>`)],
+    [`GET ${BASE}/excl-map.xml`, () => new Response(null, { status: 302, headers: { location: "/private/map.xml" } })],
+    [`GET ${BASE}/p`, html("<p>P</p>")],
+    ["GET https://other.example/", () => {
+      throw new Error("cross-origin sitemap redirect must not be followed");
+    }],
+    [`GET ${BASE}/private/`, () => {
+      throw new Error("excluded sitemap must not be fetched");
+    }],
+  ]);
+  const logs: string[] = [];
+  const ctx = makeCtx(web, { sitemap: `${BASE}/sitemap.xml` }, { fetch: f, token: null, full: true });
+  ctx.log = (m) => logs.push(m);
+  const changes = await collect(web, ctx);
+  assertEquals(upserts(changes).length, 0);
+  assert(!changes.some((c) => c.type === "snapshot"), "an unreadable sitemap never reconciles (no mass delete)");
+  assert(logs.some((l) => l.includes("outside the configured origins")));
+  // same-origin redirect is followed; a redirect into an excluded path is not
+  const ctx2 = makeCtx(web, { sitemap: `${BASE}/moved-map.xml` }, { fetch: f, token: null, full: true });
+  assertEquals(upserts(await collect(web, ctx2)).map((d) => d.externalId), [`${BASE}/p`]);
+  const ctx3 = makeCtx(web, { sitemap: `${BASE}/excl-map.xml`, exclude: ["/private/"] }, { fetch: f, token: null, full: true });
+  assertEquals(upserts(await collect(web, ctx3)).length, 0);
+  // every sitemap request is sent with redirect: manual (the guard never follows them on its own)
+  assert(f.calls.every((c) => !c.url.startsWith("https://other.example")));
 });

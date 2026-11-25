@@ -45,3 +45,17 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/**
+ * Message for a failed `bundle/sync-files` call. The function needs a space reviewer or admin and never accepts
+ * OAuth-client tokens, so a 403 means "not allowed", not "try again".
+ */
+export function syncFilesErrorMessage(e: unknown): string {
+  const status = typeof e === "object" && e !== null && typeof (e as { status?: unknown }).status === "number" ? (e as { status: number }).status : null;
+  const message = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  if (status === 403) {
+    return "only a reviewer or admin of this space, signed in to Studio or the CLI, can sync skill files. Ask one of them to use “Retry file sync”";
+  }
+  if (status === 401) return "your session expired. Sign in again and use “Retry file sync”";
+  return message || "something went wrong";
+}

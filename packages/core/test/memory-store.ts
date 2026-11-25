@@ -4,7 +4,14 @@ import { isEscalation } from "../src/access.ts";
 import { parseSettings, type SpaceSettings } from "../src/settings.ts";
 import type { Concept, Flag, ProposalDraft, SourceDocument, Trace } from "../src/types.ts";
 import { syntheticFlagAudience } from "../src/curator/supabase-store.ts";
-import { MAX_TASK_ATTEMPTS, type ConceptHit, type CuratorRun, type CuratorStore, type CuratorTask, type NewSyntheticFlag, type PersistedProposal, type RejectedProposal, type SourceHit } from "../src/curator/store.ts";
+import { MAX_TASK_ATTEMPTS, type ConceptHit, type CuratorRun, type CuratorStore, type CuratorTask, type DocCursor, type NewSyntheticFlag, type PersistedProposal, type RejectedProposal, type SearchOptions, type SourceHit } from "../src/curator/store.ts";
+import type { Audience } from "../src/types.ts";
+
+/** mirrors private.visible_to (the SQL search filter) */
+export function visibleTo(audience: Audience, to: Audience | null | undefined): boolean {
+  if (to === null || to === undefined || audience.length === 0) return true;
+  return to.length > 0 && to.every((g) => audience.includes(g));
+}
 
 export interface StoredProposal extends ProposalDraft {
   id: string;
@@ -27,6 +34,11 @@ export class MemoryStore implements CuratorStore {
   concepts: Concept[] = [];
   proposals: StoredProposal[] = [];
   sourceHits: SourceHit[] = [];
+  rejections: RejectedProposal[] = [];
+  /** flag id -> resolution text written by dismissFlags */
+  resolutions = new Map<string, string>();
+  /** every search the engine ran (query + options) */
+  searches: { kind: "concepts" | "sources"; query: string; opts: SearchOptions }[] = [];
   /** called before each method runs; tests use it to inject failures */
   failOn?: (method: string, args: unknown[]) => void;
 
@@ -48,6 +60,8 @@ export class MemoryStore implements CuratorStore {
   async finishTask(taskId: string, output: Record<string, unknown>) { const t = this.tasks.get(taskId)!; t.status = "succeeded"; t.output = output; }
   async failTask(taskId: string, error: string, opts: { permanent?: boolean } = {}) {
     const t = this.tasks.get(taskId)! as CuratorTask & { status: string; error?: string };
+    // like SupabaseCuratorStore: a cancelled/reaped task is never put back in the queue
+    if (t.status !== "queued" && t.status !== "running") return { final: true };
     t.attempts++;
     t.error = error;
     const final = opts.permanent === true || t.attempts >= MAX_TASK_ATTEMPTS;
@@ -86,7 +100,10 @@ export class MemoryStore implements CuratorStore {
   async listUncuratedTraces(_s: string, limit: number) { return this.traces.filter((t) => !t.curated).slice(0, limit); }
   async getTraces(ids: string[]) { return this.traces.filter((t) => ids.includes(t.id)); }
   async markTracesCurated(ids: string[]) { for (const t of this.traces) if (ids.includes(t.id)) t.curated = true; }
-  async listChangedDocuments(_s: string, _since: string | null, _until: string | null, limit: number) { return this.docs.slice(0, limit); }
+  async listChangedDocuments(_s: string, _since: string | null, _until: string | null, limit: number, after?: DocCursor | null) {
+    const sorted = [...this.docs].sort((a, b) => a.changed_at.localeCompare(b.changed_at) || a.id.localeCompare(b.id));
+    return sorted.filter((d) => !after || d.changed_at > after.changed_at || (d.changed_at === after.changed_at && d.id > after.id)).slice(0, limit);
+  }
   async getDocuments(ids: string[]) { return this.docs.filter((d) => ids.includes(d.id)); }
   async createSyntheticFlags(flags: NewSyntheticFlag[]) {
     this.failOn?.("createSyntheticFlags", [flags]);
@@ -111,18 +128,21 @@ export class MemoryStore implements CuratorStore {
   }
   async getConcepts(_s: string, paths: string[]) { return this.concepts.filter((c) => paths.includes(c.path)); }
   async listStaleConcepts() { return this.concepts.filter((c) => c.stale_after && Date.parse(c.stale_after) < Date.now()); }
-  async searchConcepts(_s: string, query: string, limit: number): Promise<ConceptHit[]> {
+  async searchConcepts(_s: string, query: string, limit: number, opts: SearchOptions = {}): Promise<ConceptHit[]> {
+    this.searches.push({ kind: "concepts", query, opts });
     const words = query.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
     return this.concepts
+      .filter((c) => visibleTo(c.audience, opts.visibleTo))
       .map((c) => ({ c, score: words.filter((w) => `${c.path} ${c.title} ${c.body}`.toLowerCase().includes(w)).length }))
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map(({ c, score }) => ({ id: c.id, path: c.path, kind: c.kind, type: c.type, title: c.title, description: c.description, snippet: c.body.slice(0, 200), audience: c.audience, revision: c.revision, status: c.status, score }));
   }
-  async searchSources(_s: string, query: string, limit: number): Promise<SourceHit[]> {
+  async searchSources(_s: string, query: string, limit: number, opts: SearchOptions = {}): Promise<SourceHit[]> {
+    this.searches.push({ kind: "sources", query, opts });
     const words = query.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-    return this.sourceHits.filter((h) => words.some((w) => `${h.title} ${h.snippet}`.toLowerCase().includes(w))).slice(0, limit);
+    return this.sourceHits.filter((h) => visibleTo(h.audience, opts.visibleTo) && words.some((w) => `${h.title} ${h.snippet}`.toLowerCase().includes(w))).slice(0, limit);
   }
   async conceptsCitingDocuments(_s: string, docs: { id: string; url: string | null }[]) {
     const out = new Map<string, string[]>();
@@ -135,7 +155,9 @@ export class MemoryStore implements CuratorStore {
     }
     return out;
   }
-  async recentRejections(): Promise<RejectedProposal[]> { return []; }
+  async recentRejections(_s: string, paths: string[], limit: number): Promise<RejectedProposal[]> {
+    return this.rejections.filter((r) => r.paths.some((p) => paths.includes(p))).slice(0, limit);
+  }
   async createProposal(_s: string, _r: string, author: string, draft: ProposalDraft): Promise<PersistedProposal> {
     this.failOn?.("createProposal", [draft]);
     if (!draft.ops.length) throw new Error("22023: a proposal needs at least one op");
@@ -173,5 +195,12 @@ export class MemoryStore implements CuratorStore {
     return { status: "applied" };
   }
   async setFlagsInProposal(ids: string[]) { for (const f of this.flags) if (ids.includes(f.id) && f.status === "open") f.status = "in_proposal"; }
-  async dismissFlags(ids: string[], _reason?: string) { for (const f of this.flags) if (ids.includes(f.id) && (f.status === "open" || f.status === "in_proposal")) f.status = "dismissed"; }
+  async dismissFlags(ids: string[], reason = "") {
+    for (const f of this.flags) {
+      if (ids.includes(f.id) && (f.status === "open" || f.status === "in_proposal")) {
+        f.status = "dismissed";
+        this.resolutions.set(f.id, reason);
+      }
+    }
+  }
 }

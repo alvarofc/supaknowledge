@@ -1,6 +1,7 @@
 import { CircleStop } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm";
+import { useToast } from "@/components/ui/toast";
 import { createClient } from "@/lib/supabase/client";
 import { useMutation } from "@/lib/use-mutation";
 
@@ -11,6 +12,7 @@ import { useMutation } from "@/lib/use-mutation";
 export function CancelRunButton({ runId }: { runId: string }) {
   const { run, pending } = useMutation();
   const [confirm, dialog] = useConfirm();
+  const toast = useToast();
   return (
     <>
       <Button
@@ -24,7 +26,11 @@ export function CancelRunButton({ runId }: { runId: string }) {
             confirmLabel: "Cancel run",
           });
           if (!ok) return;
-          await run(async () => await createClient().rpc("cancel_curator_run", { p_run: runId }), { success: "Run cancelled" });
+          // cancel_curator_run returns the run unchanged when it already finished: only toast what actually happened
+          const res = await run(async () => await createClient().rpc("cancel_curator_run", { p_run: runId }));
+          if (!res.ok) return;
+          if (res.data?.status === "cancelled") toast.success("Run cancelled");
+          else toast.error(res.data ? `The run already ${res.data.status === "succeeded" ? "finished" : res.data.status}; nothing to cancel` : "Run not found");
         }}
       >
         {!pending ? <CircleStop className="size-3.5" /> : null} Cancel run

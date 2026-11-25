@@ -39,6 +39,14 @@ export interface SupaknowledgeOptions {
   onError?: (error: unknown) => void;
   /** Per-request timeout in ms. Default 30000. */
   timeoutMs?: number;
+  /**
+   * Retries when the server answers 429 Too Many Requests (e.g. after repeated failed agent-key sign-ins),
+   * honouring Retry-After. Only idempotent requests are retried: reads (search, read, skills, read-only MCP
+   * tools, REST reads). Writes (flags, traces) are not; their 429 surfaces as a SupaknowledgeError with
+   * `status` 429 and `retryAfterMs`. Default and maximum: 2 retries, waiting at most 30 s for one (a longer
+   * Retry-After fails right away). `false` turns retries off.
+   */
+  retry?: { retries?: number; maxWaitMs?: number } | false;
 }
 
 export interface SearchOptions {

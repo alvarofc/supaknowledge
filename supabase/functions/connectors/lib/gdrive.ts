@@ -70,7 +70,8 @@ export function driveKind(f: Pick<DriveFile, "mimeType" | "name">, includePdfs =
 /**
  * ACL hint for a Drive file. Folder mappings are hierarchical: the most specific mapped folder wins (a file in
  * FINANCE_SUB mapped to `finance` does NOT also get the `all-staff` group mapped on the root), the shared drive
- * only counts when no folder matched, and groups the file is shared with directly narrow that result.
+ * only counts when no folder matched, and groups the file is shared with directly narrow that result (when
+ * they do not overlap the folder mapping at all, the direct groups win: never the wider folder tier).
  */
 export function driveAcl(f: DriveFile, ancestors: string[]): AclHint {
   const perms = f.permissions;

@@ -258,9 +258,14 @@
       // addresses. If disabled, only the new email is required to confirm.
       "double_confirm_changes": true,
       // If enabled, users need to confirm their email address before signing in.
+      // LOCAL DEVELOPMENT ONLY: with confirmations off, GoTrue marks every new e-mail as confirmed, so
+      // "verified e-mail" (workspace invitations are accepted only by the account whose e-mail is verified)
+      // means nothing. Keep confirmations ON on any shared or hosted project (docs/deploy.md).
       "enable_confirmations": false,
       // If enabled, users will need to reauthenticate or have logged in recently to change their password.
-      "secure_password_change": false,
+      // (Agents cannot change their password at all: the database refuses it outside key rotation, see
+      // private.guard_agent_password in supabase/migrations/20261125000021_round2.sql.)
+      "secure_password_change": true,
       // If enabled, users will need to provide their current password to change their password, unless
       // they signed in with a one-time password, magic link, or recovery link.
       // "require_current_password": true,
@@ -484,6 +489,10 @@
       "KF_LLM_ALLOWED_MODELS": "env(KF_LLM_ALLOWED_MODELS)",
       // Wall-clock budget per curator task in ms (default 110000; up to 380000 on plans with 400 s functions).
       "KF_CURATOR_TASK_BUDGET_MS": "env(KF_CURATOR_TASK_BUDGET_MS)",
+      // Operator ceiling on model tokens per curator run (space settings can only go lower; empty/0 = no ceiling)
+      // and the minimum seconds between two manual runs of one space via POST /curator/run (default 120).
+      "KF_LLM_MAX_TOKENS_PER_RUN": "env(KF_LLM_MAX_TOKENS_PER_RUN)",
+      "KF_CURATOR_RUN_COOLDOWN_S": "env(KF_CURATOR_RUN_COOLDOWN_S)",
       // Public origin of the API as MCP clients see it (OAuth metadata, resource URLs). Required in production
       // when SUPABASE_URL is an internal host; SUPABASE_PUBLIC_URL is accepted as a fallback.
       "KF_PUBLIC_URL": "env(KF_PUBLIC_URL)",
@@ -493,6 +502,8 @@
       "GITHUB_TOKEN": "env(GITHUB_TOKEN)",
       "KF_CONNECTOR_MAX_BYTES": "env(KF_CONNECTOR_MAX_BYTES)",
       "KF_CONNECTORS_ALLOW_PRIVATE_NETWORK": "env(KF_CONNECTORS_ALLOW_PRIVATE_NETWORK)",
+      // HTTP proxy for every connector request (it must refuse non-public destinations itself; see docs/connectors.md).
+      "KF_CONNECTORS_EGRESS_PROXY": "env(KF_CONNECTORS_EGRESS_PROXY)",
       // New chunks embedded per embed request (gte-small on the worker CPU; default 4).
       "KF_EMBEDS_PER_REQUEST": "env(KF_EMBEDS_PER_REQUEST)"
     }

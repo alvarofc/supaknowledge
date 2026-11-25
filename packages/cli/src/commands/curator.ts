@@ -1,5 +1,6 @@
 import type { Command } from "commander";
-import { CliError, must, resolveId, type Ctx } from "../context.ts";
+import { isNotDeployed, SupaknowledgeError } from "@supaknowledge/sdk";
+import { CliError, must, resolveId, type Ctx, type SpaceRef } from "../context.ts";
 import type { Runner } from "../program.ts";
 import { ago, shortId, statusColor, table, truncate } from "../render.ts";
 
@@ -21,10 +22,42 @@ function statsText(stats: Record<string, unknown> | null | undefined): string {
   return entries.map(([k, v]) => `${k}=${v}`).join(" ");
 }
 
+/** Seconds to wait from a 429: Retry-After, else "try again in Ns" in the message. */
+export function retryAfterSeconds(e: SupaknowledgeError): number | null {
+  if (typeof e.retryAfterMs === "number") return Math.max(1, Math.ceil(e.retryAfterMs / 1000));
+  const m = /try again in (\d+)\s*s/i.exec(e.message);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Ask for a manual run through POST /functions/v1/curator/run (per-space cooldown KF_CURATOR_RUN_COOLDOWN_S and a
+ * per-caller limit, both answered with 429 + Retry-After). Falls back to rpc request_curator_run when the curator
+ * function is not deployed.
+ */
+async function requestRun(ctx: Ctx, sp: SpaceRef): Promise<RunRow> {
+  try {
+    const res = await ctx.fn<{ run: RunRow }>("curator/run", { body: { space: sp.ref } });
+    if (!res?.run?.id) throw new CliError("the curator function returned no run", { hint: "kf runs" });
+    return res.run;
+  } catch (e) {
+    if (e instanceof SupaknowledgeError && e.status === 429) {
+      const wait = retryAfterSeconds(e);
+      throw new CliError(`curator was run recently; try again in ${wait ?? 60} s`, {
+        status: 429,
+        hint: "kf runs shows the latest runs",
+        data: { retry_after_s: wait ?? 60 },
+      });
+    }
+    if (!isNotDeployed(e)) throw e;
+    const db = await ctx.db();
+    return (await must(db.rpc("request_curator_run", { p_space: sp.id }))) as RunRow;
+  }
+}
+
 export function registerCurator(program: Command, run: Runner): void {
   program
     .command("curate")
-    .description("request a curator run for the space (reviewer+); one active run per space")
+    .description("request a curator run for the space (reviewer+); one active run per space, and a short cooldown between manual runs")
     .option("-w, --watch", "poll the run until it finishes and print its stats")
     .option("--interval <seconds>", "poll interval", "3")
     .option("--timeout <seconds>", "stop watching after this long", "900")
@@ -32,7 +65,7 @@ export function registerCurator(program: Command, run: Runner): void {
       run(async (ctx: Ctx, opts: { watch?: boolean; interval: string; timeout: string }) => {
         const sp = await ctx.space();
         const db = await ctx.db();
-        let r = (await must(db.rpc("request_curator_run", { p_space: sp.id }))) as RunRow;
+        let r = await requestRun(ctx, sp);
         if (!opts.watch) {
           ctx.out(r, () => `curator run ${r.id} ${statusColor(r.status, ctx.c)} ${ctx.c.dim(`(kf curate --watch, kf runs)`)}`);
           return;

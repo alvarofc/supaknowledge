@@ -96,7 +96,7 @@ stored in the `concept-files` Storage bucket once the import is applied. Text fi
 base64, inside the proposal's ops (`after.files`) so reviewers approve exactly those files. When the proposal is
 applied, `bundle/sync-files` copies them into Storage and then strips the inline content from the proposal: the
 ops keep each file's path, encoding, content type, size and sha256 (`"stripped": true`), so applied proposals do
-not keep megabytes of base64 around, and Studio and `kf show` still list the files by name.
+not keep megabytes of base64 around, and Studio and `kf proposal <id>` still list the files by name.
 
 ```markdown
 ---

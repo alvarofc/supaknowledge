@@ -1,6 +1,6 @@
 """Supaknowledge Python SDK: search, read and flag company knowledge, load skills, record traces."""
 
-from ._http import MCP_PROTOCOL_VERSION, McpClient, SupaknowledgeError, is_not_deployed
+from ._http import MAX_RETRIES, MAX_RETRY_WAIT, MCP_PROTOCOL_VERSION, READ_ONLY_TOOLS, McpClient, RetryPolicy, SupaknowledgeError, is_not_deployed, parse_retry_after
 from ._parse import parse_concept_markdown, parse_skill_markdown
 from .client import Supaknowledge, __version__
 from .mcp_config import build_mcp_config, mcp_endpoint
@@ -14,6 +14,11 @@ __all__ = [
     "TraceRecorder",
     "McpClient",
     "MCP_PROTOCOL_VERSION",
+    "MAX_RETRIES",
+    "MAX_RETRY_WAIT",
+    "READ_ONLY_TOOLS",
+    "RetryPolicy",
+    "parse_retry_after",
     "is_not_deployed",
     "build_mcp_config",
     "mcp_endpoint",

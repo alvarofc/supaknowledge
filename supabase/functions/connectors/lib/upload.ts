@@ -46,6 +46,17 @@ export class UploadError extends ConfigError {
   }
 }
 
+/**
+ * Who may upload: a user session or an agent key, never an OAuth client token (MCP clients signed in through
+ * the consent screen only read and flag). The route writes with the service role after an RLS check, so this
+ * must be refused before anything else. Throws UploadError(403).
+ */
+export function assertUploadCaller(caller: { clientId: string | null }): void {
+  if (caller.clientId !== null) {
+    throw new UploadError(403, "OAuth client tokens cannot upload documents; use a Studio / CLI session or an agent key");
+  }
+}
+
 export function uploadExt(input: Pick<UploadInput, "filename" | "contentType" | "format">): string {
   const fromName = input.filename && /\.([A-Za-z0-9]+)$/.exec(input.filename)?.[1]?.toLowerCase();
   if (fromName && EXT_TYPES[fromName]) return fromName;

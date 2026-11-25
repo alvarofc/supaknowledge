@@ -20,6 +20,11 @@ export type ConfigField = {
   max?: number;
   /** boolean fields: the connector's default when the key is absent */
   defaultValue?: boolean;
+  /**
+   * list fields: also split on commas. Only for plain IDs; URLs and globs may contain commas, so by default a
+   * list is one item per line.
+   */
+  commaSeparated?: boolean;
   /** older keys written by earlier Studio versions; read when `key` is absent and removed on save */
   legacyKeys?: string[];
 };
@@ -39,8 +44,8 @@ export const CONNECTORS: ConnectorDef[] = [
     label: "Notion",
     description: "Pages and databases shared with your Notion integration.",
     fields: [
-      { key: "database_ids", label: "Database IDs", kind: "list", placeholder: "a1b2c3d4e5f6…", hint: "One per line. Every page in these databases is synced." },
-      { key: "page_ids", label: "Page IDs", kind: "list", placeholder: "f6e5d4c3b2a1…", hint: "One per line. The page and its children are synced." },
+      { key: "database_ids", label: "Database IDs", kind: "list", placeholder: "a1b2c3d4e5f6…", hint: "One per line. Every page in these databases is synced.", commaSeparated: true },
+      { key: "page_ids", label: "Page IDs", kind: "list", placeholder: "f6e5d4c3b2a1…", hint: "One per line. The page and its children are synced.", commaSeparated: true },
     ],
     token: { label: "Integration token", placeholder: "ntn_…", hint: "An internal integration secret. Share the pages/databases with the integration in Notion." },
   },
@@ -49,7 +54,7 @@ export const CONNECTORS: ConnectorDef[] = [
     label: "Slack",
     description: "Messages and threads from selected channels.",
     fields: [
-      { key: "channels", label: "Channels", kind: "list", placeholder: "C0123456789", hint: "Channel IDs, one per line. Private channels need the bot invited.", required: true },
+      { key: "channels", label: "Channels", kind: "list", placeholder: "C0123456789", hint: "Channel IDs, one per line. Private channels need the bot invited.", required: true, commaSeparated: true },
     ],
     token: { label: "Bot token", placeholder: "xoxb-…", hint: "Needs channels:history, groups:history and users:read scopes." },
   },
@@ -89,7 +94,7 @@ export const CONNECTORS: ConnectorDef[] = [
     kind: "gdrive",
     label: "Google Drive",
     description: "Docs, Sheets and files in shared folders.",
-    fields: [{ key: "folder_ids", label: "Folder IDs", kind: "list", placeholder: "1AbCdEfGh…", hint: "One per line. Share each folder with the service account.", required: true }],
+    fields: [{ key: "folder_ids", label: "Folder IDs", kind: "list", placeholder: "1AbCdEfGh…", hint: "One per line. Share each folder with the service account.", required: true, commaSeparated: true }],
     token: { label: "Service account key (JSON)", placeholder: '{ "type": "service_account", … }', hint: "Paste the full JSON key file.", multiline: true },
   },
   {
@@ -201,7 +206,7 @@ export function draftToConfig(
     const raw = (draft[f.key] ?? "").trim();
     if (f.kind === "list") {
       const items = raw
-        .split(/[\n,]/)
+        .split(f.commaSeparated ? /[\n,]/ : /\n/)
         .map((s) => s.trim())
         .filter(Boolean);
       if (f.required && items.length === 0) errors[f.key] = `${f.label} is required`;

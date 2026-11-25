@@ -132,6 +132,22 @@ Deno.test("github: the deployment GITHUB_TOKEN is never sent to a custom api_url
   }
 });
 
+Deno.test("github: repo owner/name are restricted to GitHub's charset (no `.`/`..` path traversal)", () => {
+  for (const bad of ["../handbook", "acme/..", "acme/.", "./x", "..git/x", "acme/...git", "a/b/c", "acme/hand book", "acme/hand%2fbook", "-acme/x", "ac.me/x", "acme/"]) {
+    assertThrows(() => github.parseConfig({ repo: bad }), ConfigError, undefined, bad);
+  }
+  for (const [ok, owner, name] of [
+    ["acme/handbook", "acme", "handbook"],
+    ["acme/handbook.git", "acme", "handbook"],
+    ["https://github.com/acme/hand_book.v2", "acme", "hand_book.v2"],
+    ["octo-cat_emu/.github", "octo-cat_emu", ".github"],
+    ["acme/.dotfiles", "acme", ".dotfiles"],
+  ]) {
+    const c = github.parseConfig({ repo: ok });
+    assertEquals([c.owner, c.name], [owner, name], ok);
+  }
+});
+
 Deno.test("github: invalid globs are config errors", () => {
   assertThrows(() => github.parseConfig({ repo: "acme/handbook", paths: ["docs/[z-a].md"] }), ConfigError, "invalid glob");
 });

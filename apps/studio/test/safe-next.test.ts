@@ -83,3 +83,19 @@ test("safeHref only allows http(s)", () => {
     assert.equal(safeHref(bad), null, String(bad));
   }
 });
+
+test("requestOrigin behind a TLS proxy that keeps Host and sends only X-Forwarded-Proto", () => {
+  const env = { TRUST_PROXY: "1" };
+  const r = req({ host: "studio.example.com", "x-forwarded-proto": "https" });
+  assert.equal(requestOrigin(r, env), "https://studio.example.com");
+  const signout = req({ host: "studio.example.com", "x-forwarded-proto": "https", origin: "https://studio.example.com", "sec-fetch-site": "same-origin" });
+  assert.equal(isSameOriginRequest(signout, env), true, "normal sign-out is not refused behind the proxy");
+});
+
+test("requestOrigin normalizes default ports and rejects invalid hosts without throwing", () => {
+  const env = { TRUST_PROXY: "1" };
+  assert.equal(requestOrigin(req({ host: "x", "x-forwarded-host": "studio.example.com:443", "x-forwarded-proto": "https" }), env), "https://studio.example.com");
+  assert.doesNotThrow(() => redirectTo(req({ host: "ok.example", "x-forwarded-host": "evil.example:99999" }), "/", 302, env));
+  assert.doesNotThrow(() => redirectTo(req({ host: "ok.example", "x-forwarded-host": "[:::1]" }), "/", 302, env));
+  assert.equal(new URL(redirectTo(req({ host: "ok.example", "x-forwarded-host": "evil.example:99999" }), "/", 302, env).headers.get("location")!).host, "ok.example");
+});

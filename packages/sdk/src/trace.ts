@@ -232,7 +232,9 @@ export class TraceRecorder {
       if (retryable(e)) {
         this.failures++;
         const base = this.opts.retryBaseMs ?? 1000;
-        this.retryAt = Date.now() + Math.min(this.opts.retryMaxMs ?? 60000, base * 2 ** Math.min(this.failures - 1, 30));
+        // a 429 means nothing was written; wait at least as long as its Retry-After asks
+        const asked = e instanceof SupaknowledgeError ? (e.retryAfterMs ?? 0) : 0;
+        this.retryAt = Date.now() + Math.min(this.opts.retryMaxMs ?? 60000, Math.max(asked, base * 2 ** Math.min(this.failures - 1, 30)));
         if (!this.ended) {
           this.buffer.unshift(...events);
           this.trimBuffer();

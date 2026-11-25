@@ -1,4 +1,4 @@
-import { Check, ShieldAlert, X } from "lucide-react";
+import { Check, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { useRouter } from "@tanstack/react-router";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,47 @@ import { Field, Textarea } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage } from "@/lib/format";
 import { callFunction } from "@/lib/functions";
+import { syncFilesErrorMessage } from "@/lib/skill-files";
 import { createClient } from "@/lib/supabase/client";
+
+async function syncFiles(proposalId: string): Promise<number> {
+  return (await callFunction<{ files_synced: number }>("bundle/sync-files", { body: { proposal_id: proposalId } })).files_synced;
+}
+
+/**
+ * Shown on an applied proposal whose skill files are not in Storage yet (the sync right after approving failed).
+ * bundle/sync-files is idempotent, so retrying is always safe.
+ */
+export function RetryFileSync({ proposalId }: { proposalId: string }) {
+  const router = useRouter();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [, startTransition] = useTransition();
+  return (
+    <Callout tone="warn" title="Skill files not synced" className="mt-3">
+      <p>This proposal is applied, but its skill files have not been copied into Storage yet, so agents can't download them.</p>
+      <Button
+        size="sm"
+        className="mt-2"
+        pending={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const n = await syncFiles(proposalId);
+            toast.success(n ? `${n} skill file${n === 1 ? "" : "s"} synced.` : "Nothing left to sync.");
+            startTransition(() => router.invalidate());
+          } catch (e) {
+            toast.error(`The skill files were not synced: ${syncFilesErrorMessage(e)}.`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {!busy ? <RefreshCw className="size-3.5" /> : null} Retry file sync
+      </Button>
+    </Callout>
+  );
+}
 
 /**
  * Approve (rpc apply_proposal) or reject (rpc reject_proposal) a proposal. The database re-checks
@@ -58,16 +98,17 @@ export function ReviewActions({
         toast.error("Not applied: the knowledge changed since this proposal was drafted. See the conflict details.");
       } else {
         let synced: number | null = null;
+        let syncError: string | null = null;
         if (hasFiles) {
           try {
-            synced = (await callFunction<{ files_synced: number }>("bundle/sync-files", { body: { proposal_id: proposalId } })).files_synced;
+            synced = await syncFiles(proposalId);
           } catch (e) {
-            toast.error(`Applied, but the skill files were not synced into Storage: ${errorMessage(e)}`);
+            syncError = syncFilesErrorMessage(e);
           }
         }
-        toast.success(
-          `Applied. The knowledge is updated and verified by you.${synced ? ` ${synced} skill file${synced === 1 ? "" : "s"} synced.` : ""}`,
-        );
+        // one toast: a failed file sync is the news, not the (successful) apply
+        if (syncError) toast.error(`Applied, but the skill files were not synced into Storage: ${syncError}.${/Retry file sync/.test(syncError) ? "" : " Use “Retry file sync” on this page."}`);
+        else toast.success(`Applied. The knowledge is updated and verified by you.${synced ? ` ${synced} skill file${synced === 1 ? "" : "s"} synced.` : ""}`);
       }
       close();
       startTransition(() => router.invalidate());

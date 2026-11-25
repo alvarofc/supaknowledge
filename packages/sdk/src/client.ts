@@ -1,4 +1,5 @@
-import { isNotDeployed, SupaknowledgeError, requestJson, trimUrl } from "./http.ts";
+import { isNotDeployed, SupaknowledgeError, requestJson, retryPolicy, trimUrl } from "./http.ts";
+import type { RetryPolicy } from "./http.ts";
 import { McpClient } from "./mcp.ts";
 import { parseConceptMarkdown, parseSkillMarkdown } from "./parse.ts";
 import { buildMcpConfig, mcpEndpoint, type McpConfig, type McpConfigOptions } from "./mcp-config.ts";
@@ -56,6 +57,21 @@ function skillNameOf(path: string): string {
 }
 
 /**
+ * A load_skill argument as the MCP tool reads it: a skill name ("revenue-report") or its full path
+ * ("skills/revenue-report", "/skills/revenue-report/SKILL.md"). Null when it can't be a concept path.
+ */
+export function skillLookupPath(name: string): string | null {
+  const n = String(name ?? "")
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/\/SKILL\.md$/i, "")
+    .replace(/\.md$/i, "")
+    .replace(/\/SKILL$/i, "")
+    .replace(/\/+$/, "");
+  return /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(n) && !n.includes("..") ? n : null;
+}
+
+/**
  * Supaknowledge client. Talks to the `mcp` Edge Function (semantic search; works with agent keys, user tokens and
  * OAuth tokens) and, for user tokens, can fall back to PostgREST RPCs.
  */
@@ -67,6 +83,7 @@ export class Supaknowledge {
   private readonly mcp: McpClient;
   private mode: "mcp" | "rest" | "auto";
   private spaceIdP: Promise<string> | null = null;
+  private readonly retry: RetryPolicy;
 
   constructor(options: SupaknowledgeOptions) {
     if (!options?.url) throw new SupaknowledgeError("Supaknowledge: `url` is required");
@@ -79,6 +96,7 @@ export class Supaknowledge {
     if (!f) throw new SupaknowledgeError("Supaknowledge: no global fetch; pass `fetch`");
     this.fetchFn = (input, init) => f(input, init);
     this.mode = options.transport ?? "auto";
+    this.retry = retryPolicy(options.retry);
     if (this.mode === "rest" && !this.canRest()) {
       throw new SupaknowledgeError('Supaknowledge: transport "rest" needs `accessToken` (a user JWT) and `publishableKey`');
     }
@@ -89,6 +107,7 @@ export class Supaknowledge {
       clientName: "supaknowledge-sdk",
       clientVersion: SDK_VERSION,
       timeoutMs: options.timeoutMs ?? 30000,
+      retry: this.retry,
     });
   }
 
@@ -115,7 +134,7 @@ export class Supaknowledge {
           p_query: query,
           p_kinds: opts.kinds?.length ? opts.kinds : null,
           p_limit: opts.limit ?? 8,
-        });
+        }, { idempotent: true });
         const ids = (rows ?? []).map((r) => r.concept_id).filter(Boolean);
         if (ids.length) await this.logUsage(space, ids as string[], "search", query, opts.traceId);
         return rows ?? [];
@@ -138,7 +157,7 @@ export class Supaknowledge {
       },
       async () => {
         const space = await this.spaceId();
-        const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path });
+        const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path }, { idempotent: true });
         if (c && typeof c.id === "string") await this.logUsage(space, [c.id], "read", path, opts.traceId);
         return c ?? null;
       },
@@ -177,15 +196,19 @@ export class Supaknowledge {
         }
       },
       async () => {
-        if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return null;
+        // a name or a full path, like the MCP tool
+        const n = skillLookupPath(name);
+        if (!n) return null;
         const space = await this.spaceId();
         // same set list_skills shows (stable skills only); an exact path wins over a "<dir>/<name>" match
+        // (LIKE's `_` wildcard can over-match: the exact checks below decide)
+        const v = encodeURIComponent(n);
         const rows = await this.restGet<{ path: string }[]>(
-          `concepts?select=path&space_id=eq.${space}&kind=eq.skill&status=eq.stable&or=(path.eq.${name},path.like.*/${name})&order=path&limit=5`,
+          `concepts?select=path&space_id=eq.${space}&kind=eq.skill&status=eq.stable&or=(path.eq.${v},path.like.*/${v})&order=path&limit=20`,
         );
-        const path = (rows.find((r) => r.path === name) ?? rows.find((r) => skillNameOf(r.path) === name))?.path;
+        const path = (rows.find((r) => r.path === n) ?? rows.find((r) => r.path.endsWith(`/${n}`)))?.path;
         if (!path) return null;
-        const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path });
+        const c = await this.rpc<Concept | null>("read_concept", { p_space: space, p_path: path }, { idempotent: true });
         if (!c) return null;
         if (typeof c.id === "string") await this.logUsage(space, [c.id], "load_skill", name, opts.traceId);
         return { ...c, name: skillNameOf(c.path) };
@@ -235,9 +258,12 @@ export class Supaknowledge {
     }
   }
 
-  /** Call any tool on the Supaknowledge MCP server. */
-  callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    return this.mcp.callTool(name, args);
+  /**
+   * Call any tool on the Supaknowledge MCP server. A 429 is retried for read-only tools only, unless you pass
+   * `idempotent` to say this call is safe to repeat (or not).
+   */
+  callTool(name: string, args: Record<string, unknown> = {}, opts: { idempotent?: boolean } = {}): Promise<unknown> {
+    return this.mcp.callTool(name, args, opts);
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -329,12 +355,20 @@ export class Supaknowledge {
     return { ...(this.o.headers ?? {}), apikey: this.o.publishableKey, Authorization: `Bearer ${await this.token()}` };
   }
 
+  /** PostgREST GET (a read: retried on 429). */
   private async restGet<T>(path: string): Promise<T> {
-    return requestJson<T>(this.fetchFn, `${this.url}/rest/v1/${path}`, { headers: await this.restHeaders(), timeoutMs: this.o.timeoutMs ?? 30000 });
+    return requestJson<T>(this.fetchFn, `${this.url}/rest/v1/${path}`, { headers: await this.restHeaders(), timeoutMs: this.o.timeoutMs ?? 30000, retry: this.retry });
   }
 
-  private async rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
-    return requestJson<T>(this.fetchFn, `${this.url}/rest/v1/rpc/${fn}`, { method: "POST", headers: await this.restHeaders(), body: args, timeoutMs: this.o.timeoutMs ?? 30000 });
+  /** PostgREST RPC; only reads (`idempotent`) are retried on 429. */
+  private async rpc<T>(fn: string, args: Record<string, unknown>, opts: { idempotent?: boolean } = {}): Promise<T> {
+    return requestJson<T>(this.fetchFn, `${this.url}/rest/v1/rpc/${fn}`, {
+      method: "POST",
+      headers: await this.restHeaders(),
+      body: args,
+      timeoutMs: this.o.timeoutMs ?? 30000,
+      ...(opts.idempotent ? { retry: this.retry } : {}),
+    });
   }
 
   private async logUsage(space: string, ids: string[], via: string, query?: string, traceId?: string): Promise<void> {

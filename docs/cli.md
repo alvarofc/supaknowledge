@@ -106,7 +106,7 @@ Ids can be shortened to any unique prefix (`kf approve 3f2a91c0`), as shown in t
 
 | Command | What it does |
 |---|---|
-| `kf curate [--watch] [--interval 3] [--timeout 900]` | `request_curator_run` (reviewer+; one active run per space). `--watch` polls the run and prints its stats when it finishes; exit 1 if it failed or was cancelled (with `--json`, the run is the only JSON printed). |
+| `kf curate [--watch] [--interval 3] [--timeout 900]` | `POST /functions/v1/curator/run` (reviewer+; one active run per space; falls back to the `request_curator_run` RPC when the function is not deployed). A new manual run of a space waits `KF_CURATOR_RUN_COOLDOWN_S` (default 120 s) after the previous one, and each caller may ask about 10 times a minute: on a 429 `kf` prints `curator was run recently; try again in N s` and exits 1 (with `--json`: one document `{"error", "hint", "status": 429, "retry_after_s"}`). It never retries a run request by itself. `--watch` polls the run and prints its stats when it finishes; exit 1 if it failed or was cancelled (with `--json`, the run is the only JSON printed). |
 | `kf runs [list] [-n 20]` | Recent curator runs. |
 | `kf runs cancel <id>` | `cancel_curator_run` (reviewer+): stop a queued or running run, e.g. one that is stuck. The database also fails runs that made no progress for `curator.stuck_after_minutes` (default 30). |
 | `kf health [--days 30]` | `knowledge_health`: concepts by kind and trust, stale and never-used counts, open flags, pending and applied proposals, most-flagged concepts, last run. |
@@ -157,7 +157,7 @@ admins invite people by e-mail and the invitee accepts (see
 |---|---|
 | `kf members [list] [--workspace]` | Direct space members, group grants and the space visibility; or workspace members. |
 | `kf members add <user-id> [--role ...]` / `kf members remove <user-id>` | Add a workspace member (or agent) to the current space, or remove them. Space roles: reader, editor, reviewer, admin. Agents can't be space admins. |
-| `kf members add <user-id> --workspace --role ...` / `kf members remove <user-id> --workspace` | Change an **existing** workspace member's role (member, admin, owner), or remove them from the workspace. New people are invited instead. Agents can't be workspace admins/owners, and a workspace always keeps at least one owner. |
+| `kf members add <user-id> --workspace --role ...` / `kf members remove <user-id> --workspace` | Change an **existing** workspace member's role (member, admin, owner), or remove them from the workspace. New people are invited instead. Agents can't be workspace admins/owners or be removed from the workspace (use `kf agents revoke` / `kf agents delete`), and a workspace always keeps at least one owner. |
 | `kf members invite <email> [--role member\|admin\|owner]` | Invite someone to the current space's workspace by e-mail (workspace owners and admins; only owners invite owners; 30 per hour; expires after 14 days). No e-mail is sent: tell them to sign in with that address and accept. |
 | `kf members invitations [--all]` / `kf members uninvite <invitation-id>` | The workspace's open invitations (`--all`: also accepted, declined and expired), and revoking one. |
 | `kf invitations [list]`, `kf invitations accept <id>`, `kf invitations decline <id>` | Invitations addressed to the verified e-mail of your account; accepting joins the workspace (prints its slug). |
@@ -172,6 +172,7 @@ admins invite people by e-mail and the invitee accepts (see
 | `search`, `flag` | The `mcp` Edge Function (semantic + full-text search; usage is logged). If the function is not deployed (404/501), `kf` falls back to the `search_knowledge` / `flag_knowledge` RPCs, which do **full-text search only** because the CLI cannot compute the gte-small query embedding. Force either with `SUPAKNOWLEDGE_TRANSPORT=mcp\|rest`. |
 | `import`, `lint`, `export`, `pull`, `approve` (file sync) | The `bundle` Edge Function. When it is not deployed, `kf` runs the same `@supaknowledge/core` import / export / lint code itself over PostgREST: imports still become one proposal (through `create_proposal`), and skill files travel in the ops until the proposal is applied (copying them into Storage needs the function). |
 | `agents ...` | The `agents` Edge Function (it needs the Auth admin API). `agents list` falls back to the `agents` table. |
+| `curate` | The `curator` Edge Function (`POST /curator/run`, rate limited with 429 + `Retry-After`); the `request_curator_run` RPC when it is not deployed. |
 | everything else | PostgREST tables and RPCs with your session, so RLS applies exactly as in Studio. |
 
 ## Exit codes
@@ -179,9 +180,13 @@ admins invite people by e-mail and the invitee accepts (see
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | The command failed (permission denied, not found, nothing changed because RLS filtered the row, lint problems, conflicted proposal, failed or cancelled run) |
+| 1 | The command failed (permission denied, not found, nothing changed because RLS filtered the row, lint problems, conflicted proposal, failed or cancelled run, rate limited: HTTP 429) |
 | 2 | Usage error (unknown command, bad option value, missing argument) |
 | 3 | Authentication rejected by an Edge Function (401) |
+
+Rate limits: `kf search` (it goes through the SDK) retries a 429 up to twice, honouring
+`Retry-After` (at most 30 s); commands that write never retry on their own. An agent key that failed to sign in too
+often gets 429 with `Retry-After` from every Edge Function until the lockout ends.
 
 Set `SUPAKNOWLEDGE_DEBUG=1` to print stack traces.
 

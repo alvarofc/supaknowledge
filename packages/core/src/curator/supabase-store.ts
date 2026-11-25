@@ -6,10 +6,12 @@ import {
   type ConceptHit,
   type CuratorRun,
   type CuratorStore,
+  type DocCursor,
   MAX_TASK_ATTEMPTS,
   type NewSyntheticFlag,
   type PersistedProposal,
   type RejectedProposal,
+  type SearchOptions,
   type SourceHit,
 } from "./store.ts";
 
@@ -81,10 +83,16 @@ export class SupabaseCuratorStore implements CuratorStore {
   }
 
   async failTask(taskId: string, error: string, opts: { permanent?: boolean } = {}) {
-    const t = must(await this.db.from("curator_tasks").select("attempts").eq("id", taskId).single(), "failTask.read") as { attempts: number };
+    const t = must(await this.db.from("curator_tasks").select("attempts, status").eq("id", taskId).single(), "failTask.read") as { attempts: number; status: string };
+    // a task that was cancelled (cancel_curator_run) or reaped meanwhile stays that way: nothing to retry
+    if (t.status !== "queued" && t.status !== "running") return { final: true };
     const attempts = t.attempts + 1;
     const final = opts.permanent === true || attempts >= MAX_TASK_ATTEMPTS;
-    must(await this.db.from("curator_tasks").update({ attempts, error, ...(final ? {} : { status: "queued", finished_at: null }) }).eq("id", taskId), "failTask");
+    const updated = must(
+      await this.db.from("curator_tasks").update({ attempts, error, ...(final ? {} : { status: "queued", finished_at: null }) }).eq("id", taskId).in("status", ["queued", "running"]).select("id"),
+      "failTask",
+    ) as { id: string }[];
+    if (!updated.length) return { final: true }; // cancelled/reaped between the read and the update
     if (final) must(await this.db.rpc("kf_finish_task", { p_task: taskId, p_status: "failed", p_output: null, p_error: error }), "failTask.finish");
     return { final };
   }
@@ -160,11 +168,13 @@ export class SupabaseCuratorStore implements CuratorStore {
     must(await this.db.from("traces").update({ curated_at: new Date().toISOString() }).in("id", ids), "markTracesCurated");
   }
 
-  async listChangedDocuments(spaceId: string, since: string | null, until: string | null, limit: number): Promise<SourceDocument[]> {
+  async listChangedDocuments(spaceId: string, since: string | null, until: string | null, limit: number, after?: DocCursor | null): Promise<SourceDocument[]> {
     let q = this.db.from("source_documents").select(DOC_COLS).eq("space_id", spaceId).is("deleted_at", null);
     if (since && since !== "-infinity") q = q.gt("changed_at", since);
     if (until) q = q.lte("changed_at", until);
-    return (must(await q.order("changed_at").limit(limit), "listChangedDocuments") as unknown as DocRow[]).map(toDocument);
+    // keyset paging on (changed_at, id): a triage continuation picks up exactly where the last page ended
+    if (after) q = q.or(`changed_at.gt."${after.changed_at}",and(changed_at.eq."${after.changed_at}",id.gt.${after.id})`);
+    return (must(await q.order("changed_at").order("id").limit(limit), "listChangedDocuments") as unknown as DocRow[]).map(toDocument);
   }
 
   async getDocuments(ids: string[]): Promise<SourceDocument[]> {
@@ -232,10 +242,19 @@ export class SupabaseCuratorStore implements CuratorStore {
     ) as Concept[];
   }
 
-  async searchConcepts(spaceId: string, query: string, limit: number): Promise<ConceptHit[]> {
-    const embedding = this.embed ? await this.embed(query) : null;
+  /** search RPC params shared by both searches: the audience filter runs in SQL, before the LIMIT */
+  private async searchParams(query: string, opts: SearchOptions) {
+    const embedding = this.embed && !opts.keywordOnly ? await this.embed(query) : null;
+    return {
+      p_embedding: this.vec(embedding),
+      ...(opts.visibleTo ? { p_visible_to: opts.visibleTo } : {}),
+      ...(embedding && opts.minSimilarity !== undefined ? { p_min_similarity: opts.minSimilarity } : {}),
+    };
+  }
+
+  async searchConcepts(spaceId: string, query: string, limit: number, opts: SearchOptions = {}): Promise<ConceptHit[]> {
     const hits = must(
-      await this.db.rpc("search_knowledge", { p_space: spaceId, p_query: query, p_embedding: this.vec(embedding), p_limit: limit, p_include_deprecated: true }),
+      await this.db.rpc("search_knowledge", { p_space: spaceId, p_query: query, ...(await this.searchParams(query, opts)), p_limit: limit, p_include_deprecated: true }),
       "searchConcepts",
     ) as (Omit<ConceptHit, "id" | "audience"> & { concept_id: string })[];
     if (!hits.length) return [];
@@ -245,10 +264,9 @@ export class SupabaseCuratorStore implements CuratorStore {
     return hits.filter((h) => byId.has(h.concept_id)).map((h) => ({ ...h, id: h.concept_id, audience: byId.get(h.concept_id)! }));
   }
 
-  async searchSources(spaceId: string, query: string, limit: number): Promise<SourceHit[]> {
-    const embedding = this.embed ? await this.embed(query) : null;
+  async searchSources(spaceId: string, query: string, limit: number, opts: SearchOptions = {}): Promise<SourceHit[]> {
     const hits = must(
-      await this.db.rpc("search_sources", { p_space: spaceId, p_query: query, p_embedding: this.vec(embedding), p_limit: limit }),
+      await this.db.rpc("search_sources", { p_space: spaceId, p_query: query, ...(await this.searchParams(query, opts)), p_limit: limit }),
       "searchSources",
     ) as { document_id: string; title: string | null; url: string | null; snippet: string | null; changed_at: string }[];
     if (!hits.length) return [];
@@ -309,17 +327,20 @@ export class SupabaseCuratorStore implements CuratorStore {
 
   async recentRejections(spaceId: string, paths: string[], limit: number): Promise<RejectedProposal[]> {
     if (!paths.length) return [];
-    const ops = must(
-      await this.db.from("proposal_ops").select("proposal_id, path, proposals!inner(id, title, review_note, reviewed_at, status)").eq("space_id", spaceId).in("path", paths).eq("proposals.status", "rejected").limit(50),
+    // public.kf_rejected_proposals (service role): newest first, with the audiences of everything each one touched
+    const rows = must(
+      await this.db.rpc("kf_rejected_proposals", { p_space: spaceId, p_paths: paths, p_limit: limit }),
       "recentRejections",
-    ) as unknown as { proposal_id: string; path: string; proposals: { id: string; title: string; review_note: string | null; reviewed_at: string | null } }[];
-    const byId = new Map<string, RejectedProposal>();
-    for (const o of ops) {
-      const p = byId.get(o.proposal_id) ?? { id: o.proposal_id, title: o.proposals.title, paths: [], review_note: o.proposals.review_note, reviewed_at: o.proposals.reviewed_at };
-      p.paths.push(o.path);
-      byId.set(o.proposal_id, p);
-    }
-    return [...byId.values()].sort((a, b) => (b.reviewed_at ?? "").localeCompare(a.reviewed_at ?? "")).slice(0, limit);
+    ) as { id: string; title: string; paths: string[] | null; review_note: string | null; reviewed_at: string | null; audiences: unknown }[] | null;
+    // a row whose audiences cannot be read is skipped, never treated as public
+    return (rows ?? []).filter((r) => Array.isArray(r.audiences) && (r.audiences as unknown[]).every(Array.isArray)).map((r) => ({
+      id: r.id,
+      title: r.title,
+      paths: r.paths ?? [],
+      review_note: r.review_note,
+      reviewed_at: r.reviewed_at,
+      audiences: r.audiences as Audience[],
+    }));
   }
 
   async createProposal(spaceId: string, runId: string, author: string, draft: ProposalDraft): Promise<PersistedProposal> {
@@ -348,6 +369,8 @@ export class SupabaseCuratorStore implements CuratorStore {
           quote: c.quote ?? null,
           op_index: c.op_index ?? null,
           consulted: c.consulted === true,
+          // only used for evidence without a row (the database re-reads the live audience of every ref_id)
+          ...(c.ref_id ? {} : { audience: c.audience ?? [] }),
         })),
         p_run: runId,
         p_author: author,

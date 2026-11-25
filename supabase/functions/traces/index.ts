@@ -8,6 +8,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { dbError, isUuid, must, resolveGroups, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import { mustWrite, traceDbError } from "./errors.ts";
 import {
   attrs,
   audienceParam,
@@ -143,7 +144,7 @@ async function upsertTrace(caller: Caller, space: SpaceInfo, b: TraceIn, events:
       if (t) {
         if (t.principal_id !== caller.userId) throw new HttpError(409, "a trace with this external_id was sent by someone else");
         const upd = { ...fields, ...(b.metadata ? { metadata: { ...t.metadata, ...b.metadata } } : {}) };
-        if (Object.keys(upd).length) must(await caller.db.from("traces").update(upd).eq("id", t.id), "update trace");
+        if (Object.keys(upd).length) mustWrite(await caller.db.from("traces").update(upd).eq("id", t.id), "update trace");
         return { trace_id: t.id, created: false, appended: await appendEvents(caller, t.id, space.id, events) };
       }
     }
@@ -159,7 +160,7 @@ async function upsertTrace(caller: Caller, space: SpaceInfo, b: TraceIn, events:
       // If the existing row belongs to another principal it is invisible to us and we report a conflict.
       if (ins.error.code === "23505" && b.external_id && attempt === 0) continue;
       if (ins.error.code === "23505") throw new HttpError(409, "a trace with this external_id already exists in this space");
-      throw dbError(ins.error, "create trace");
+      throw traceDbError(ins.error, "create trace");
     }
     const id = (ins.data as { id: string }).id;
     return { trace_id: id, created: true, appended: await appendEvents(caller, id, space.id, events) };
@@ -204,7 +205,7 @@ async function patchTrace(req: Request, id: string): Promise<Response> {
     const ws = Array.isArray(t.spaces) ? t.spaces[0]?.workspace_id : t.spaces?.workspace_id;
     upd.audience = await resolveGroups(caller.db, ws, b.audience);
   }
-  if (Object.keys(upd).length) must(await caller.db.from("traces").update(upd).eq("id", id), "update trace");
+  if (Object.keys(upd).length) mustWrite(await caller.db.from("traces").update(upd).eq("id", id), "update trace");
   const appended = await appendEvents(caller, id, t.space_id, events);
   return json({ trace_id: id, created: false, appended });
 }

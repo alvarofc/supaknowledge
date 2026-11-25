@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { notFound } from "@tanstack/react-router";
 import type { TraceEventRow } from "@/components/activity/transcript";
 import type { FlagRow } from "@/components/inbox/flag-list";
+import { actorUserId, cancelledBy } from "@/lib/format";
 import { atLeast } from "@/lib/roles";
 import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
@@ -33,7 +34,7 @@ async function loadRuns(ctx: SpaceContext, isAdmin: boolean) {
           )
           .order("created_at")
       : Promise.resolve({ data: [] as never[] }),
-    getProfiles(list.map((r) => r.requested_by)),
+    getProfiles(list.flatMap((r) => [r.requested_by, actorUserId(cancelledBy(r.error))])),
   ]);
   return { list, tasks: tasks ?? [], profiles };
 }

@@ -68,9 +68,12 @@ Optional secrets (all listed in `edge_runtime.secrets` of `supabase/config.jsonc
 | `SUPABASE_PUBLIC_URL` | unset | Fallback for `KF_PUBLIC_URL` (some self-hosted setups already define it) |
 | `KF_LLM_ALLOWED_MODELS` | any | Comma-separated model ids (`prefix/*` wildcards) that space admins may choose in curator settings; empty = any. See [model configuration](curator.md#model-configuration) |
 | `KF_CURATOR_TASK_BUDGET_MS` | `110000` | Wall-clock budget per curator task (clamped to 30000–380000); raise it on plans whose functions may run 400 s |
+| `KF_LLM_MAX_TOKENS_PER_RUN` | unset | Operator ceiling on model tokens (input + output) per curator run; a space's `curator.max_tokens_per_run` can go lower, never higher. Unset/`0` = the space setting alone. See [curator settings](curator.md#model-configuration) |
+| `KF_CURATOR_RUN_COOLDOWN_S` | `120` | Minimum seconds between two manual runs of one space through `POST /curator/run` (`kf curate`, scripts); earlier requests get HTTP 429 with `Retry-After`. Studio's Run now calls the `request_curator_run` RPC, which only keeps one active run per space |
 | `GITHUB_TOKEN` | unset | Default token for GitHub sources without their own (higher rate limit for public repos); only ever sent to `api.github.com`, see [connectors](connectors.md#github-github) |
 | `KF_CONNECTOR_MAX_BYTES` | `20971520` (20 MiB) | Largest upstream response body a connector buffers; bigger files are skipped |
 | `KF_CONNECTORS_ALLOW_PRIVATE_NETWORK` | `false` | `true` lets connectors reach private, loopback and link-local addresses (the SSRF guard refuses them otherwise). Only for self-hosted setups that sync intranet sites |
+| `KF_CONNECTORS_EGRESS_PROXY` | unset | `http://[user:pass@]host:port` of an HTTP proxy every connector request goes through; the proxy must refuse non-public destinations itself (e.g. Smokescreen). Closes the DNS-rebinding gap of the in-function checks, see [connectors](connectors.md#outbound-requests-ssrf-guard) |
 | `KF_EMBEDS_PER_REQUEST` | `4` | New chunks the `embed` function embeds per request (gte-small runs on the function's CPU); the `kf-embed` cron sends 4 jobs per request |
 | `CONNECTOR_DOC_LIMIT`, `CONNECTOR_TIME_BUDGET_MS` | `200`, `120000` | Connector batch size and time budget per run (keep the budget below your plan's function wall-clock limit); see [connectors](connectors.md#limits-and-tuning). Not in `config.jsonc`: set them with `supabase secrets set` if you need them |
 
@@ -88,11 +91,23 @@ In **Authentication → OAuth Server** (needed for MCP clients that sign people 
 - authorization path: `/oauth/consent` (Studio's consent page);
 - enable dynamic client registration, so Claude Code, Cursor and others can register themselves.
 
+In **Authentication → Hooks**, add a **Before User Created** hook of type Postgres pointing at
+`private.hook_before_user_created` (URI `pg-functions://postgres/private/hook_before_user_created`; the local stack
+configures it in `supabase/config.jsonc`). It refuses public sign-up, OAuth and SSO with the e-mail domain reserved
+for agents (`@agents.supaknowledge.internal`) with a clean 403. The database enforces the same rule with a trigger,
+so without the hook such sign-ups still fail, just with a generic error.
+
 Decide whether anyone may sign up (**Authentication → Sign In / Providers**). People only see what they are
 granted: a new account belongs to no workspace until it accepts an invitation (Studio → Settings → Members, or
-`kf members invite`). Invitations are matched to the account's **verified** e-mail, so keep e-mail confirmation on.
-Supaknowledge sends no invitation e-mail itself; tell people to sign up and accept in Studio. See
-[access control](access-control.md#joining-a-workspace-invitations).
+`kf members invite`). Supaknowledge sends no invitation e-mail itself; tell people to sign up and accept in Studio.
+See [access control](access-control.md#joining-a-workspace-invitations).
+
+> [!IMPORTANT]
+> Keep **Confirm email** on (**Authentication → Sign In / Providers → Email**) in every shared or hosted project.
+> Invitations are accepted by the account whose **confirmed** e-mail matches. With confirmations off, Auth marks
+> every new address as confirmed, so anyone could sign up with an invited colleague's address and take their
+> invitation (and its role). `supabase/config.jsonc` turns confirmations off only for the local single-developer
+> stack; don't push that setting to a shared project.
 
 ## 5. Studio on Vercel
 
@@ -107,6 +122,12 @@ set these variables for Production and Preview. Vite inlines them at build time,
 | `TRUST_PROXY` | optional: `1` only if a proxy in front of Studio overwrites `X-Forwarded-Host` / `-Proto` (otherwise those headers are ignored) |
 
 Studio never needs a secret key.
+
+**Self-hosting Studio behind a TLS proxy** (nginx, Caddy, a load balancer, Docker behind Traefik): Studio receives
+plain `http` from the proxy, so sign-in and sign-out would redirect to `http://…` unless it knows its public origin.
+Set `SITE_URL=https://studio.example.com` (simplest), or set `TRUST_PROXY=1` when the proxy overwrites
+`X-Forwarded-Proto` / `X-Forwarded-Host` on every request. Vercel and Netlify need neither. See
+[Studio → Any Node host or Docker](studio.md#any-node-host-or-docker).
 
 The build uses Nitro, which detects Vercel and writes `.vercel/output`. The same build also deploys to Netlify, or to
 any Node host with `npm run build -w @supaknowledge/studio` then `node apps/studio/.output/server/index.mjs`. Details
@@ -170,7 +191,10 @@ Supaknowledge uses only standard Supabase services, so it runs on the self-hoste
   version recent enough to provide it.
 - **Auth.** Set the site URL and redirect URLs to Studio, and enable the OAuth 2.1 server with the authorization
   path `/oauth/consent` in the Auth (GoTrue) configuration; see the Supabase self-hosting docs for the
-  environment variables of your version.
+  environment variables of your version. Keep e-mail confirmations on (`GOTRUE_MAILER_AUTOCONFIRM=false`) and
+  register the Before User Created hook (`GOTRUE_HOOK_BEFORE_USER_CREATED_ENABLED=true`,
+  `GOTRUE_HOOK_BEFORE_USER_CREATED_URI=pg-functions://postgres/private/hook_before_user_created`), as in
+  [Auth](#4-auth).
 - **Public URL.** Set `KF_PUBLIC_URL` (or `SUPABASE_PUBLIC_URL`) on the functions to the URL clients use, so MCP
   clients see the right OAuth metadata; the internal `SUPABASE_URL` (e.g. `http://kong:8000`) is never advertised.
 - **Intranet sources.** Connectors refuse private network addresses; set `KF_CONNECTORS_ALLOW_PRIVATE_NETWORK=true`

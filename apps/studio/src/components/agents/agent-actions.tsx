@@ -250,9 +250,9 @@ export function AgentRowActions({ agent, ctx }: { agent: { id: string; name: str
           {(
             [
               ["rotate", <RotateCw key="i" className="size-3.5" />, "Rotate key"],
-              agent.revoked
-                ? (["restore", <RotateCcw key="i" className="size-3.5" />, "Restore"] as const)
-                : (["revoke", <Ban key="i" className="size-3.5" />, "Revoke"] as const),
+              // unknown state (null): offer both, the function makes either one idempotent
+              ...(agent.revoked !== false ? ([["restore", <RotateCcw key="i" className="size-3.5" />, "Restore"]] as const) : []),
+              ...(agent.revoked !== true ? ([["revoke", <Ban key="i" className="size-3.5" />, "Revoke"]] as const) : []),
               ["delete", <Trash key="i" className="size-3.5" />, "Delete"],
             ] as const
           ).map(([k, icon, label]) => (

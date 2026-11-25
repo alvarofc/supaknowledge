@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { FlagRow } from "@/components/inbox/flag-list";
 import type { ProposalRow } from "@/components/inbox/proposal-list";
+import { actorUserId } from "@/lib/format";
 import { atLeast } from "@/lib/roles";
 import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
@@ -52,8 +53,8 @@ export const loadInbox = createServerFn({ method: "GET" })
     );
     const flags = (flagsRes.data ?? []) as FlagRow[];
     const profiles = await getProfiles([
-      ...pending.map((p) => (p.author.startsWith("human:") ? p.author.slice(6) : null)),
-      ...history.flatMap((p) => [p.author.startsWith("human:") ? p.author.slice(6) : null, p.reviewed_by]),
+      ...pending.map((p) => actorUserId(p.author)),
+      ...history.flatMap((p) => [actorUserId(p.author), p.reviewed_by]),
       ...flags.map((f) => f.created_by),
     ]);
     return { pending, history, flags, profiles, invitations };

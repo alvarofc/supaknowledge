@@ -50,19 +50,42 @@ export function shortId(id: string | null | undefined): string {
 
 export type ProfileMap = Record<string, { display_name: string | null; kind: "human" | "agent" }>;
 
+/** Split an actor string at its first colon: "human:<uuid>" -> ["human", "<uuid>"], "system" -> ["system", ""]. */
+function splitActor(actor: string): [string, string] {
+  const i = actor.indexOf(":");
+  return i === -1 ? [actor, ""] : [actor.slice(0, i), actor.slice(i + 1)];
+}
+
+/**
+ * The auth user behind an actor string, when there is one: human:<uuid>, user:<uuid> and agent:<uuid> (headless
+ * agents have a profile too). Use it to collect ids for getProfiles().
+ */
+export function actorUserId(actor: string | null | undefined): string | null {
+  if (!actor) return null;
+  const [prefix, rest] = splitActor(actor);
+  return (prefix === "human" || prefix === "user" || prefix === "agent") && rest ? rest : null;
+}
+
 /**
  * Human-readable actor labels for the actor strings written by apply_proposal & co:
- *   human:<uuid> | curator/<model> | process:policy | import:okf | user:<uuid> | system
+ *   human:<uuid> | agent:<uuid> | curator/<model> | process:policy | import:okf | user:<uuid> | system
  */
 export function actorLabel(actor: string | null | undefined, profiles: ProfileMap = {}): string {
   if (!actor) return "Unknown";
-  const [prefix, rest] = actor.includes(":") ? [actor.slice(0, actor.indexOf(":")), actor.slice(actor.indexOf(":") + 1)] : [actor, ""];
+  const [prefix, rest] = splitActor(actor);
   if (prefix === "human" || prefix === "user") return profiles[rest]?.display_name ?? `User ${shortId(rest)}`;
+  if (prefix === "agent") return profiles[rest]?.display_name ?? `Agent ${shortId(rest)}`;
   if (actor.startsWith("curator")) return actor.includes("/") ? `Curator · ${actor.split("/").slice(1).join("/")}` : "Curator";
   if (actor === "process:policy") return "Auto-apply policy";
   if (prefix === "import") return `Import (${rest})`;
   if (actor === "system") return "System";
   return actor;
+}
+
+/** The curator_runs.error written by cancel_curator_run(): "cancelled by user:<uuid>" | "cancelled by system". */
+export function cancelledBy(error: string | null | undefined): string | null {
+  const m = /^cancelled by (.+)$/.exec(error ?? "");
+  return m ? m[1] : null;
 }
 
 export function slugify(s: string, max = 40): string {

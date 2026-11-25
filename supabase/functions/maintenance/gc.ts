@@ -1,7 +1,10 @@
 // Storage garbage collection: removes the objects queued in public.kf_storage_gc (deleted spaces, sources,
 // concepts and soft-deleted documents; the database cannot delete Storage bytes itself).
 // For each queued (bucket, prefix): list the objects (public.kf_storage_gc_objects, paginated by name), remove
-// them through the Storage API in batches, then delete the queue row. Failures bump attempts / last_error and
+// them through the Storage API in batches, then delete the queue row. The database orders names byte-wise
+// (COLLATE "C"); the keyset cursor is always the last name it returned, never compared or sorted here (JS string
+// order / localeCompare differ from byte order). The deadline is checked between pages and remove batches: a
+// row cut short stays queued (not done, no failure recorded) and the next run lists what is left from the start. Failures bump attempts / last_error and
 // the row is retried on the next run (rows with 10 failed attempts are left for an operator).
 // Pure over a small client interface so it can be unit tested without a database.
 
@@ -27,6 +30,8 @@ export interface GcResult {
   rows: number;
   removed: number;
   failed: { id: number; error: string }[];
+  /** the deadline stopped the run; remaining work continues on the next run */
+  stopped: boolean;
 }
 
 export const MAX_ATTEMPTS = 10;
@@ -40,19 +45,35 @@ export async function collectGarbage(
 ): Promise<GcResult> {
   const now = opts.now ?? Date.now;
   const rows = await store.queued(opts.maxRows ?? 50, MAX_ATTEMPTS);
-  const out: GcResult = { rows: 0, removed: 0, failed: [] };
+  const out: GcResult = { rows: 0, removed: 0, failed: [], stopped: false };
+  const late = () => opts.deadline !== undefined && now() > opts.deadline;
   for (const row of rows) {
-    if (opts.deadline !== undefined && now() > opts.deadline) break; // the next cron run continues
+    if (late()) {
+      out.stopped = true; // the next cron run continues
+      break;
+    }
     try {
       let after = "";
-      for (;;) {
+      let complete = false;
+      while (!late()) {
         const names = await store.objects(row.bucket, row.prefix, after, PAGE);
-        for (let i = 0; i < names.length; i += REMOVE_BATCH) {
+        let i = 0;
+        for (; i < names.length; i += REMOVE_BATCH) {
+          if (i > 0 && late()) break;
           await store.remove(row.bucket, names.slice(i, i + REMOVE_BATCH));
           out.removed += Math.min(REMOVE_BATCH, names.length - i);
         }
-        if (names.length < PAGE) break;
+        if (i < names.length) break; // deadline in the middle of a page
+        if (names.length < PAGE) {
+          complete = true;
+          break;
+        }
+        // keyset cursor in the database's (byte) order: the last name it returned
         after = names[names.length - 1]!;
+      }
+      if (!complete) {
+        out.stopped = true; // the row stays queued; the next run lists what is left
+        break;
       }
       await store.done(row.id);
       out.rows++;

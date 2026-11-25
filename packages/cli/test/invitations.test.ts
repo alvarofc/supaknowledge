@@ -137,3 +137,28 @@ describe("kf invitations", () => {
     assert.equal(bad.code, 2);
   });
 });
+
+describe("kf members remove --workspace", () => {
+  it("refuses headless agents (they would be stranded) without deleting anything", async () => {
+    const h = harness();
+    h.routes.push(spaceRoute, (c) => (c.url.includes("/rest/v1/profiles?") ? json([{ kind: "agent" }]) : undefined));
+    const r = await h.run("members", "remove", AGENT, "--workspace");
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /agents can't be removed from the workspace/);
+    assert.match(r.stderr, /kf agents revoke/);
+    assert.equal(h.calls.some((c) => c.method === "DELETE"), false);
+  });
+
+  it("removes people", async () => {
+    const h = harness();
+    const UID = "66666666-0000-4000-8000-000000000006";
+    h.routes.push(
+      spaceRoute,
+      (c) => (c.url.includes("/rest/v1/profiles?") ? json([{ kind: "human" }]) : undefined),
+      (c) => (c.method === "DELETE" && c.url.includes("/rest/v1/workspace_members?") ? json([{ user_id: UID }]) : undefined),
+    );
+    const r = await h.run("members", "remove", UID, "--workspace");
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /removed/);
+  });
+});

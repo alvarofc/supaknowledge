@@ -24,7 +24,7 @@ export const Route = createFileRoute("/_authed/onboarding")({
 });
 
 function OnboardingPage() {
-  const { initial, userId, hasAny, invitations } = Route.useLoaderData();
+  const { initial, email, hasAny, invitations } = Route.useLoaderData();
   const deps = Route.useLoaderDeps();
   return (
     <div className="flex min-h-dvh flex-col">
@@ -49,7 +49,7 @@ function OnboardingPage() {
           </div>
         ) : null}
         {/* a new ?workspace= / ?new= starts the wizard over, like a fresh page in the Next app */}
-        <OnboardingWizard key={JSON.stringify(deps)} initial={initial} userId={userId} firstTime={!hasAny} />
+        <OnboardingWizard key={JSON.stringify(deps)} initial={initial} email={email} firstTime={!hasAny} />
       </main>
     </div>
   );

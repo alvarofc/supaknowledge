@@ -16,7 +16,14 @@ export type AgentListItem = {
   created_by: string | null;
   /** true = revoked (agents.revoked_at set), false = active, null = unknown (kept for older functions) */
   revoked: boolean | null;
+  revoked_at?: string | null;
 };
+
+/** Revoked state from agents.revoked_at: null when the column was not returned at all (unknown). */
+function revokedFrom(revokedAt: string | null | undefined): boolean | null {
+  if (revokedAt === undefined) return null;
+  return revokedAt !== null && Date.parse(revokedAt) <= Date.now();
+}
 
 /**
  * Agents through the `agents` Edge Function (revoked state, space grants).
@@ -33,7 +40,7 @@ async function listFromFunction(workspaceId: string): Promise<AgentListItem[] | 
     });
     if (!res.ok) return null;
     const body = (await res.json()) as { agents?: AgentListItem[] };
-    return Array.isArray(body.agents) ? body.agents.map((a) => ({ ...a, revoked: a.revoked ?? null })) : null;
+    return Array.isArray(body.agents) ? body.agents.map((a) => ({ ...a, revoked: a.revoked ?? revokedFrom(a.revoked_at) })) : null;
   } catch {
     return null;
   }
@@ -53,7 +60,14 @@ export const loadAgents = createServerFn({ method: "GET" })
         .select("id, name, description, key_prefix, last_seen_at, created_at, created_by, revoked_at")
         .eq("workspace_id", ctx.workspace.id)
         .order("name");
-      list = (agents ?? []).map(({ revoked_at, ...a }) => ({ ...a, revoked: revoked_at !== null && Date.parse(revoked_at) <= Date.now() }));
+      list = (agents ?? []).map((a) => ({ ...a, revoked: revokedFrom(a.revoked_at) }));
+    }
+    // an older function without the revoked state: read agents.revoked_at (RLS: workspace admins) for the gaps
+    const unknown = list.filter((a) => a.revoked === null).map((a) => a.id);
+    if (unknown.length) {
+      const { data: rows } = await supabase.from("agents").select("id, revoked_at").in("id", unknown);
+      const at = new Map((rows ?? []).map((r) => [r.id, r.revoked_at]));
+      list = list.map((a) => (a.revoked === null && at.has(a.id) ? { ...a, revoked: revokedFrom(at.get(a.id)) } : a));
     }
     const statusKnown = list.every((a) => a.revoked !== null);
     const ids = list.map((a) => a.id);

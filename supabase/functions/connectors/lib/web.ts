@@ -10,10 +10,13 @@
 // page so crawled subpages stay in the target set. A capped run records the pages it already handled
 // (cursor.crawl.done) and the next run continues after them. Only a completed cycle reconciles with a
 // snapshot, so pages removed from the config/sitemap, gone (404/410) or now disallowed are marked deleted.
-// Redirects are followed by hand and must stay in scope; all requests go through the outbound guard.
+// Redirects (of pages and sitemaps) are followed by hand and every hop must stay in scope (origin +
+// include/exclude for pages, origin + exclude for sitemaps); all requests go through the outbound guard.
+// A configured seed URL (config.urls / config.sitemap) the guard refuses fails the run with a config error
+// (the source goes to 'error'); a refused discovered URL (sitemap entry, crawled link) is dropped.
 import { bytesToText, maxBodyBytes, readBody, readText, redact, request, TooLargeError } from "./http.ts";
 import { htmlToMarkdown } from "./markdown.ts";
-import { assertPublicUrl } from "./net-guard.ts";
+import { assertPublicUrl, BlockedUrlError } from "./net-guard.ts";
 import { extractPdfText } from "./pdf.ts";
 import { asObject, type Connector, ConfigError, type DocumentChange, optBool, optNumber, optString, stringList, type SyncContext } from "./types.ts";
 
@@ -195,13 +198,24 @@ export const web: Connector<WebConfig> = {
       originOk(u) &&
       (!config.include.length || matchesAny(u, config.include)) &&
       !matchesAny(u, config.exclude);
+    /** pages: origin + include/exclude */
+    const pageScope = (u: string): string | null =>
+      !originOk(u) ? "outside the configured origins" : !inScope(u) ? "excluded by config.include/exclude" : null;
+    /** sitemaps (and child sitemaps): origin + exclude (include patterns describe pages, not sitemaps) */
+    const sitemapScope = (u: string): string | null =>
+      !originOk(u) ? "outside the configured origins" : matchesAny(u, config.exclude) ? "excluded by config.exclude" : null;
+    // configured seeds: a guard refusal here is a config problem the admin must see, never a silent skip
+    const seeds = new Set([...config.urls, ...(config.sitemap ? [config.sitemap] : [])]);
+    const seedError = (url: string, e: unknown) =>
+      new BlockedUrlError(`${config.urls.includes(url) ? "config.urls" : "config.sitemap"} ${redact(url)}: ${e instanceof Error ? e.message : e}`);
 
-    const robotsCache = new Map<string, RobotsRules | "deny">();
+    // robots.txt per origin; an origin the outbound guard refuses is remembered as that error (rethrown)
+    const robotsCache = new Map<string, RobotsRules | "deny" | BlockedUrlError>();
     const lastHit = new Map<string, number>();
     const robots = async (u: string): Promise<RobotsRules | "deny"> => {
       const origin = new URL(u).origin;
       if (!robotsCache.has(origin)) {
-        let r: RobotsRules | "deny";
+        let r: RobotsRules | "deny" | BlockedUrlError;
         try {
           const res = await request(ctx, `${origin}/robots.txt`, { headers: { "user-agent": ua } }, { retries: 1, timeoutMs: 10_000 });
           if (res.ok) r = parseRobots(await readText(res, ROBOTS_MAX_BYTES), ua);
@@ -209,12 +223,16 @@ export const web: Connector<WebConfig> = {
             await res.body?.cancel();
             r = res.status >= 500 ? "deny" : { rules: [], crawlDelay: null, sitemaps: [] };
           }
-        } catch {
-          r = "deny";
+        } catch (e) {
+          // refused by the outbound guard (the origin, or a robots.txt redirect into blocked space): surface it
+          // instead of treating the origin as "disallow all", which would silently drop configured URLs
+          r = e instanceof BlockedUrlError ? e : "deny";
         }
         robotsCache.set(origin, r);
       }
-      return robotsCache.get(origin)!;
+      const r = robotsCache.get(origin)!;
+      if (r instanceof BlockedUrlError) throw r;
+      return r;
     };
     const allowed = async (u: string) => {
       const r = await robots(u);
@@ -230,10 +248,15 @@ export const web: Connector<WebConfig> = {
       return await request(ctx, u, init, { retries: 2, timeoutMs: 20_000 });
     };
     /**
-     * GET with redirects followed by hand: every hop must stay in scope (same_origin_only) and be allowed by
-     * robots.txt (the outbound guard additionally re-validates the destination of every hop).
+     * GET with redirects followed by hand: every hop must stay in scope (`scope`: origin + include/exclude for
+     * pages, origin + exclude for sitemaps) and be allowed by robots.txt (the outbound guard additionally
+     * re-validates the destination of every hop).
      */
-    const fetchPage = async (url: string, headers: Record<string, string>): Promise<{ res: Response; finalUrl: string } | { outOfScope: string }> => {
+    const fetchPage = async (
+      url: string,
+      headers: Record<string, string>,
+      scope: (u: string) => string | null = pageScope,
+    ): Promise<{ res: Response; finalUrl: string } | { outOfScope: string }> => {
       let cur = url;
       let h = headers;
       for (let hop = 0; ; hop++) {
@@ -243,7 +266,8 @@ export const web: Connector<WebConfig> = {
         await res.body?.cancel();
         const next = normaliseUrl(location, cur);
         if (!next) return { outOfScope: "redirect to a non-http(s) URL" };
-        if (!originOk(next)) return { outOfScope: `redirects to ${redact(next)}, outside the configured origins` };
+        const problem = scope(next);
+        if (problem) return { outOfScope: `redirects to ${redact(next)}, ${problem}` };
         if (!(await allowed(next))) return { outOfScope: `redirects to ${redact(next)}, disallowed by robots.txt` };
         if (hop >= MAX_HOPS) throw new Error(`too many redirects`);
         // validators belong to the original URL
@@ -270,10 +294,17 @@ export const web: Connector<WebConfig> = {
       while (queue.length && fetchedMaps < 10) {
         const sm = queue.shift()!;
         fetchedMaps++;
-        if (!(await allowed(sm)) && sm !== config.sitemap) continue;
         let text: string;
         try {
-          const res = await politeFetch(sm, { headers: { "user-agent": ua } });
+          if (!(await allowed(sm)) && sm !== config.sitemap) continue;
+          // same guarded manual-redirect path as pages: a sitemap never follows a redirect out of scope
+          const got = await fetchPage(sm, { "user-agent": ua }, sitemapScope);
+          if ("outOfScope" in got) {
+            ctx.log(`web: sitemap ${redact(sm)} ${got.outOfScope}; ignoring it`);
+            sitemapComplete = false;
+            continue;
+          }
+          const res = got.res;
           if (!res.ok) {
             await res.body?.cancel();
             ctx.log(`web: sitemap ${redact(sm)} returned ${res.status}`);
@@ -282,7 +313,12 @@ export const web: Connector<WebConfig> = {
           }
           text = await readText(res);
         } catch (e) {
-          if (sm === config.sitemap && e instanceof ConfigError) throw e;
+          if (sm === config.sitemap && e instanceof ConfigError) throw e instanceof BlockedUrlError ? seedError(sm, e) : e;
+          if (e instanceof BlockedUrlError) {
+            // a child sitemap the guard refuses will never be readable: ignore it (does not block reconciling)
+            ctx.log(`web: ignoring blocked child sitemap ${redact(sm)}: ${e.message}`);
+            continue;
+          }
           ctx.log(`web: sitemap ${redact(sm)} failed: ${e instanceof Error ? e.message : e}`);
           sitemapComplete = false;
           continue;
@@ -291,7 +327,7 @@ export const web: Connector<WebConfig> = {
         for (const child of parsed.sitemaps) {
           const n = normaliseUrl(child);
           // child sitemaps obey the same scope as pages (origin + exclude); never fetch arbitrary hosts
-          if (!n || !originOk(n) || matchesAny(n, config.exclude)) {
+          if (!n || sitemapScope(n)) {
             ctx.log(`web: ignoring out-of-scope child sitemap ${n ? redact(n) : child.slice(0, 100)}`);
             continue;
           }
@@ -320,7 +356,19 @@ export const web: Connector<WebConfig> = {
         keepLinks(url);
         continue;
       }
-      if (!(await allowed(url))) {
+      let ok: boolean;
+      try {
+        ok = await allowed(url);
+      } catch (e) {
+        if (!(e instanceof BlockedUrlError)) throw e;
+        if (seeds.has(url)) throw seedError(url, e);
+        ctx.log(`web: ${redact(url)} is blocked by the outbound guard; dropping it`);
+        delete pages[url];
+        done.add(url);
+        yield { type: "delete", externalId: url, reason: "blocked by the outbound guard" };
+        continue;
+      }
+      if (!ok) {
         ctx.log(`web: robots.txt disallows ${redact(url)}`);
         delete pages[url];
         done.add(url);
@@ -341,6 +389,14 @@ export const web: Connector<WebConfig> = {
       try {
         got = await fetchPage(url, headers);
       } catch (e) {
+        if (e instanceof BlockedUrlError) {
+          if (seeds.has(url)) throw seedError(url, e);
+          ctx.log(`web: ${redact(url)} is blocked by the outbound guard; dropping it`);
+          delete pages[url];
+          done.add(url);
+          yield { type: "delete", externalId: url, reason: "blocked by the outbound guard" };
+          continue;
+        }
         ctx.log(`web: ${redact(url)} failed: ${e instanceof Error ? e.message : e}`);
         seen.add(url); // transient: keep what we have
         keepLinks(url);

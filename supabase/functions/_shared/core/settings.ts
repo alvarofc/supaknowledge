@@ -1,8 +1,13 @@
 // Per-space settings (spaces.settings jsonb) and the auto-apply policy engine.
 // The database validates the same keys, types and bounds on write (private.validate_space_settings, latest
-// definition in supabase/migrations/20261125000020_followups.sql); test/settings-db.test.ts keeps them in sync.
+// definition in supabase/migrations/20261125000022_round2_functions.sql); test/settings-db.test.ts keeps them in sync.
 import { z } from "zod";
 import type { ConceptKind, ProposalRisk } from "./types.ts";
+
+/** length limits (the database enforces the same): model ids, fallback chain, house rules */
+export const MODEL_ID_MAX = 200;
+export const MAX_FALLBACK_MODELS = 5;
+export const INSTRUCTIONS_MAX = 8000;
 
 const CuratorSettingsSchema = z.object({
   enabled: z.boolean().default(true),
@@ -11,13 +16,13 @@ const CuratorSettingsSchema = z.object({
   /** minimum minutes between flag-threshold runs of one space (enforced in the database) */
   flag_cooldown_minutes: z.number().int().min(0).max(10080).default(60),
   /** a run/task without progress for this long is failed by the reaper (enforced in the database) */
-  stuck_after_minutes: z.number().int().min(5).max(1440).default(30),
+  stuck_after_minutes: z.number().int().min(10).max(1440).default(30),
   /** model id override for this space ("" = KF_LLM_MODEL). Endpoints and keys come only from the environment. */
-  model: z.string().default(""),
+  model: z.string().max(MODEL_ID_MAX).default(""),
   /** cheaper model for bulk trace mining ("" = KF_LLM_FAST_MODEL, else `model`) */
-  fast_model: z.string().default(""),
+  fast_model: z.string().max(MODEL_ID_MAX).default(""),
   /** tried in order when the primary model errors ([] = KF_LLM_FALLBACK_MODELS) */
-  fallback_models: z.array(z.string()).default([]),
+  fallback_models: z.array(z.string().max(MODEL_ID_MAX)).max(MAX_FALLBACK_MODELS).default([]),
   /** research tool calls the drafting agent may make per cluster */
   max_research_steps: z.number().int().min(1).max(20).default(8),
   max_clusters_per_run: z.number().int().min(1).max(200).default(25),
@@ -36,7 +41,7 @@ const CuratorSettingsSchema = z.object({
   /** let the curator dismiss flags it judges mistaken or noise (false = leave them open for a human) */
   auto_dismiss_flags: z.boolean().default(true),
   /** extra guidance appended to the curator system prompt (house style, naming rules...) */
-  instructions: z.string().default(""),
+  instructions: z.string().max(INSTRUCTIONS_MAX).default(""),
 });
 
 const AutoApplySettingsSchema = z.object({

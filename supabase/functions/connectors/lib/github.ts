@@ -133,6 +133,10 @@ export const github: Connector<GithubConfig> = {
     const repo = optString(o, "repo");
     const m = repo ? /^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(repo.replace(/^https:\/\/github\.com\//, "")) : null;
     if (!m) throw new ConfigError('config.repo must look like "owner/name"');
+    // owner and name become API path segments sent with the token: only GitHub's own charsets, never `.`/`..`
+    // (owner: letters, digits, `-`, plus `_` for Enterprise Managed Users; name: letters, digits, `.`, `-`, `_`)
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(m[1]!)) throw new ConfigError(`config.repo: invalid owner "${m[1]}"`);
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(m[2]!) || /^\.+$/.test(m[2]!)) throw new ConfigError(`config.repo: invalid repository name "${m[2]}"`);
     const paths = stringList(o, "paths");
     makeMatcher(paths); // compile now: a bad glob is a config error, not a retried sync failure
     const apiUrl = (optString(o, "api_url") ?? GITHUB_API).replace(/\/+$/, "");

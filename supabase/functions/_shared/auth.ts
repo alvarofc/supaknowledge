@@ -9,7 +9,7 @@
 //   3. x-kf-internal: <secret> - cron / queue invocations (see util.invoke_edge_function).
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@supabase/supabase-js";
-import { AGENT_KEY_RE, agentEmail, keyPrefix, LruCache, sha256Hex, SingleFlight } from "./agent-keys.ts";
+import { AGENT_KEY_RE, agentEmail, FailureLimiter, keyPrefix, LruCache, sha256Hex, SingleFlight } from "./agent-keys.ts";
 import { adminClient, publishableKey, SUPABASE_URL, userClient } from "./env.ts";
 import { HttpError } from "./http.ts";
 
@@ -40,19 +40,30 @@ interface CachedSession {
 }
 
 // Agent-key exchange: how stale can a warm worker be?
-//   * Every request re-checks the agents row (cached AGENT_ROW_TTL_MS): a rotated key (key_prefix changed),
-//     a deleted agent or a revoked one (agents.revoked_at) stops the old key within ~15 s on every worker,
-//     without a GoTrue sign-in.
+//   * Every request re-checks the agents row (cached AGENT_ROW_TTL_MS): a rotated key (key_prefix changed) or a
+//     deleted agent stops the old key within ~5 s on every worker, without a GoTrue sign-in. forgetAgent() only
+//     clears the isolate that handled the rotate/revoke, so the TTL is the cross-worker bound. 5 s (one indexed
+//     primary-key read per agent per worker every 5 s) instead of a read on every request: a revoke is already
+//     immediate in the database (revoked agents hold no role, so even a cached access token reads nothing), and
+//     only a rotation without revoke relies on this window.
 //   * The GoTrue session is refreshed every REVERIFY_SECONDS, which is what notices an Auth ban (revoke).
 //     Refreshes count against GoTrue's per-IP `token_refresh` limit (150 / 5 min), so this is not per request.
+//   * Failed sign-ins are limited per agent (SIGNIN_FAILURES_MAX per SIGNIN_FAILURE_WINDOW_MS -> 429): the key
+//     prefix (agent id + 4 secret characters) is visible to workspace members, so guessed secrets with a valid
+//     prefix pass the cheap DB check and reach GoTrue. The limiter is per isolate (N warm isolates allow up to
+//     N x the limit); GoTrue's own per-IP sign-in limit and bcrypt cost back it up. Keys that already signed in
+//     on this worker (a cached session) are not limited, so an attacker cannot lock out a working agent here.
 const REVERIFY_SECONDS = 120;
-const AGENT_ROW_TTL_MS = 15_000;
+const AGENT_ROW_TTL_MS = 5_000;
 const BAD_KEY_TTL_MS = 60_000;
 const REVOKED_KEY_TTL_MS = 10_000;
+const SIGNIN_FAILURES_MAX = 10;
+const SIGNIN_FAILURE_WINDOW_MS = 60_000;
 const agentSessions = new LruCache<CachedSession>(500);
 const badKeys = new LruCache<string>(5000); // sha256(key) -> reason; stops repeated GoTrue sign-ins for bad keys
 const agentRows = new LruCache<AgentRow | null>(1000);
 const exchanges = new SingleFlight<CachedSession>();
+const signInFailures = new FailureLimiter(SIGNIN_FAILURES_MAX, SIGNIN_FAILURE_WINDOW_MS);
 
 interface AgentRow {
   id: string;
@@ -145,10 +156,18 @@ async function exchangeAgentKey(key: string): Promise<CachedSession> {
       agentSessions.delete(cacheKey); // banned / rotated / wrong user: fall through to a fresh sign-in
     }
 
+    // a key that never signed in on this worker: limit failed attempts per agent (see SIGNIN_FAILURES_MAX)
+    if (!again) {
+      const wait = signInFailures.retryAfterMs(agentId);
+      if (wait > 0) {
+        throw new HttpError(429, "too many failed sign-ins for this agent; retry later", { "Retry-After": String(Math.ceil(wait / 1000)) });
+      }
+    }
     const { data, error } = await auth.signInWithPassword({ email: agentEmail(agentId), password: secret });
     if (error && transient(error)) throw new HttpError(503, "agent sign-in temporarily unavailable; retry");
     if (error || !data.session || !isAgentUser(data.user, agentId)) {
       badKeys.set(cacheKey, "rejected", BAD_KEY_TTL_MS);
+      signInFailures.fail(agentId);
       throw new HttpError(401, "invalid or revoked agent key");
     }
     const s = keep({ accessToken: data.session.access_token, refreshToken: data.session.refresh_token, expiresAt: data.session.expires_at ?? t + 3000, userId: data.user!.id, verifiedAt: t });

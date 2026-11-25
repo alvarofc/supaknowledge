@@ -6,7 +6,8 @@
 //                             Runs the source's connector incrementally from sources.cursor (from scratch when
 //                             full), writes source_documents (embedding follows automatically via kf_embed)
 //                             and raw exports in Storage bucket "sources".
-//   POST /connectors/upload   authenticated (user JWT / agent key). Adds a document to an `upload` source:
+//   POST /connectors/upload   authenticated (user JWT / agent key; OAuth client tokens are refused with 403).
+//                             Adds a document to an `upload` source:
 //                             multipart (source_id + file [+ title, external_id, url]) or
 //                             JSON { source_id, title?, content, external_id?, format?: "md"|"txt"|"html", url? }.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -20,7 +21,7 @@ import { type DocumentRow, type DocumentStore, type ExistingDoc, runSync, type S
 import { guardedFetch } from "./lib/net-guard.ts";
 import { connectors } from "./lib/registry.ts";
 import { AuthError, ConfigError, type Connector, type Cursor, type RawExport, type SyncedDocument } from "./lib/types.ts";
-import { prepareUpload, UPLOAD_MAX_BYTES, UploadError, type UploadInput } from "./lib/upload.ts";
+import { assertUploadCaller, prepareUpload, UPLOAD_MAX_BYTES, UploadError, type UploadInput } from "./lib/upload.ts";
 
 interface IngestJob {
   source_id: string;
@@ -218,6 +219,13 @@ function formString(form: FormData, key: string): string | undefined {
 async function handleUpload(req: Request): Promise<Response> {
   if (req.method !== "POST") throw new HttpError(405, "POST only");
   const caller = await authenticate(req);
+  // OAuth client tokens (MCP clients) only read and flag; this route writes with the admin client below
+  try {
+    assertUploadCaller(caller);
+  } catch (e) {
+    if (e instanceof UploadError) throw new HttpError(e.status, e.message);
+    throw e;
+  }
 
   let sourceId: string | undefined;
   let input: UploadInput;

@@ -52,7 +52,7 @@ which runs, in order:
 | `npm run check:functions` | `deno check` of every Edge Function against its `deno.json` and lockfile |
 | `npm run test:deno` | Every Edge Function Deno suite (`scripts/test-deno.mjs`): `connectors`, `agents`, `bundle`, `maintenance`, `mcp`, `traces` and `_shared`, each against its function's `deno.json` (Deno 2.9.6 through `npx`; `node scripts/test-deno.mjs mcp` runs one suite) |
 | `npm run test:python` | Python SDK tests (`uv venv`, `uv pip install -e ".[test]"`, `pytest`) |
-| `npx supabase test db` | The 537 pgTAP tests of the access model (`npm run test:db`) |
+| `npx supabase test db` | The 702 pgTAP tests of the access model (`npm run test:db`) |
 
 Extra checks worth running when you touch these areas:
 

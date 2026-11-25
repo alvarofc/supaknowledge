@@ -34,4 +34,14 @@ create policy "sources: editors in document audience" on storage.objects for sel
   );
 
 -- Realtime: Studio inbox and live knowledge browser. postgres_changes respects RLS.
-alter publication supabase_realtime add table public.flags, public.proposals, public.curator_runs, public.concepts;
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['flags', 'proposals', 'curator_runs', 'concepts'] loop
+    if not exists (select 1 from pg_publication_tables p
+                    where p.pubname = 'supabase_realtime' and p.schemaname = 'public' and p.tablename = t) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;

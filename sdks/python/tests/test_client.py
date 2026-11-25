@@ -459,3 +459,126 @@ def test_rest_load_skill_stable_only_prefers_exact_path():
     assert "status=eq.stable" in str(rec.calls[0][0].url)
     usage = next(b for r, b in rec.calls if str(r.url).endswith("/rpc/log_concept_usage"))
     assert usage["p_trace"] is None
+
+
+def test_trace_forwards_retry_base_and_retry_max():
+    kf = client(Recorder(lambda r, b: httpx.Response(503, json={"error": "down"})))
+    t = kf.trace(retry_base=0.25, retry_max=2.0)
+    assert t._retry_base == 0.25 and t._retry_max == 2.0
+    d = kf.trace()
+    assert d._retry_base == 1.0 and d._retry_max == 60.0
+
+
+def test_rest_load_skill_accepts_full_paths_like_mcp():
+    from urllib.parse import unquote
+
+    def handle(req: httpx.Request, body: Any) -> httpx.Response | None:
+        u = str(req.url)
+        if "/rest/v1/concepts?" in u:
+            return httpx.Response(200, json=[{"path": "skills/revenue-report"}])
+        if u.endswith("/rpc/read_concept"):
+            return httpx.Response(200, json={"id": "c1", "path": body["p_path"], "kind": "skill", "title": "R", "body": ""})
+        if u.endswith("/rpc/log_concept_usage"):
+            return httpx.Response(200, json=1)
+        return None
+
+    rec = Recorder(handle)
+    kf = Supaknowledge(URL, SPACE_ID, access_token="jwt", publishable_key="pk", transport="rest", http_client=httpx.Client(transport=httpx.MockTransport(rec)))
+    for ref in ["skills/revenue-report", "/skills/revenue-report/SKILL.md", "revenue-report"]:
+        s = kf.load_skill(ref)
+        assert s is not None and s["path"] == "skills/revenue-report" and s["name"] == "revenue-report", ref
+    assert "path.eq.skills/revenue-report,path.like.*/skills/revenue-report)" in unquote(str(rec.calls[0][0].url))
+    assert kf.load_skill("../etc") is None
+
+
+# ---------------------------------------------------------------- 429 retries
+def throttled(match: Callable[[httpx.Request, Any], bool], n: int, then: Callable[[httpx.Request, Any], httpx.Response | None], after: str = "0") -> Callable[[httpx.Request, Any], httpx.Response | None]:
+    """429 (Retry-After: ``after``) for the first ``n`` matching calls, then ``then``."""
+    left = [n]
+
+    def handle(req: httpx.Request, body: Any) -> httpx.Response | None:
+        if match(req, body) and left[0] > 0:
+            left[0] -= 1
+            return httpx.Response(429, json={"error": "too many failed sign-ins for this agent; retry later"}, headers={"retry-after": after})
+        return then(req, body)
+
+    return handle
+
+
+def is_tool(name: str) -> Callable[[httpx.Request, Any], bool]:
+    return lambda req, body: isinstance(body, dict) and body.get("method") == "tools/call" and body["params"]["name"] == name
+
+
+def test_parse_retry_after_and_bounded_policy():
+    from email.utils import formatdate
+
+    from supaknowledge import RetryPolicy, parse_retry_after
+
+    assert parse_retry_after("3") == 3.0
+    assert parse_retry_after(None) is None
+    assert parse_retry_after("soon") is None
+    assert abs((parse_retry_after(formatdate(1_000_010, usegmt=True), now=1_000_000) or 0) - 10) < 1
+    p = RetryPolicy.bounded(9, 120)
+    assert (p.retries, p.max_wait) == (2, 30.0)
+    p = RetryPolicy.bounded(-1, 1)
+    assert (p.retries, p.max_wait) == (0, 1.0)
+
+
+def test_read_only_mcp_calls_retry_on_429():
+    rec = Recorder(throttled(lambda r, b: isinstance(b, dict) and b.get("method") == "initialize", 1, throttled(is_tool("search_knowledge"), 2, mcp(lambda n, a: []))))
+    kf = client(rec)
+    assert kf.search("arr") == []
+    assert sum(1 for r, b in rec.calls if is_tool("search_knowledge")(r, b)) == 3
+    assert sum(1 for _, b in rec.calls if b and b.get("method") == "initialize") == 2
+
+
+def test_429_gives_up_after_two_retries_and_on_long_retry_after():
+    rec = Recorder(throttled(is_tool("read_concept"), 10, mcp(lambda n, a: {"path": "x"})))
+    with pytest.raises(SupaknowledgeError) as ei:
+        client(rec).read("x")
+    assert ei.value.status == 429 and ei.value.retry_after == 0
+    assert sum(1 for r, b in rec.calls if is_tool("read_concept")(r, b)) == 3
+
+    slept: list[float] = []
+    rec = Recorder(throttled(is_tool("list_skills"), 10, mcp(lambda n, a: []), after="120"))
+    kf = client(rec)
+    kf._retry.sleep = slept.append  # noqa: SLF001
+    with pytest.raises(SupaknowledgeError) as ei:
+        kf.list_skills()
+    assert ei.value.retry_after == 120 and slept == []
+    assert sum(1 for r, b in rec.calls if is_tool("list_skills")(r, b)) == 1
+
+
+def test_429_honours_retry_after_delay():
+    slept: list[float] = []
+    rec = Recorder(throttled(is_tool("load_skill"), 1, mcp(lambda n, a: {"path": "skills/r", "kind": "skill", "title": "R", "body": ""}), after="7"))
+    kf = client(rec)
+    kf._retry.sleep = slept.append  # noqa: SLF001
+    assert kf.load_skill("r") is not None
+    assert slept == [7.0]
+
+
+def test_writes_are_never_retried_on_429():
+    rec = Recorder(throttled(is_tool("flag_knowledge"), 10, mcp(lambda n, a: {"id": "f-1"})))
+    with pytest.raises(SupaknowledgeError) as ei:
+        client(rec).flag("missing", "no ARR definition")
+    assert ei.value.status == 429
+    assert sum(1 for r, b in rec.calls if is_tool("flag_knowledge")(r, b)) == 1
+
+    def rest(req: httpx.Request, body: Any) -> httpx.Response | None:
+        return httpx.Response(200, json=[] if req.url.path.endswith("/search_knowledge") else "f-1")
+
+    rpc = lambda fn: (lambda req, body: req.url.path.endswith(f"/rest/v1/rpc/{fn}"))  # noqa: E731
+    rec = Recorder(throttled(rpc("search_knowledge"), 1, throttled(rpc("flag_knowledge"), 1, rest)))
+    kf = Supaknowledge(URL, SPACE_ID, access_token="jwt", publishable_key="pk", transport="rest", http_client=httpx.Client(transport=httpx.MockTransport(rec)))
+    assert kf.search("arr") == []
+    assert sum(1 for r, _ in rec.calls if r.url.path.endswith("/search_knowledge")) == 2
+    with pytest.raises(SupaknowledgeError):
+        kf.flag("missing", "x")
+    assert sum(1 for r, _ in rec.calls if r.url.path.endswith("/flag_knowledge")) == 1
+
+
+def test_max_retries_zero_turns_retries_off():
+    rec = Recorder(throttled(is_tool("search_knowledge"), 1, mcp(lambda n, a: [])))
+    with pytest.raises(SupaknowledgeError):
+        client(rec, max_retries=0).search("arr")

@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash, Users, X } from "lucide-react";
+import { Archive, Pencil, Plus, Trash, Users, X } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export function Groups({ workspaceId, groups, people, canManage, me }: { workspaceId: string; groups: GroupRow[]; people: Person[]; canManage: boolean; me: string }) {
   const [editing, setEditing] = useState<GroupRow | "new" | null>(null);
+  const [retiring, setRetiring] = useState<GroupRow | null>(null);
   return (
     <div className="flex flex-col gap-4">
       <Callout tone="info" icon={<Users />} title="Groups are audiences">
@@ -50,17 +51,41 @@ export function Groups({ workspaceId, groups, people, canManage, me }: { workspa
         ) : (
           <ul className="divide-y divide-line">
             {groups.map((g) => (
-              <GroupItem key={g.id} group={g} people={people} canManage={canManage} me={me} onEdit={() => setEditing(g)} />
+              <GroupItem
+                key={g.id}
+                group={g}
+                people={people}
+                canManage={canManage}
+                me={me}
+                onEdit={() => setEditing(g)}
+                onRetire={groups.length > 1 ? () => setRetiring(g) : undefined}
+              />
             ))}
           </ul>
         )}
       </Card>
       {editing ? <GroupDialog workspaceId={workspaceId} group={editing === "new" ? null : editing} onClose={() => setEditing(null)} /> : null}
+      {retiring ? <RetireGroupDialog group={retiring} groups={groups} onClose={() => setRetiring(null)} /> : null}
     </div>
   );
 }
 
-function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; people: Person[]; canManage: boolean; me: string; onEdit: () => void }) {
+function GroupItem({
+  group,
+  people,
+  canManage,
+  me,
+  onEdit,
+  onRetire,
+}: {
+  group: GroupRow;
+  people: Person[];
+  canManage: boolean;
+  me: string;
+  onEdit: () => void;
+  /** absent when there is no other group to replace this one with */
+  onRetire?: () => void;
+}) {
   const { run, pending } = useMutation();
   const [confirm, confirmDialog] = useConfirm();
   const [add, setAdd] = useState("");
@@ -86,6 +111,11 @@ function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; 
             <Button variant="ghost" size="sm" onClick={onEdit} aria-label={`Edit ${group.name}`}>
               <Pencil className="size-3.5" />
             </Button>
+            {onRetire ? (
+              <Button variant="ghost" size="sm" onClick={onRetire} disabled={pending} aria-label={`Retire ${group.name}…`} title="Retire group…">
+                <Archive className="size-3.5" />
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="sm"
@@ -95,7 +125,7 @@ function GroupItem({ group, people, canManage, me, onEdit }: { group: GroupRow; 
                 const ok = await confirm({
                   title: `Delete the group “${group.name}”?`,
                   description:
-                    "Its members lose any access granted through it. A group that is still used as an audience (by knowledge, sources or documents) can't be deleted: change those audiences first.",
+                    "Its members lose any access granted through it. A group that is still used as an audience (by knowledge, sources or documents) can't be deleted: change those audiences first, or use “Retire group…” to replace it everywhere.",
                   confirmLabel: "Delete group",
                 });
                 if (!ok) return;
@@ -248,6 +278,75 @@ function GroupDialog({ workspaceId, group, onClose }: { workspaceId: string; gro
         </Field>
         <Field label="External reference" htmlFor="g-ref" optional error={errors.ref} hint='Upstream ACL this group mirrors, e.g. {"slack_channel": "C0123"} or {"github_team": "acme/finance"}.'>
           <Textarea id="g-ref" rows={3} value={ref} onChange={(e) => setRef(e.target.value)} className="font-mono text-xs" placeholder='{"slack_channel": "C0123456789"}' />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Retire a group (rpc retire_group): every audience in the workspace that names it names the replacement instead,
+ * open proposals are re-checked, and the group is deleted with its members and space grants. Workspace admins
+ * only; the database re-checks everything and its errors are shown as they come.
+ */
+function RetireGroupDialog({ group, groups, onClose }: { group: GroupRow; groups: GroupRow[]; onClose: () => void }) {
+  const { run, pending } = useMutation();
+  const [replacement, setReplacement] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const others = groups.filter((g) => g.id !== group.id);
+  const chosen = others.find((g) => g.id === replacement) ?? null;
+
+  async function retire(e: React.FormEvent) {
+    e.preventDefault();
+    if (!replacement) {
+      setError("Pick the group that takes its place");
+      return;
+    }
+    const res = await run(async () => createClient().rpc("retire_group", { p_group: group.id, p_replacement: replacement }), {
+      success: `“${group.name}” retired. ${chosen ? `“${chosen.name}”` : "The replacement"} now stands in for it everywhere.`,
+    });
+    if (res.ok) onClose();
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Retire “${group.name}”?`}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="danger" type="submit" form="retire-group-form" pending={pending} disabled={!replacement}>
+            Retire group
+          </Button>
+        </>
+      }
+    >
+      <form id="retire-group-form" onSubmit={retire} className="flex flex-col gap-4" noValidate>
+        <p className="text-sm text-muted">
+          Every concept, source, document, trace, flag and open proposal in this workspace whose audience names “{group.name}” will name the replacement
+          instead. Then “{group.name}” is deleted, with its members and its space grants.
+        </p>
+        <Callout tone="neutral" icon={<Users />}>
+          Restricted material stays restricted: it is never opened to the whole space, only handed to the replacement group, which must belong to this
+          workspace. Members of “{group.name}” who are not in the replacement lose access to it, and its members see it instead.
+        </Callout>
+        <Field label="Replacement group" htmlFor="retire-replacement" error={error}>
+          <Select
+            id="retire-replacement"
+            value={replacement}
+            onChange={(e) => {
+              setReplacement(e.target.value);
+              setError(null);
+            }}
+          >
+            <option value="">Choose a group…</option>
+            {others.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name} ({g.members.length} {g.members.length === 1 ? "member" : "members"})
+              </option>
+            ))}
+          </Select>
         </Field>
       </form>
     </Dialog>

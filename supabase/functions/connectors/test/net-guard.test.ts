@@ -1,7 +1,18 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { readBody, request, TooLargeError } from "../lib/http.ts";
-import { assertPublicUrl, BlockedUrlError, guardedFetch, hostnameProblem, isPrivateIp } from "../lib/net-guard.ts";
-import { ConfigError } from "../lib/types.ts";
+import {
+  assertPublicDestination,
+  assertPublicUrl,
+  BlockedUrlError,
+  defaultResolver,
+  DnsResolutionError,
+  egressProxyFromEnv,
+  guardedFetch,
+  hostnameProblem,
+  isPrivateIp,
+  proxiedFetch,
+} from "../lib/net-guard.ts";
+import { ConfigError, UpstreamError } from "../lib/types.ts";
 import { fakeFetch } from "./helpers.ts";
 
 const publicDns = async () => ["93.184.216.34"];
@@ -15,6 +26,36 @@ Deno.test("net-guard: IP classification (v4, v6, mapped, NAT64, 6to4)", () => {
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "100.128.0.1"]) {
     assert(!isPrivateIp(ip), `${ip} must be public`);
   }
+});
+
+Deno.test("net-guard: SIIT, local-use NAT64, Teredo, benchmarking, ORCHID and documentation IPv6 ranges", () => {
+  for (const ip of [
+    "::ffff:0:127.0.0.1", "::ffff:0:7f00:1", "::ffff:0:a9fe:a9fe", "::ffff:0:10.0.0.1", // SIIT with a private IPv4
+    "64:ff9b:1::1", "64:ff9b:1::808:808", "64:ff9b:1:ffff::1", // local-use NAT64 /48: blocked whatever it embeds
+    "64:ff9b::127.0.0.1", "64:ff9b::a00:1", // well-known NAT64 with a private IPv4
+    "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
+    "2001:2::1", "2001:2:0:ffff::1", // benchmarking
+    "2001:10::1", "2001:1f:ffff::1", "2001:20::1", "2001:2f::1", // ORCHID / ORCHIDv2
+    "2001:db8::1", "3fff::1", "3fff:fff::1", // documentation
+    "::1:2:3:4", // rest of ::/64
+  ]) assert(isPrivateIp(ip), `${ip} must be private`);
+  for (const ip of ["::ffff:0:8.8.8.8", "64:ff9b::8.8.8.8", "2001:4860:4860::8888", "2001:3::1", "2001:30::1", "2001:200::1", "3fff:1000::1"]) {
+    assert(!isPrivateIp(ip), `${ip} must be public`);
+  }
+});
+
+Deno.test("net-guard: trailing dots are stripped and empty labels refused", async () => {
+  for (const h of ["localhost.", "localhost..", "localhost...", "kong..", "metadata.google.internal..", "a..example.com", ".example.com", "..", "."]) {
+    assert(hostnameProblem(h), `${h} must be blocked`);
+  }
+  assertEquals(hostnameProblem("docs.acme.example."), null);
+  for (const u of ["http://localhost../", "http://kong../", "http://foo.internal../x"]) {
+    assertThrows(() => assertPublicUrl(u, { allowPrivate: false }), BlockedUrlError, undefined, u);
+  }
+  // the resolver gets the name without trailing dots
+  const asked: string[] = [];
+  await assertPublicDestination("https://docs.acme.example../", { allowPrivate: false, resolve: async (h) => (asked.push(h), ["93.184.216.34"]) });
+  assertEquals(asked, ["docs.acme.example"]);
 });
 
 Deno.test("net-guard: internal hostnames and URL forms are refused without DNS", () => {
@@ -36,9 +77,94 @@ Deno.test("net-guard: DNS answers pointing at private space are refused", async 
   const f = guardedFetch({ fetch: inner, resolve: async () => ["10.0.0.5"], allowPrivate: false });
   await assertRejects(() => f("https://rebind.example/"), BlockedUrlError, "10.0.0.5");
   assertEquals(inner.calls.length, 0);
-  // unresolvable / unsupported DNS falls back to the hostname checks
-  const g = guardedFetch({ fetch: inner, resolve: async () => [], allowPrivate: false });
-  assertEquals(await (await g("https://rebind.example/")).text(), "secret");
+});
+
+Deno.test("net-guard: DNS failures fail closed (transient, nothing is fetched)", async () => {
+  const inner = fakeFetch([["GET https://unknown.example/", () => new Response("secret")]]);
+  for (const resolve of [async () => [], async (): Promise<string[]> => { throw new Error("timeout"); }]) {
+    const g = guardedFetch({ fetch: inner, resolve, allowPrivate: false });
+    const e = await assertRejects(() => g("https://unknown.example/"), DnsResolutionError);
+    assert(!(e instanceof ConfigError), "a DNS hiccup is retried, not a permanent config error");
+  }
+  assertEquals(inner.calls.length, 0);
+  // request() retries it and finally reports an upstream (transient) error
+  let slept = 0;
+  const ctx = { fetch: guardedFetch({ fetch: inner, resolve: async () => [], allowPrivate: false }), sleep: async () => void slept++, log: () => {}, now: () => new Date() };
+  await assertRejects(() => request(ctx, "https://unknown.example/", {}, { retries: 1 }), UpstreamError, "resolves to no address");
+  assertEquals([slept, inner.calls.length], [1, 0]);
+  // the default resolver: NotFound for one record type is fine, any other failure refuses
+  const orig = Deno.resolveDns;
+  const stub = (impl: (h: string, t: string) => Promise<string[]>) => ((Deno as unknown as { resolveDns: unknown }).resolveDns = impl);
+  try {
+    stub(async (_h, t) => {
+      if (t === "AAAA") throw new Deno.errors.NotFound("no records");
+      return ["93.184.216.34"];
+    });
+    assertEquals(await defaultResolver("v4only.example"), ["93.184.216.34"]);
+    stub(async (_h, t) => {
+      if (t === "AAAA") throw new Error("timed out");
+      return ["93.184.216.34"];
+    });
+    await assertRejects(() => defaultResolver("flaky.example"), Error, "timed out");
+    stub(async () => {
+      throw new Deno.errors.NotFound("nxdomain");
+    });
+    assertEquals(await defaultResolver("nx.example"), []);
+    await assertRejects(() => assertPublicDestination("https://nx.example/", { allowPrivate: false }), DnsResolutionError);
+  } finally {
+    (Deno as unknown as { resolveDns: unknown }).resolveDns = orig;
+  }
+});
+
+Deno.test("net-guard: DNS rebinding after the check discards the response", async () => {
+  let cancelled = false;
+  const inner = fakeFetch([["GET https://rebind.example/", () => new Response(new ReadableStream({ cancel() { cancelled = true; } }))]]);
+  let lookups = 0;
+  // first answer public (pre-check), then the name flips to the metadata address (what fetch connected to)
+  const resolve = async () => (++lookups === 1 ? ["93.184.216.34"] : ["169.254.169.254"]);
+  const f = guardedFetch({ fetch: inner, resolve, allowPrivate: false });
+  await assertRejects(() => f("https://rebind.example/"), BlockedUrlError, "169.254.169.254");
+  assertEquals(inner.calls.length, 1);
+  assert(cancelled, "the response body is cancelled, never handed to the caller");
+  // a name that stops resolving after the fetch is refused too
+  let n = 0;
+  const g = guardedFetch({ fetch: inner, resolve: async () => (++n === 1 ? ["93.184.216.34"] : []), allowPrivate: false });
+  await assertRejects(() => g("https://rebind.example/"), DnsResolutionError);
+  // stable public answers pass (checked before and after)
+  let m = 0;
+  const h = guardedFetch({ fetch: fakeFetch([["GET https://ok.example/", () => new Response("ok")]]), resolve: async () => (m++, ["93.184.216.34"]), allowPrivate: false });
+  assertEquals(await (await h("https://ok.example/")).text(), "ok");
+  assertEquals(m, 2);
+});
+
+Deno.test("net-guard: KF_CONNECTORS_EGRESS_PROXY routes every request through Deno.createHttpClient({ proxy })", async () => {
+  const created: unknown[] = [];
+  const seen: unknown[] = [];
+  const pf = proxiedFetch("http://user:p%40ss@egress.internal:4750", {
+    createHttpClient: (o) => (created.push(o), { client: 1 }),
+    fetch: async (_i, init) => (seen.push((init as { client?: unknown }).client), new Response("ok")),
+  });
+  await pf("https://a.example/");
+  await pf("https://b.example/");
+  assertEquals(created, [{ proxy: { url: "http://egress.internal:4750/", basicAuth: { username: "user", password: "p@ss" } } }]);
+  assertEquals(seen, [{ client: 1 }, { client: 1 }]);
+  // without createHttpClient the proxy is never bypassed silently
+  const none = proxiedFetch("http://egress.internal:4750", { createHttpClient: undefined as never, fetch: async () => new Response("direct") });
+  const orig = (Deno as unknown as { createHttpClient?: unknown }).createHttpClient;
+  try {
+    (Deno as unknown as { createHttpClient?: unknown }).createHttpClient = undefined;
+    await assertRejects(() => none("https://a.example/"), ConfigError, "createHttpClient");
+  } finally {
+    (Deno as unknown as { createHttpClient?: unknown }).createHttpClient = orig;
+  }
+  // the env var is read by guardedFetch() when no fetch is injected
+  Deno.env.set("KF_CONNECTORS_EGRESS_PROXY", " http://egress.internal:4750 ");
+  try {
+    assertEquals(egressProxyFromEnv(), "http://egress.internal:4750");
+  } finally {
+    Deno.env.delete("KF_CONNECTORS_EGRESS_PROXY");
+  }
+  assertEquals(egressProxyFromEnv(), null);
 });
 
 Deno.test("net-guard: redirects are followed manually and every hop is re-validated", async () => {

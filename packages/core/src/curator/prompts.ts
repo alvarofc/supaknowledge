@@ -1,4 +1,5 @@
 // Curator prompts. Stable text lives in system prompts so it caches across calls.
+import { INSTRUCTIONS_MAX } from "../settings.ts";
 
 export const KNOWLEDGE_MODEL = `
 Supaknowledge stores company knowledge for AI agents as small markdown "concepts" (Open Knowledge Format). There are three kinds:
@@ -80,5 +81,7 @@ export function untrusted(id: string, text: string): string {
 }
 
 export function withHouseRules(system: string, instructions: string): string {
-  return instructions.trim() ? `${system}\n\nHouse rules for this knowledge base:\n${instructions.trim()}` : system;
+  // settings are length-checked on write; clip anyway (older rows, other writers)
+  const rules = instructions.trim().slice(0, INSTRUCTIONS_MAX);
+  return rules ? `${system}\n\nHouse rules for this knowledge base:\n${rules}` : system;
 }

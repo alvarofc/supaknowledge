@@ -7,7 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Callout, Card, CardHeader } from "@/components/ui/card";
 import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
-import { SOURCE_KINDS, SOURCE_KIND_VALUES, numberInputValue, parseIntField, parseOptionalDays, toggleInList } from "@/lib/settings-form";
+import {
+  CURATOR_LIMITS,
+  SOURCE_KINDS,
+  SOURCE_KIND_VALUES,
+  numberInputValue,
+  parseIntField,
+  parseOptionalDays,
+  toggleInList,
+  validateCuratorLimits,
+} from "@/lib/settings-form";
 import { saveSpaceSettings } from "@/server/settings.functions";
 
 const MODEL_PLACEHOLDER = "vercel/openai/gpt-6.2-sol or acme/your-model (blank = server default)";
@@ -36,19 +45,33 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
   const [fallbackText, setFallbackText] = useState(initial.curator.fallback_models.join("\n"));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
+  const clearError = (k: string) =>
+    setErrors((x) => {
+      if (!Object.keys(x).some((key) => key === k || key.startsWith(`${k}.`))) return x;
+      return Object.fromEntries(Object.entries(x).filter(([key]) => key !== k && !key.startsWith(`${k}.`)));
+    });
   const dirty = JSON.stringify(s) !== JSON.stringify(initial);
 
-  const setCurator = <TKey extends keyof SpaceSettings["curator"]>(k: TKey, v: SpaceSettings["curator"][TKey]) => setS((x) => ({ ...x, curator: { ...x.curator, [k]: v } }));
+  const setCurator = <TKey extends keyof SpaceSettings["curator"]>(k: TKey, v: SpaceSettings["curator"][TKey]) => {
+    setS((x) => ({ ...x, curator: { ...x.curator, [k]: v } }));
+    clearError(`curator.${String(k)}`);
+  };
   const setAuto = <TKey extends keyof SpaceSettings["auto_apply"]>(k: TKey, v: SpaceSettings["auto_apply"][TKey]) =>
     setS((x) => ({ ...x, auto_apply: { ...x.auto_apply, [k]: v } }));
   const setRetention = <TKey extends keyof SpaceSettings["retention"]>(k: TKey, v: SpaceSettings["retention"][TKey]) =>
     setS((x) => ({ ...x, retention: { ...x.retention, [k]: v } }));
   const num = parseIntField;
   const err = (k: string) => errors[k] ?? Object.entries(errors).find(([key]) => key.startsWith(`${k}.`))?.[1] ?? null;
-  const invalid = (k: string) => (errors[k] ? true : undefined);
+  const invalid = (k: string) => (err(k) ? true : undefined);
 
   function save(e: React.FormEvent) {
     e.preventDefault();
+    const local = validateCuratorLimits(s.curator);
+    if (Object.keys(local).length) {
+      setErrors(local);
+      toast.error("Some settings are invalid. Fix the highlighted fields.");
+      return;
+    }
     startTransition(async () => {
       const res = await saveSpaceSettings({ data: { spaceId, settings: s } });
       if (res.ok) {
@@ -106,6 +129,7 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
                 id="model"
                 className="font-mono text-xs"
                 value={s.curator.model}
+                maxLength={CURATOR_LIMITS.modelIdMax}
                 placeholder={MODEL_PLACEHOLDER}
                 aria-invalid={invalid("curator.model")}
                 onChange={(e) => setCurator("model", e.target.value)}
@@ -116,6 +140,7 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
                 id="fast_model"
                 className="font-mono text-xs"
                 value={s.curator.fast_model}
+                maxLength={CURATOR_LIMITS.modelIdMax}
                 placeholder={MODEL_PLACEHOLDER}
                 aria-invalid={invalid("curator.fast_model")}
                 onChange={(e) => setCurator("fast_model", e.target.value)}
@@ -126,7 +151,7 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
               htmlFor="fallback_models"
               optional
               error={err("curator.fallback_models")}
-              hint="One per line, tried in order when the model errors. Blank uses KF_LLM_FALLBACK_MODELS."
+              hint={`One per line (up to ${CURATOR_LIMITS.maxFallbackModels}), tried in order when the model errors. Blank uses KF_LLM_FALLBACK_MODELS.`}
             >
               <Textarea
                 id="fallback_models"
@@ -196,13 +221,13 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
               label="Fail stuck runs after (minutes)"
               htmlFor="stuck_after_minutes"
               error={err("curator.stuck_after_minutes")}
-              hint="5–1440. A run or task without progress for this long is marked failed, so a new run can start."
+              hint={`${CURATOR_LIMITS.stuckAfterMin}–${CURATOR_LIMITS.stuckAfterMax}. A run or task without progress for this long is marked failed, so a new run can start.`}
             >
               <Input
                 id="stuck_after_minutes"
                 type="number"
-                min={5}
-                max={1440}
+                min={CURATOR_LIMITS.stuckAfterMin}
+                max={CURATOR_LIMITS.stuckAfterMax}
                 value={numberInputValue(s.curator.stuck_after_minutes)}
                 aria-invalid={invalid("curator.stuck_after_minutes")}
                 onChange={(e) => setCurator("stuck_after_minutes", num(e.target.value))}
@@ -225,12 +250,13 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
             htmlFor="instructions"
             optional
             error={err("curator.instructions")}
-            hint="Appended to the curator's instructions: naming conventions, tone, what never to write down."
+            hint={`Appended to the curator's instructions: naming conventions, tone, what never to write down. ${s.curator.instructions.length.toLocaleString("en-US")} / ${CURATOR_LIMITS.instructionsMax.toLocaleString("en-US")} characters.`}
           >
             <Textarea
               id="instructions"
               rows={5}
               value={s.curator.instructions}
+              aria-invalid={invalid("curator.instructions")}
               onChange={(e) => setCurator("instructions", e.target.value)}
               placeholder={"Name metrics with their unit (revenue_usd, not revenue).\nNever copy customer names into domain knowledge."}
             />

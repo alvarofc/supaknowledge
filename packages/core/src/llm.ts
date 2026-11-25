@@ -45,6 +45,29 @@ export class LLMConfigError extends Error {}
 /** The per-run token budget (curator.max_tokens_per_run) or the task's time budget is spent; retrying cannot help. */
 export class LLMBudgetError extends Error {}
 
+const USAGE = "kfUsage";
+
+/** Attach the tokens a call spent before it failed to its error (read back with usageOf). */
+export function attachUsage(e: unknown, usage: Usage): unknown {
+  if (e && typeof e === "object" && usage.input_tokens + usage.output_tokens > 0) {
+    try {
+      Object.defineProperty(e, USAGE, { value: { ...usage }, configurable: true, enumerable: false });
+    } catch {
+      // frozen error object: the usage is lost, nothing else to do
+    }
+  }
+  return e;
+}
+
+/** Tokens a failed model call had already spent (see attachUsage), or null. */
+export function usageOf(e: unknown): Usage | null {
+  const u = e && typeof e === "object" ? (e as Record<string, unknown>)[USAGE] : undefined;
+  if (!u || typeof u !== "object") return null;
+  const x = u as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  return { input_tokens: n(x.input_tokens), output_tokens: n(x.output_tokens), cached_input_tokens: n(x.cached_input_tokens) };
+}
+
 export interface ModelEndpoint {
   /** OpenAI-compatible base URL, e.g. https://llm.acme.internal/v1 */
   baseUrl?: string;
@@ -97,7 +120,8 @@ export function modelChain(config: LLMConfig, primary: string = config.model): M
   };
   // OpenAI-compatible providers merge providerOptions[<provider id>] into the request body
   const extra = e?.baseUrl && e.extraBody && Object.keys(e.extraBody).length ? e.extraBody : undefined;
-  const chain = [primary, ...(config.fallbackModels ?? []).filter((m) => m !== primary)];
+  // a bounded chain: every fallback is another full attempt (and its tokens)
+  const chain = [primary, ...(config.fallbackModels ?? []).filter((m) => m !== primary).slice(0, 5)];
   return chain.map((id) => ({
     model: resolve(id),
     maxRetries: 1,
@@ -128,6 +152,23 @@ export class MastraLLM implements LLM {
       usage.cached_input_tokens! += x.cachedInputTokens ?? 0;
     };
 
+    try {
+      return await this.run(req, model, primary, parts, maxOutputTokens, usage, add);
+    } catch (e) {
+      // the research phase's tokens were spent even when the answer phase fails: report them with the error
+      throw attachUsage(e, usage);
+    }
+  }
+
+  private async run<T>(
+    req: GenerateRequest<T>,
+    model: ReturnType<typeof modelChain>,
+    primary: string,
+    parts: string[],
+    maxOutputTokens: number,
+    usage: Usage,
+    add: (u: unknown) => void,
+  ): Promise<GenerateResult<T>> {
     // Phase 1 (only with tools): research. Many models (vLLM-served Qwen among them) cannot call tools and
     // emit constrained JSON in the same request, so research and the structured answer are separate calls.
     let notes = "";
@@ -149,8 +190,8 @@ export class MastraLLM implements LLM {
       modelSettings: { maxOutputTokens },
       ...(req.signal ? { abortSignal: req.signal } : {}),
     });
-    req.signal?.throwIfAborted();
     add(result.usage);
+    req.signal?.throwIfAborted();
     const output = result.object as T | undefined;
     if (output === undefined || output === null) {
       const text = typeof result.text === "string" ? result.text : "";

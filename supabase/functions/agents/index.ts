@@ -1,7 +1,9 @@
 // Management API for headless agents (Studio / CLI, called with a human user's JWT).
 //
 // An agent is a Supabase Auth user with app_metadata.kind = 'agent'. Its API key `skn_<agent-id>_<secret>`
-// is the Auth password, so RLS applies to everything it does. Creating, rotating and banning Auth users
+// is the Auth password, so RLS applies to everything it does. The database only lets an agent's password change
+// when this function authorised it first (kf_allow_agent_password_change, see password.ts); createUser sets
+// the first key on insert, which the guard does not cover. Creating, rotating and banning Auth users
 // needs the Auth admin API (service role); we only call it after checking, through the CALLER's RLS
 // client, that the caller is an owner/admin of the agent's workspace.
 //
@@ -21,6 +23,7 @@ import { agentEmail, authenticate, type Caller, forgetAgent, formatAgentKey, key
 import { adminClient } from "../_shared/env.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { auditActor, isUuid, must, subpath } from "../_lib/api.ts";
+import { setAgentPassword } from "./password.ts";
 import { parseCreateBody } from "./validate.ts";
 
 const BAN_FOREVER = "876000h";
@@ -197,9 +200,9 @@ async function rotateKey(caller: Caller, id: string): Promise<Response> {
   const secret = newAgentSecret();
   // Admin client: changing a password needs the Auth admin API; caller verified as workspace admin.
   const admin = adminClient();
-  const { error } = await admin.auth.admin.updateUserById(id, { password: secret });
-  if (error) throw new HttpError(500, `could not rotate key: ${error.message}`);
-  // key_prefix is what auth.ts checks on every request (cross-worker, ~15 s cache): the old key stops working
+  // The database refuses agent password changes unless authorised just before (kf_allow_agent_password_change).
+  await setAgentPassword(admin, id, secret);
+  // key_prefix is what auth.ts checks on every request (cross-worker, ~5 s cache): the old key stops working
   // as soon as this row changes. Admin client: caller verified as workspace admin by loadManagedAgent().
   const updated = must(
     await admin.from("agents").update({ key_prefix: keyPrefix(id, secret) }).eq("id", id).select(AGENT_COLS).single(),

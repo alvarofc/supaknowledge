@@ -1,10 +1,10 @@
 // @supaknowledge/sdk: a dependency-free client for Supaknowledge (Node 18+, Deno, browsers, edge runtimes).
 export { Supaknowledge, withSupaknowledge, SDK_VERSION } from "./client.ts";
-export { SupaknowledgeError, isNotDeployed, requestJson } from "./http.ts";
-export type { RequestOptions } from "./http.ts";
+export { SupaknowledgeError, isNotDeployed, requestJson, parseRetryAfter, retryPolicy, withRetry, MAX_RETRIES, MAX_RETRY_WAIT_MS } from "./http.ts";
+export type { RequestOptions, RetryPolicy } from "./http.ts";
 export { TraceRecorder } from "./trace.ts";
 export type { TraceOptions, ToolEvent, TraceTransport } from "./trace.ts";
-export { McpClient, MCP_PROTOCOL_VERSION, parseSse } from "./mcp.ts";
+export { McpClient, MCP_PROTOCOL_VERSION, READ_ONLY_TOOLS, parseSse } from "./mcp.ts";
 export type { McpToolResult } from "./mcp.ts";
 export { buildMcpConfig, mcpEndpoint } from "./mcp-config.ts";
 export type { McpConfig, McpConfigOptions, McpClientKind } from "./mcp-config.ts";

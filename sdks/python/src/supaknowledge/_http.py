@@ -3,21 +3,84 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+import time
+from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, TypeVar
 
 import httpx
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
 
+#: Upper bounds of the 429 retry policy: at most 2 retries, never waiting longer than 30 s for one.
+MAX_RETRIES = 2
+MAX_RETRY_WAIT = 30.0
+
+#: Tools the Supaknowledge MCP server marks read-only (readOnlyHint): a 429 on them is retried. Writes
+#: (flag_knowledge, ...) are never retried automatically.
+READ_ONLY_TOOLS = frozenset({"list_spaces", "search_knowledge", "read_concept", "list_skills", "load_skill"})
+
+T = TypeVar("T")
+
 
 class SupaknowledgeError(Exception):
     """An error from Supaknowledge. ``status`` is the HTTP status when there was one."""
 
-    def __init__(self, message: str, *, status: int | None = None, code: str | int | None = None, details: Any = None) -> None:
+    def __init__(
+        self, message: str, *, status: int | None = None, code: str | int | None = None, details: Any = None, retry_after: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.details = details
+        #: seconds the server asked us to wait (Retry-After), when it said
+        self.retry_after = retry_after
+
+
+def parse_retry_after(value: str | None, now: float | None = None) -> float | None:
+    """Retry-After (delay in seconds or an HTTP date) in seconds; None when absent or invalid."""
+    if not value:
+        return None
+    v = value.strip()
+    try:
+        return max(0.0, float(v))
+    except ValueError:
+        pass
+    try:
+        at = parsedate_to_datetime(v).timestamp()
+    except (TypeError, ValueError, IndexError):
+        return None
+    return max(0.0, at - (time.time() if now is None else now))
+
+
+@dataclass
+class RetryPolicy:
+    """Retries of idempotent requests answered with 429. ``retries`` 0 turns them off; a Retry-After longer than
+    ``max_wait`` seconds is not waited for (the 429 is raised right away, with ``retry_after`` set)."""
+
+    retries: int = MAX_RETRIES
+    max_wait: float = MAX_RETRY_WAIT
+    sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
+
+    @classmethod
+    def bounded(cls, retries: int = MAX_RETRIES, max_wait: float = MAX_RETRY_WAIT, sleep: Callable[[float], None] = time.sleep) -> "RetryPolicy":
+        return cls(retries=min(MAX_RETRIES, max(0, int(retries))), max_wait=min(MAX_RETRY_WAIT, max(0.0, float(max_wait))), sleep=sleep)
+
+
+def with_retry(attempt: Callable[[], T], policy: RetryPolicy | None) -> T:
+    """Run ``attempt``, retrying while it raises a 429 (Retry-After, else 1 s / 2 s backoff). Idempotent calls only."""
+    i = 0
+    while True:
+        try:
+            return attempt()
+        except SupaknowledgeError as e:
+            if policy is None or i >= policy.retries or e.status != 429:
+                raise
+            wait = e.retry_after if e.retry_after is not None else float(2**i)
+            if wait > policy.max_wait:
+                raise
+            policy.sleep(wait)
+            i += 1
 
 
 def is_not_deployed(e: BaseException) -> bool:
@@ -33,10 +96,21 @@ def error_from(res: httpx.Response) -> SupaknowledgeError:
     msg = None
     if isinstance(body, dict):
         msg = body.get("message") or body.get("error_description") or body.get("error") or body.get("msg")
-    return SupaknowledgeError(str(msg or body or f"HTTP {res.status_code}"), status=res.status_code, code=(body.get("code") if isinstance(body, dict) else None), details=body)
+    return SupaknowledgeError(
+        str(msg or body or f"HTTP {res.status_code}"),
+        status=res.status_code,
+        code=(body.get("code") if isinstance(body, dict) else None),
+        details=body,
+        retry_after=parse_retry_after(res.headers.get("retry-after")),
+    )
 
 
-def request_json(client: httpx.Client, method: str, url: str, *, headers: dict[str, str], body: Any = None) -> Any:
+def request_json(client: httpx.Client, method: str, url: str, *, headers: dict[str, str], body: Any = None, retry: RetryPolicy | None = None) -> Any:
+    """JSON request with uniform errors. ``retry``: retry 429s (pass it for idempotent requests only)."""
+    return with_retry(lambda: _request_once(client, method, url, headers=headers, body=body), retry)
+
+
+def _request_once(client: httpx.Client, method: str, url: str, *, headers: dict[str, str], body: Any = None) -> Any:
     try:
         res = client.request(method, url, headers={"Accept": "application/json", **headers}, json=body if body is not None else None)
     except httpx.HTTPError as e:
@@ -68,8 +142,11 @@ def parse_sse(text: str) -> list[dict[str, Any]]:
 class McpClient:
     """Just enough MCP for tools/call over Streamable HTTP (JSON or SSE responses)."""
 
-    def __init__(self, client: httpx.Client, endpoint: str, headers: Callable[[], dict[str, str]], client_version: str) -> None:
+    def __init__(
+        self, client: httpx.Client, endpoint: str, headers: Callable[[], dict[str, str]], client_version: str, retry: RetryPolicy | None = None
+    ) -> None:
         self._client = client
+        self._retry = retry
         self._endpoint = endpoint
         self._headers = headers
         self._version = client_version
@@ -78,9 +155,12 @@ class McpClient:
         self._initialized = False
         self._next_id = 1
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Return structuredContent, else parsed JSON text, else the text. Raises SupaknowledgeError on tool errors."""
-        r = self._request("tools/call", {"name": name, "arguments": arguments}) or {}
+    def call_tool(self, name: str, arguments: dict[str, Any], *, idempotent: bool | None = None) -> Any:
+        """Return structuredContent, else parsed JSON text, else the text. Raises SupaknowledgeError on tool errors.
+
+        A 429 is retried only for idempotent calls (default: the read-only tools)."""
+        safe = name in READ_ONLY_TOOLS if idempotent is None else idempotent
+        r = self._request("tools/call", {"name": name, "arguments": arguments}, safe) or {}
         text = "\n".join(c.get("text", "") for c in r.get("content", []) if c.get("type") == "text")
         if r.get("isError"):
             raise SupaknowledgeError(text or f"tool {name} failed", code="tool_error", details=r)
@@ -96,26 +176,33 @@ class McpClient:
     def _ensure_init(self) -> None:
         if self._initialized:
             return
-        r = self._send(
+        r = self._send_retrying(
             "initialize",
             {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "supaknowledge-python", "version": self._version}},
         )
         if isinstance(r, dict) and r.get("protocolVersion"):
             self._protocol = r["protocolVersion"]
-        self._send("notifications/initialized", None, notification=True)
+        with_retry(lambda: self._send("notifications/initialized", None, notification=True), self._retry)
         self._initialized = True
 
-    def _request(self, method: str, params: Any) -> Any:
+    def _request(self, method: str, params: Any, idempotent: bool = False) -> Any:
         self._ensure_init()
+
+        def send() -> Any:
+            return self._send_retrying(method, params) if idempotent else self._send(method, params)
+
         try:
-            return self._send(method, params)
+            return send()
         except SupaknowledgeError as e:
             if e.status == 404 and self._session_id:  # session expired server-side
                 self._session_id = None
                 self._initialized = False
                 self._ensure_init()
-                return self._send(method, params)
+                return send()
             raise
+
+    def _send_retrying(self, method: str, params: Any) -> Any:
+        return with_retry(lambda: self._send(method, params), self._retry)
 
     def _send(self, method: str, params: Any, notification: bool = False) -> Any:
         msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}

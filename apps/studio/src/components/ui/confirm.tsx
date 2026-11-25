@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "./button";
 import { Dialog } from "./dialog";
@@ -20,6 +20,15 @@ export function useConfirm(): [(opts: ConfirmOptions) => Promise<boolean>, React
       resolver.current = resolve;
     });
   }, []);
+
+  // a pending confirm() resolves false when the owner unmounts (navigation, list re-render) instead of hanging
+  useEffect(
+    () => () => {
+      resolver.current?.(false);
+      resolver.current = null;
+    },
+    [],
+  );
 
   const settle = (ok: boolean) => {
     resolver.current?.(ok);

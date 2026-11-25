@@ -59,7 +59,10 @@ export function Dialog({
               <X className="size-4" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          {/* no empty padded body for header-only dialogs (useConfirm) */}
+          {children !== undefined && children !== null && children !== false ? (
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          ) : null}
           {footer ? <div className="flex flex-wrap justify-end gap-2 border-t border-line px-5 py-3">{footer}</div> : null}
         </div>
       ) : null}
