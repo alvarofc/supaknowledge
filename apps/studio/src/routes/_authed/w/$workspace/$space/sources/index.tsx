@@ -43,7 +43,7 @@ function SourcesPage() {
     <>
       <PageHeader
         title="Sources"
-        description="Agents never read these directly. The curator reads what changed and cites the documents it uses."
+        description="The curator reads changed documents and cites the documents it uses."
         actions={isAdmin ? <AddSourceButton spaceId={ctx.space.id} base={ctx.base} groups={ctx.groups} myGroupIds={ctx.myGroupIds} /> : null}
       />
 

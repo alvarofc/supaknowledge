@@ -229,7 +229,7 @@ function ConceptPage() {
               <SourcesList frontmatter={concept.frontmatter} base={ctx.base} access={{ documents: canEdit, traces: canVerify }} />
             </Card>
             <Card>
-              <CardHeader title="Links" />
+              <CardHeader title="Links" description="Parsed from the markdown body" />
               {links.length === 0 && backlinks.length === 0 ? (
                 <p className="px-4 py-3 text-sm text-subtle">No links yet. Link related concepts in the body with relative paths like [ARR](metrics/arr.md).</p>
               ) : (

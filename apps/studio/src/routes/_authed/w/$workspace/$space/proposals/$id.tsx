@@ -84,7 +84,7 @@ function ProposalPage() {
   const cited = citations.filter((c) => !c.consulted);
   const consulted = citations.filter((c) => c.consulted);
 
-  const [rationale, selfReview] = splitSelfReview(p.rationale);
+  const [rationale, selfReview] = splitSelfReview(p.rationale, p.author.startsWith("curator"));
   const conflicts = p.status === "conflicted" ? parseConflicts(p.review_note) : null;
   const canReview = atLeast(ctx.role, "reviewer");
   const isAdmin = atLeast(ctx.role, "admin");
@@ -486,13 +486,17 @@ function CitationLink({
 // The curator appends its self-review to the rationale (engine.ts): "\n\n**Curator self-review**\n- note\n- note".
 const SELF_REVIEW_HEADING = "\n\n**Curator self-review**\n";
 
-function splitSelfReview(text: string): [string, string[]] {
-  const at = text.indexOf(SELF_REVIEW_HEADING);
+// The note prefixes the engine writes; a list inside a note's detail is not a new note.
+const SELF_REVIEW_NOTE =
+  /\n(?=- (?:the self-review did not approve|(?:\*\*BLOCKER\*\* )?(?:contradiction|unsupported_claim|lost_information|format|scope|other|check): ))/;
+
+/** Only curator proposals carry a generated self-review; a person's or an import's rationale is shown as written. */
+function splitSelfReview(text: string, fromCurator: boolean): [string, string[]] {
+  const at = fromCurator ? text.lastIndexOf(SELF_REVIEW_HEADING) : -1;
   if (at < 0) return [text, []];
-  // one note per "- " item; a note's detail may itself span lines
   const notes = text
     .slice(at + SELF_REVIEW_HEADING.length)
-    .split(/\n(?=- )/)
+    .split(SELF_REVIEW_NOTE)
     .filter((note) => note.trim());
   return [text.slice(0, at), notes];
 }
