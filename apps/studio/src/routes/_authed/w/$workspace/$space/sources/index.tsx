@@ -43,7 +43,7 @@ function SourcesPage() {
     <>
       <PageHeader
         title="Sources"
-        description="Where the curator learns from. Connectors sync raw documents into this space; the curator reads what changed and proposes knowledge, citing the documents it used."
+        description="The curator reads changed documents and cites the documents it uses."
         actions={isAdmin ? <AddSourceButton spaceId={ctx.space.id} base={ctx.base} groups={ctx.groups} myGroupIds={ctx.myGroupIds} /> : null}
       />
 

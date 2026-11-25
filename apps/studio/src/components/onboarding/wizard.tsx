@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, BookOpen, Check, Flag, GitPullRequestArrow, Lock, Users } from "lucide-react";
+import { Bot, BookOpen, Check, Flag, GitPullRequestArrow, Lock, Users } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { useRouter } from "@tanstack/react-router";
 import { useState } from "react";
@@ -141,7 +141,7 @@ function WorkspaceStep({ onDone, firstTime, email }: { onDone: (ws: Ws) => void;
           </Field>
           <div className="flex justify-end">
             <Button type="submit" variant="primary" pending={pending} disabled={!name.trim() || !effectiveSlug || slugInvalid}>
-              Create workspace <ArrowRight className="size-4" />
+              Create workspace
             </Button>
           </div>
         </form>
@@ -264,7 +264,7 @@ function SpaceStep({ workspace, onDone }: { workspace: Ws; onDone: (sp: { slug: 
           </fieldset>
           <div className="flex justify-end">
             <Button type="submit" variant="primary" pending={pending} disabled={!name.trim() || !effectiveSlug || slugInvalid}>
-              Create space <ArrowRight className="size-4" />
+              Create space
             </Button>
           </div>
         </form>
@@ -316,7 +316,7 @@ function ConnectStep({ workspace, space }: { workspace: Ws; space: { slug: strin
       <div className="mt-6 flex flex-wrap justify-end gap-2">
         <LinkButton href={`${base}/suggest`}>Write a first concept</LinkButton>
         <LinkButton href={base} variant="primary">
-          Open the inbox <ArrowRight className="size-4" />
+          Open the inbox
         </LinkButton>
       </div>
       <p className="mt-3 text-right text-xs text-subtle">

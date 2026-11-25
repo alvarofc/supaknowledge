@@ -41,12 +41,12 @@ function SuggestPage() {
   return (
     <div>
       <PageHeader
-        eyebrow={concept ? <span className="font-mono">{concept.path}</span> : "Knowledge"}
+        eyebrow={concept ? <span className="font-mono">{concept.path}</span> : undefined}
         title={concept ? `Suggest an edit to “${concept.title}”` : "New concept"}
         description={
           concept
-            ? "Change what you know is wrong or missing. Your edit is submitted as a proposal and applied when a reviewer approves it."
-            : "Write down knowledge your agents need. It is submitted as a proposal and published when a reviewer approves it."
+            ? "Your edit becomes a proposal and is applied when a reviewer approves it."
+            : "It becomes a proposal and is published when a reviewer approves it."
         }
       />
       <SuggestEditor

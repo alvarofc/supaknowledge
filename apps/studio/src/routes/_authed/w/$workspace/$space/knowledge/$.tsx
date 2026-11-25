@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft, ArrowRight, Bot, ChevronRight, FileText, Info, Link2, Paperclip, TriangleAlert } from "lucide-react";
+import { Bot, ChevronRight, FileText, Info, Link2, Paperclip, TriangleAlert } from "lucide-react";
 import { AudienceBadge, FlagKindBadge, KindBadge, KindIcon, StaleBadge, TrustBadge } from "@/components/kf/badges";
 import { LiveRefresh } from "@/components/kf/live-refresh";
 import { Markdown } from "@/components/kf/markdown";
@@ -191,7 +191,7 @@ function ConceptPage() {
               <Card>
                 <CardHeader
                   title={`Open flags (${flags.length})`}
-                  description="Problems agents or people reported. The curator picks them up on its next run."
+                  description="The curator picks these up on its next run."
                   actions={
                     <Link href={ctx.base} className="text-xs text-accent hover:underline">
                       Open inbox
@@ -237,7 +237,7 @@ function ConceptPage() {
                   {links.length ? (
                     <div className="px-4 py-2">
                       <div className="mono-label mb-1 flex items-center gap-1 text-subtle">
-                        <ArrowRight className="size-3" /> Links to
+                        Links to
                       </div>
                       <ul className="space-y-1">
                         {links.map((l) => {
@@ -265,7 +265,7 @@ function ConceptPage() {
                   {backlinks.length ? (
                     <div className="px-4 py-2">
                       <div className="mono-label mb-1 flex items-center gap-1 text-subtle">
-                        <ArrowLeft className="size-3" /> Linked from
+                        Linked from
                       </div>
                       <ul className="space-y-1">
                         {backlinks.map((b) => {

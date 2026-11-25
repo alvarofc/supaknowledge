@@ -6,7 +6,7 @@ type Outcome = Database["public"]["Enums"]["trace_outcome"];
 const OUTCOME: Record<Outcome, { label: string; tone: Tone; help: string }> = {
   success: { label: "Success", tone: "ok", help: "The agent finished the task" },
   failure: { label: "Failure", tone: "danger", help: "The agent failed the task" },
-  corrected: { label: "Corrected", tone: "warn", help: "A person corrected the agent — a learning moment for the curator" },
+  corrected: { label: "Corrected", tone: "accent", help: "A person corrected the agent — a learning moment for the curator" },
   unknown: { label: "Unknown outcome", tone: "neutral", help: "The trace did not report an outcome" },
 };
 
@@ -25,7 +25,7 @@ export const RUN_STATUS: Record<RunStatus, { label: string; tone: "ok" | "warn" 
   running: { label: "Running", tone: "info" },
   succeeded: { label: "Succeeded", tone: "ok" },
   failed: { label: "Failed", tone: "danger" },
-  cancelled: { label: "Cancelled", tone: "warn" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
 };
 
 export function duration(from: string | null, to: string | null): string | null {

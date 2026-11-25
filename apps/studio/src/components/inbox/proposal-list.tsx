@@ -2,7 +2,7 @@ import { ChevronRight, FileDiff } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { EscalationBadge, ProposalStatusBadge, RiskBadge } from "@/components/kf/badges";
 import type { Database } from "@/lib/database.types";
-import { actorLabel, pluralize } from "@/lib/format";
+import { actorLabel } from "@/lib/format";
 import type { ProfileMap } from "@/lib/format";
 import { Timestamp } from "@/components/kf/timestamp";
 
@@ -12,8 +12,15 @@ export type ProposalRow = Pick<
 > & { proposal_ops: { count: number }[] };
 
 export function ProposalItem({ p, base, profiles, history }: { p: ProposalRow; base: string; profiles: ProfileMap; history?: boolean }) {
-  const ops = p.proposal_ops[0]?.count ?? 0;
   const when = history ? (p.applied_at ?? p.reviewed_at ?? p.created_at) : p.created_at;
+  // one fact per row: who decided it (history) or who proposed it; the curator's model is on the proposal page
+  // (the number of changes is on the proposal page)
+  const who =
+    history && p.reviewed_by
+      ? `Reviewed by ${profiles[p.reviewed_by]?.display_name ?? "a reviewer"}`
+      : history && p.auto_applied
+        ? `Applied by ${actorLabel("process:policy", profiles).toLowerCase()}`
+        : `By ${actorLabel(p.author.startsWith("curator") ? "curator" : p.author, profiles)}`;
   return (
     <li>
       <Link href={`${base}/proposals/${p.id}`} className="group flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-surface-2/60">
@@ -26,10 +33,7 @@ export function ProposalItem({ p, base, profiles, history }: { p: ProposalRow; b
             {history || p.status !== "pending" ? <ProposalStatusBadge status={p.status} autoApplied={p.auto_applied} /> : null}
             <RiskBadge risk={p.risk} />
             {p.escalation ? <EscalationBadge /> : null}
-            <span className="text-xs text-subtle">
-              {pluralize(ops, "change")} · by {actorLabel(p.author, profiles)}
-              {history && p.reviewed_by ? ` · reviewed by ${profiles[p.reviewed_by]?.display_name ?? "a reviewer"}` : ""}
-            </span>
+            <span className="text-xs text-subtle">{who}</span>
           </div>
         </div>
         <Timestamp iso={when} className="shrink-0 text-xs text-subtle" />

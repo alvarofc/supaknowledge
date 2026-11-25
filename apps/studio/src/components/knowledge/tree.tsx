@@ -63,7 +63,7 @@ function ConceptRow({ c, base }: { c: TreeConcept; base: string }) {
         </span>
         {c.status === "draft" ? <span className="text-[11px] text-subtle">draft</span> : null}
         {c.audience.length > 0 ? (
-          <span title="Restricted to specific groups" className="text-warn">
+          <span title="Restricted to specific groups" className="text-subtle">
             <Lock className="size-3.5" />
             <span className="sr-only">Restricted</span>
           </span>

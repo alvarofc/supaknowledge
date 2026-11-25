@@ -313,12 +313,27 @@ function RailItem({ section: s }: { section: Section }) {
   );
 }
 
+/**
+ * A heading over a single link only repeats it ("Decisions" over "History"), so single-link groups show no heading,
+ * and neighbouring ones share a block.
+ */
+function visibleGroups(groups: SubGroup[]): (SubGroup & { showLabel: boolean })[] {
+  const out: (SubGroup & { showLabel: boolean })[] = [];
+  for (const g of groups) {
+    const prev = out.at(-1);
+    if (g.items.length > 1) out.push({ ...g, showLabel: true });
+    else if (prev && !prev.showLabel) prev.items = [...prev.items, ...g.items];
+    else out.push({ ...g, items: [...g.items], showLabel: false });
+  }
+  return out;
+}
+
 function SubNav({ groups, compact }: { groups: SubGroup[]; compact?: boolean }) {
   return (
     <div className={cn(!compact && "divide-y divide-line")}>
-      {groups.map((g) => (
+      {visibleGroups(groups).map((g) => (
         <div key={g.label} className={compact ? "py-1" : "px-3 py-3"}>
-          <div className={cn("mono-label px-2 text-subtle", compact ? "mb-0.5" : "mb-1.5")}>{g.label}</div>
+          {g.showLabel ? <div className={cn("mono-label px-2 text-subtle", compact ? "mb-0.5" : "mb-1.5")}>{g.label}</div> : null}
           <ul className="flex flex-col gap-px">
             {g.items.map((i) => (
               <li key={i.href}>

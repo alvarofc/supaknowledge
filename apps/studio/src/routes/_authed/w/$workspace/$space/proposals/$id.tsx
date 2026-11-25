@@ -25,7 +25,7 @@ import type { Tone } from "@/components/ui/badge";
 import { Callout, Card, CardHeader, EmptyState } from "@/components/ui/card";
 import { Link } from "@/components/ui/link";
 import type { Database } from "@/lib/database.types";
-import { actorLabel } from "@/lib/format";
+import { actorLabel, pluralize } from "@/lib/format";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
 import { useSpace } from "@/lib/use-space";
@@ -84,6 +84,7 @@ function ProposalPage() {
   const cited = citations.filter((c) => !c.consulted);
   const consulted = citations.filter((c) => c.consulted);
 
+  const [rationale, selfReview] = splitSelfReview(p.rationale, p.author.startsWith("curator"));
   const conflicts = p.status === "conflicted" ? parseConflicts(p.review_note) : null;
   const canReview = atLeast(ctx.role, "reviewer");
   const isAdmin = atLeast(ctx.role, "admin");
@@ -156,13 +157,23 @@ function ProposalPage() {
           ) : null}
 
           <Card>
-            <CardHeader title="Rationale" description="Why the author thinks this change is right" />
+            <CardHeader title="Rationale" />
             <div className="px-4 py-4">
-              {p.rationale.trim() ? (
-                <Markdown knowledgeBase={`${ctx.base}/knowledge`}>{p.rationale}</Markdown>
+              {rationale.trim() ? (
+                <Markdown knowledgeBase={`${ctx.base}/knowledge`}>{rationale}</Markdown>
               ) : (
                 <p className="text-sm text-subtle">No rationale given.</p>
               )}
+              {selfReview.length ? (
+                <details className="mt-3 text-sm">
+                  <summary className="w-fit cursor-pointer select-none text-muted hover:text-fg">
+                    Curator self-review ({pluralize(selfReview.length, "note")})
+                  </summary>
+                  <div className="mt-2">
+                    <Markdown knowledgeBase={`${ctx.base}/knowledge`}>{selfReview.join("\n")}</Markdown>
+                  </div>
+                </details>
+              ) : null}
             </div>
           </Card>
 
@@ -200,7 +211,7 @@ function ProposalPage() {
           </section>
 
           <Card>
-            <CardHeader title="Evidence" description="Every claim the curator writes should cite a source document, trace, flag or concept" />
+            <CardHeader title="Evidence" />
             {cited.length === 0 && linkedFlags.length === 0 ? (
               <p className="px-4 py-4 text-sm text-subtle">No citations. Treat uncited changes with extra care.</p>
             ) : (
@@ -470,4 +481,22 @@ function CitationLink({
     return <span className="truncate font-mono text-xs text-muted">{url}</span>;
   }
   return null;
+}
+
+// The curator appends its self-review to the rationale (engine.ts): "\n\n**Curator self-review**\n- note\n- note".
+const SELF_REVIEW_HEADING = "\n\n**Curator self-review**\n";
+
+// The note prefixes the engine writes; a list inside a note's detail is not a new note.
+const SELF_REVIEW_NOTE =
+  /\n(?=- (?:the self-review did not approve|(?:\*\*BLOCKER\*\* )?(?:contradiction|unsupported_claim|lost_information|format|scope|other|check): ))/;
+
+/** Only curator proposals carry a generated self-review; a person's or an import's rationale is shown as written. */
+function splitSelfReview(text: string, fromCurator: boolean): [string, string[]] {
+  const at = fromCurator ? text.lastIndexOf(SELF_REVIEW_HEADING) : -1;
+  if (at < 0) return [text, []];
+  const notes = text
+    .slice(at + SELF_REVIEW_HEADING.length)
+    .split(SELF_REVIEW_NOTE)
+    .filter((note) => note.trim());
+  return [text.slice(0, at), notes];
 }

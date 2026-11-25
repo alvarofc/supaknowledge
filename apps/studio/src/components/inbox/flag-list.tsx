@@ -1,4 +1,4 @@
-import { ArrowUpRight, FileSearch, Lightbulb, Sparkles } from "lucide-react";
+import { FileSearch, Lightbulb, Sparkles } from "lucide-react";
 import { Link } from "@/components/ui/link";
 import { AgentBadge, AudienceBadge, FlagKindBadge } from "@/components/kf/badges";
 import { Badge } from "@/components/ui/badge";
@@ -91,7 +91,7 @@ export function FlagItem({
           <summary className="w-fit cursor-pointer select-none text-subtle hover:text-fg">{flag.suggested_fix ? "Suggested fix" : "Context"}</summary>
           {flag.suggested_fix ? (
             <p className="mt-1.5 flex items-start gap-1.5">
-              <Lightbulb className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+              <Lightbulb className="mt-px size-3.5 shrink-0 text-subtle" aria-hidden="true" />
               <span>{flag.suggested_fix}</span>
             </p>
           ) : null}
@@ -120,7 +120,7 @@ export function FlagItem({
           )}
           {flag.trace_id && !inTrace ? (
             <Link href={`${base}/activity/traces/${flag.trace_id}`} className="inline-flex items-center gap-0.5 text-accent hover:underline">
-              View trace <ArrowUpRight className="size-3" />
+              View trace
             </Link>
           ) : null}
         </div>
