@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "supabase": "^3.4.0",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "@types/node": "^24.10.0"
   }
 }
