@@ -164,7 +164,7 @@ More: [getting started](docs/getting-started.md).
 - [MCP](docs/mcp.md): tools, and connecting Claude Code, Cursor, Claude Desktop and others
 - [Curator](docs/curator.md): pipeline, prompts, settings and policy, provenance, costs
 - [OKF and Agent Skills](docs/okf.md): file formats and round-trip rules
-- [Deploy](docs/deploy.md): Supabase cloud, Studio on Vercel, self-hosting
+- [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>` does the Supabase side), Studio on Vercel, self-hosting
 - [CLI](docs/cli.md) · [SDKs](docs/sdk.md) · [Connectors](docs/connectors.md) · [Studio](docs/studio.md)
 - [Design](docs/DESIGN.md): the decisions behind all of this
 

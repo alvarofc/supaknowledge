@@ -3,6 +3,52 @@
 Supaknowledge is a Supabase project (migrations + Edge Functions) plus Studio, a TanStack Start app. This guide deploys the
 project to Supabase's cloud and Studio to Vercel, then covers self-hosted Supabase.
 
+## Deploy with `kf deploy` (recommended)
+
+Create a project in the [Supabase dashboard](https://supabase.com/dashboard) and a personal access token at
+[supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens). Then, from a clone of this
+repository (after `npm install && npm run build:cli`):
+
+```bash
+export SUPABASE_ACCESS_TOKEN=sbp_...
+npx kf deploy --project-ref <project-ref> --dry-run       # the plan: commands, secret names, Auth fields
+npx kf deploy --project-ref <project-ref> --env-file ./hosted.env --studio-url https://studio.example.com
+```
+
+It runs the steps below for you, printing `[n/7]` with ✓, skipped or ✗ for each, and stops at the first failure:
+
+1. **Project**: checks the project and the token through the Management API.
+2. **Database**: `supabase db push --remote=<ref> --yes --skip-vault` with the repository's Supabase CLI.
+3. **Vault**: reuses `kf_internal_secret` if it exists (generates one otherwise) and sets `project_url`.
+4. **Function secrets** through the Management API, never `supabase secrets set` (see the warning in
+   [Edge Functions](#3-edge-functions)): `KF_INTERNAL_SECRET` (the Vault value), `KF_PUBLIC_URL` (`--public-url`,
+   default `https://<ref>.supabase.co`; a custom value already on the project is kept on re-runs), `KF_CURATOR_TASK_BUDGET_MS` (`--task-budget-ms`, else the project's value,
+   else `140000`, safe on the Free plan; use `380000` on paid plans), and the model and connector settings from
+   `--env-file` (`KF_LLM_*`, `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY`, `GITHUB_TOKEN`, `KF_CONNECTOR*`,
+   `KF_EMBEDS_*`, `KF_CURATOR_*`, `CONNECTOR_*`). `KF_INTERNAL_SECRET`, `KF_PUBLIC_URL` and `SUPABASE_*` in that
+   file are ignored. Only names are printed. Without `--env-file` the model settings already on the project stay;
+   without any `KF_LLM_MODEL` it warns that the curator needs a [model](curator.md#model-configuration).
+5. **Edge Functions**: refuses a stale `_shared/core` (`npm run sync:shared`), then runs
+   `supabase functions deploy --remote=<ref> --yes` from a temporary copy of `supabase/functions` and
+   `supabase/config.jsonc` without `.env` files, `node_modules` or `edge_runtime.secrets`, and prints each
+   function's size (warning when the curator nears the 20 MB limit). `--use-api` bundles on Supabase's servers
+   instead of Docker.
+6. **Auth**: OAuth 2.1 server with dynamic registration and `/oauth/consent`, the Before User Created hook and
+   reauthentication for password changes. `--studio-url` (repeatable) sets the Site URL to the first origin and
+   adds `<origin>/**` to the redirect URLs, keeping the ones already there. It never turns e-mail confirmations
+   off, and warns if they are.
+7. **Check**: the MCP metadata names `KF_PUBLIC_URL`, the `embed` function accepts the Vault secret exactly as cron
+   sends it, and the OAuth metadata is served (it can take a minute; reported as still propagating).
+
+It ends with the project URL, the MCP URL, the publishable key and the next steps. Re-running it is safe: the
+internal secret is reused, the redirect list merged, and settings that already match are left alone.
+`--skip-db`, `--skip-functions`, `--skip-auth` and `--skip-check` skip steps; `--access-token-stdin` reads the
+token from stdin instead of `SUPABASE_ACCESS_TOKEN`.
+
+What it does **not** do: host Studio ([step 5](#5-studio-on-vercel) stays manual; deploy Studio, then run
+`kf deploy --project-ref <ref> --studio-url <studio-url> --skip-db --skip-functions` to point Auth at it), decide
+who may sign up, or set up self-hosted Supabase. The sections below are the manual reference for each step.
+
 ## 1. Supabase project
 
 Create a project in the [Supabase dashboard](https://supabase.com/dashboard), then from the repository root:
@@ -213,6 +259,7 @@ at it. That's fine on a test project; on a production project, keep the Site URL
 
 ```bash
 git pull
+npx kf deploy --project-ref <project-ref>          # or by hand:
 npx supabase db push
 npm run sync:shared && npx supabase functions deploy
 ```
