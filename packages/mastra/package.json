@@ -1,0 +1,69 @@
+{
+  "name": "@supaknowledge/mastra",
+  "version": "0.1.0",
+  "description": "Supaknowledge for Mastra agents: knowledge tools (search, read, skills, flag), a system-prompt snippet, and trace capture of agent runs into Supaknowledge.",
+  "keywords": [
+    "supaknowledge",
+    "mastra",
+    "agents",
+    "ai",
+    "knowledge",
+    "mcp",
+    "supabase",
+    "tools",
+    "tracing"
+  ],
+  "homepage": "https://github.com/alvarofc/supaknowledge/tree/main/packages/mastra#readme",
+  "bugs": {
+    "url": "https://github.com/alvarofc/supaknowledge/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alvarofc/supaknowledge.git",
+    "directory": "packages/mastra"
+  },
+  "license": "Apache-2.0",
+  "author": "Supaknowledge contributors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "supaknowledge-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --conditions=supaknowledge-source --test test/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@supaknowledge/sdk": "^0.1.0",
+    "@mastra/core": "^1.85.0",
+    "zod": "^3.25.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@mastra/core": "1.85.0",
+    "@supaknowledge/sdk": "0.1.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "zod": "4.6.7"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "page": {
+    "object": "page", "id": "2a1b3c4d-0000-4000-8000-000000000001", "url": "https://www.notion.so/Onboarding-2a1b3c4d000040008000000000000001",
+    "created_time": "2026-10-01T09:00:00.000Z", "last_edited_time": "2026-11-20T10:00:00.000Z", "archived": false, "in_trash": false,
+    "created_by": {"object": "user", "id": "u-1"},
+    "parent": {"type": "database_id", "database_id": "11111111-2222-3333-4444-555555555555"},
+    "properties": {
+      "Name": {"id": "title", "type": "title", "title": [{"type": "text", "plain_text": "Onboarding checklist", "annotations": {}, "href": null}]},
+      "Team": {"id": "a", "type": "select", "select": {"name": "Support"}},
+      "Tags": {"id": "b", "type": "multi_select", "multi_select": [{"name": "process"}, {"name": "new-hire"}]},
+      "Reviewed": {"id": "c", "type": "checkbox", "checkbox": true}
+    }
+  },
+  "blocks": [
+    {"object": "block", "id": "b1", "type": "heading_1", "has_children": false, "heading_1": {"rich_text": [{"type": "text", "plain_text": "Week one", "annotations": {}}], "is_toggleable": false}},
+    {"object": "block", "id": "b2", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [
+      {"type": "text", "plain_text": "Read the ", "annotations": {}},
+      {"type": "text", "plain_text": "support handbook", "annotations": {"bold": true}, "href": "https://acme.example/handbook"},
+      {"type": "text", "plain_text": " and run ", "annotations": {}},
+      {"type": "text", "plain_text": "kf pull", "annotations": {"code": true}},
+      {"type": "text", "plain_text": ".", "annotations": {}}
+    ]}},
+    {"object": "block", "id": "b3", "type": "bulleted_list_item", "has_children": true, "bulleted_list_item": {"rich_text": [{"type": "text", "plain_text": "Accounts", "annotations": {}}]}},
+    {"object": "block", "id": "b4", "type": "bulleted_list_item", "has_children": false, "bulleted_list_item": {"rich_text": [{"type": "text", "plain_text": "Laptop", "annotations": {"italic": true}}]}},
+    {"object": "block", "id": "b5", "type": "numbered_list_item", "has_children": false, "numbered_list_item": {"rich_text": [{"type": "text", "plain_text": "Shadow a senior", "annotations": {}}]}},
+    {"object": "block", "id": "b6", "type": "numbered_list_item", "has_children": false, "numbered_list_item": {"rich_text": [{"type": "text", "plain_text": "Take first ticket", "annotations": {}}]}},
+    {"object": "block", "id": "b7", "type": "to_do", "has_children": false, "to_do": {"checked": true, "rich_text": [{"type": "text", "plain_text": "Sign NDA", "annotations": {}}]}},
+    {"object": "block", "id": "b8", "type": "to_do", "has_children": false, "to_do": {"checked": false, "rich_text": [{"type": "text", "plain_text": "Set up 2FA", "annotations": {}}]}},
+    {"object": "block", "id": "b9", "type": "code", "has_children": false, "code": {"language": "bash", "caption": [], "rich_text": [{"type": "text", "plain_text": "npm install\nnpm test", "annotations": {}}]}},
+    {"object": "block", "id": "b10", "type": "quote", "has_children": false, "quote": {"rich_text": [{"type": "text", "plain_text": "Ask early, ask often.", "annotations": {}}]}},
+    {"object": "block", "id": "b11", "type": "callout", "has_children": false, "callout": {"icon": {"type": "emoji", "emoji": "⚠️"}, "rich_text": [{"type": "text", "plain_text": "Never share customer data in Slack.", "annotations": {}}]}},
+    {"object": "block", "id": "b12", "type": "toggle", "has_children": true, "toggle": {"rich_text": [{"type": "text", "plain_text": "FAQ", "annotations": {}}]}},
+    {"object": "block", "id": "b13", "type": "table", "has_children": true, "table": {"table_width": 2, "has_column_header": true, "has_row_header": false}},
+    {"object": "block", "id": "b14", "type": "divider", "has_children": false, "divider": {}},
+    {"object": "block", "id": "b15", "type": "child_page", "has_children": true, "child_page": {"title": "Escalation matrix"}},
+    {"object": "block", "id": "b16", "type": "image", "has_children": false, "image": {"type": "file", "caption": [{"type": "text", "plain_text": "Org chart", "annotations": {}}], "file": {"url": "https://s3.example/signed?X-Amz=1", "expiry_time": "2026-11-20T11:00:00Z"}}}
+  ],
+  "children": {
+    "b3": [
+      {"object": "block", "id": "b3a", "type": "bulleted_list_item", "has_children": false, "bulleted_list_item": {"rich_text": [{"type": "text", "plain_text": "Google Workspace", "annotations": {}}]}},
+      {"object": "block", "id": "b3b", "type": "bulleted_list_item", "has_children": false, "bulleted_list_item": {"rich_text": [{"type": "text", "plain_text": "Zendesk", "annotations": {"strikethrough": true}}]}}
+    ],
+    "b12": [
+      {"object": "block", "id": "b12a", "type": "paragraph", "has_children": false, "paragraph": {"rich_text": [{"type": "text", "plain_text": "Payroll runs on the 25th.", "annotations": {}}]}}
+    ],
+    "b13": [
+      {"object": "block", "id": "r1", "type": "table_row", "has_children": false, "table_row": {"cells": [[{"type": "text", "plain_text": "Tier", "annotations": {}}], [{"type": "text", "plain_text": "SLA", "annotations": {}}]]}},
+      {"object": "block", "id": "r2", "type": "table_row", "has_children": false, "table_row": {"cells": [[{"type": "text", "plain_text": "Gold", "annotations": {}}], [{"type": "text", "plain_text": "1h | 24/7", "annotations": {}}]]}}
+    ]
+  }
+}

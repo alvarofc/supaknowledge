@@ -1,0 +1,119 @@
+{
+  "history": {
+    "ok": true,
+    "messages": [
+      {
+        "type": "message",
+        "user": "U2",
+        "text": "Q4 close moves to Dec 5. cc <@U1>",
+        "ts": "1795516200.000200",
+        "reactions": [
+          {
+            "name": "eyes",
+            "count": 3
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "subtype": "channel_join",
+        "user": "U3",
+        "text": "<@U3> has joined the channel",
+        "ts": "1795507200.000100"
+      },
+      {
+        "type": "message",
+        "user": "U1",
+        "text": "*Reminder*: accruals are due Friday. See <https://wiki.acme.example/accruals|the accrual guide>",
+        "ts": "1795452300.000300",
+        "thread_ts": "1795452300.000300",
+        "reply_count": 2,
+        "latest_reply": "1795453800.000500",
+        "reactions": [
+          {
+            "name": "white_check_mark",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "user": "U2",
+        "text": "Morning! Revenue dashboard is green.",
+        "ts": "1795425300.000400"
+      }
+    ],
+    "has_more": false,
+    "response_metadata": {
+      "next_cursor": ""
+    }
+  },
+  "replies": {
+    "ok": true,
+    "messages": [
+      {
+        "type": "message",
+        "user": "U1",
+        "text": "*Reminder*: accruals are due Friday. See <https://wiki.acme.example/accruals|the accrual guide>",
+        "ts": "1795452300.000300",
+        "thread_ts": "1795452300.000300",
+        "reply_count": 2,
+        "latest_reply": "1795453800.000500",
+        "reactions": [
+          {
+            "name": "white_check_mark",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "user": "U2",
+        "text": "Does that include the EU entity?",
+        "ts": "1795453200.000000",
+        "thread_ts": "1795452300.000300"
+      },
+      {
+        "type": "message",
+        "user": "U1",
+        "text": "Yes, EU too.",
+        "ts": "1795453800.000500",
+        "thread_ts": "1795452300.000300"
+      }
+    ],
+    "has_more": false
+  },
+  "info": {
+    "ok": true,
+    "channel": {
+      "id": "CFIN0001",
+      "name": "finance-private",
+      "is_private": true,
+      "is_archived": false
+    }
+  },
+  "auth": {
+    "ok": true,
+    "url": "https://acme.slack.com/",
+    "team_id": "T1",
+    "user_id": "UBOT"
+  },
+  "users": {
+    "U1": {
+      "name": "alice",
+      "real_name": "Alice Chen",
+      "profile": {
+        "display_name": "alice",
+        "real_name": "Alice Chen"
+      }
+    },
+    "U2": {
+      "name": "bob",
+      "real_name": "Bob Diaz",
+      "profile": {
+        "display_name": "",
+        "real_name": "Bob Diaz"
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "name": "@supaknowledge/cli",
+  "version": "0.1.0",
+  "description": "kf: the Supaknowledge command line. Log in, import/export OKF bundles and Agent Skills, pull skills for Claude Code, review proposals, manage agents and sources.",
+  "keywords": [
+    "supaknowledge",
+    "cli",
+    "knowledge",
+    "agents",
+    "agent-skills",
+    "okf",
+    "mcp",
+    "supabase",
+    "claude-code"
+  ],
+  "homepage": "https://github.com/alvarofc/supaknowledge/tree/main/packages/cli#readme",
+  "bugs": {
+    "url": "https://github.com/alvarofc/supaknowledge/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alvarofc/supaknowledge.git",
+    "directory": "packages/cli"
+  },
+  "license": "Apache-2.0",
+  "author": "Supaknowledge contributors",
+  "type": "module",
+  "bin": {
+    "supaknowledge": "dist/kf.js",
+    "kf": "dist/kf.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --conditions=supaknowledge-source --test test/*.test.ts",
+    "smoke": "node test/live-smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.2",
+    "commander": "15.1.0",
+    "diff": "9.0.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@supaknowledge/core": "0.1.0",
+    "@supaknowledge/sdk": "0.1.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

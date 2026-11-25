@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Refund policy &mdash; Acme Docs</title>
+  <style>body { font-family: sans-serif }</style>
+  <script>window.dataLayer = [];</script>
+</head>
+<body>
+  <header class="site-header"><a href="/">Acme</a> <nav><a href="/pricing">Pricing</a> <a href="/docs">Docs</a></nav></header>
+  <div class="cookie-banner">We use cookies. <button>Accept</button></div>
+  <aside class="sidebar"><ul><li><a href="/docs/a">Sidebar link A</a><li><a href="/docs/b">Sidebar link B</a></ul></aside>
+  <main>
+    <article>
+      <h1>Refund policy</h1>
+      <p>Customers can request a refund within <strong>30 days</strong> of purchase.
+         See the <a href="/docs/billing">billing guide</a> for details.</p>
+      <h2>Eligibility</h2>
+      <ul>
+        <li>Annual plans: prorated refund
+        <li>Monthly plans: <em>no</em> refund
+          <ol><li>Except outages &gt; 24h</li><li>Or billing errors</li></ol>
+        </li>
+      </ul>
+      <h2>Fees</h2>
+      <table>
+        <thead><tr><th>Plan</th><th>Fee</th></tr></thead>
+        <tbody><tr><td>Pro</td><td>$0</td></tr><tr><td>Enterprise</td><td>Contract | custom</td></tr></tbody>
+      </table>
+      <pre><code class="language-sql">select * from refunds
+where created_at &gt; now() - interval '30 days';</code></pre>
+      <blockquote><p>Refunds are processed by finance on Fridays.</p></blockquote>
+      <p>Line one<br>Line two &amp; three &#8212; done&#x21;</p>
+      <img src="/chart.png" alt="Refund volume chart">
+    </article>
+  </main>
+  <footer class="site-footer"><p>&copy; 2026 Acme</p></footer>
+  <script src="/app.js"></script>
+</body>
+</html>

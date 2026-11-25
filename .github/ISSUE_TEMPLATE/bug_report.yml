@@ -1,0 +1,63 @@
+name: Bug report
+description: Something in Supaknowledge does not work as documented.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Security issues: please do **not** file them here; use
+        [private vulnerability reporting](https://github.com/alvarofc/supaknowledge/security/advisories/new) instead.
+        Remove keys, tokens and private company knowledge from anything you paste.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Studio
+        - CLI (supaknowledge / kf)
+        - TypeScript SDK (@supaknowledge/sdk)
+        - Mastra integration (@supaknowledge/mastra)
+        - Python SDK (supaknowledge)
+        - MCP server
+        - Curator
+        - Source connectors
+        - Database / access control
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Ideally against a fresh `npx supabase start` with the example bundle (`examples/revenue-report/knowledge`).
+      placeholder: |
+        1. npx kf import examples/revenue-report/knowledge --apply
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and output
+      description: CLI output with `SUPAKNOWLEDGE_DEBUG=1`, Edge Function logs, browser console. Redact secrets.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "0.1.0 or a commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node / Python version, Supabase CLI version, local stack or Supabase cloud, curator model provider.

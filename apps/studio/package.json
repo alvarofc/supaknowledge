@@ -1,0 +1,46 @@
+{
+  "name": "@supaknowledge/studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supaknowledge Studio: review inbox, knowledge browser, sources, agents and health for a Supaknowledge knowledge factory",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "node .output/server/index.mjs",
+    "preview": "vite preview --port 3000 --host 127.0.0.1",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.2.8",
+    "@fontsource-variable/source-code-pro": "5.2.7",
+    "@supaknowledge/core": "*",
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.119.2",
+    "@tanstack/react-router": "1.170.46",
+    "@tanstack/react-start": "1.169.7",
+    "diff": "9.0.0",
+    "lucide-react": "1.79.0",
+    "nitro": "3.0.260610-beta",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.5",
+    "@tanstack/eslint-config": "0.5.0",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "eslint": "10.15.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "tailwindcss": "4.3.5",
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  }
+}

@@ -1,0 +1,231 @@
+@import "tailwindcss";
+/* Self-hosted, pinned open fonts (no CDN): Inter for UI text, Source Code Pro for labels, IDs and code. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/source-code-pro";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens, modelled on the Supabase dashboard: neutral greys, hairline borders, one green.
+ * Components use the semantic names (bg-surface, text-muted, border-line...).
+ *
+ * Green has three jobs, so three token families:
+ *   --brand        decorative green (charts, logo, active indicators): #3ECF8E in both themes
+ *   --primary-*    the primary button (one main action per view)
+ *   --accent       green TEXT and links; text-safe (>= 4.5:1) on the light surfaces, #3ECF8E on dark
+ */
+:root {
+  --bg: #fcfcfc;
+  --chrome: #fcfcfc; /* top bar, icon rail, product sidebar */
+  --surface: #ffffff;
+  --surface-2: #f5f5f5;
+  --surface-3: #ebebeb;
+  --control: #f8f8f8;
+  --button: #ffffff;
+  --line: #e4e4e4;
+  --line-strong: #d1d1d1;
+  --fg: #171717;
+  --muted: #525252;
+  --subtle: #6b6b6b;
+
+  --brand: #3ecf8e;
+  --brand-strong: #24a26b;
+  --brand-soft: #e8f8f0;
+  --primary: #3ecf8e;
+  --primary-hover: #37c085;
+  --primary-border: #2a9d68;
+  --primary-fg: #0f2a1e;
+  --on-brand: #0f2a1e; /* text on a --brand fill, both themes */
+  --accent: #14794c;
+  --accent-hover: #0f5f3b;
+  --accent-soft: #e8f8f0;
+
+  --danger: #c02f12;
+  --danger-soft: #fdeeea;
+  --warn: #b94700;
+  --warn-soft: #fff3e8;
+  --info: #0b67b8;
+  --info-soft: #ebf4fd;
+  --ok: #1b7a50;
+  --ok-soft: #e9f6ee;
+  --violet: #6550b9;
+  --violet-soft: #f3f0fd;
+  --diff-add: #e9f6ee;
+  --diff-add-strong: #b5e3c8;
+  --diff-del: #fdeeea;
+  --diff-del-strong: #f9c4b8;
+  --ring: rgb(62 207 142 / 0.3);
+  --overlay: rgb(0 0 0 / 0.4);
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #121212;
+  --chrome: #171717;
+  --surface: #1c1c1c;
+  --surface-2: #242424;
+  --surface-3: #2e2e2e;
+  --control: #212121;
+  --button: #262626;
+  --line: #2e2e2e;
+  --line-strong: #3e3e3e;
+  --fg: #ededed;
+  --muted: #b4b4b4;
+  --subtle: #8f8f8f;
+
+  --brand: #3ecf8e;
+  --brand-strong: #3ecf8e;
+  --brand-soft: #11291d;
+  --primary: #006239;
+  --primary-hover: #00703f;
+  --primary-border: rgb(62 207 142 / 0.45);
+  --primary-fg: #fafafa;
+  --on-brand: #0f2a1e;
+  --accent: #3ecf8e;
+  --accent-hover: #6ee7b0;
+  --accent-soft: #11291d;
+
+  --danger: #ff977d;
+  --danger-soft: #2e1612;
+  --warn: #ff8f3d;
+  --warn-soft: #2c1d10;
+  --info: #70b8ff;
+  --info-soft: #10233a;
+  --ok: #3dd68c;
+  --ok-soft: #11291d;
+  --violet: #baa7ff;
+  --violet-soft: #231d3d;
+  --diff-add: #11291d;
+  --diff-add-strong: #1d5236;
+  --diff-del: #2e1612;
+  --diff-del-strong: #6b2a1f;
+  --ring: rgb(62 207 142 / 0.35);
+  --overlay: rgb(0 0 0 / 0.6);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-chrome: var(--chrome);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-control: var(--control);
+  --color-button: var(--button);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-border: var(--primary-border);
+  --color-primary-fg: var(--primary-fg);
+  --color-on-brand: var(--on-brand);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
+  --color-diff-add: var(--diff-add);
+  --color-diff-add-strong: var(--diff-add-strong);
+  --color-diff-del: var(--diff-del);
+  --color-diff-del-strong: var(--diff-del-strong);
+  --color-ring: var(--ring);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Source Code Pro Variable", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* dashboard density: 13px body copy (text-sm), 12px secondary (text-xs) */
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: calc(1.25 / 0.8125);
+}
+
+/* Small uppercase monospace labels: sidebar groups, table headers, section eyebrows. Set the colour separately. */
+@utility mono-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* in the base layer so utilities (e.g. inputs that show focus with a ring) can override it */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+::selection {
+  background: var(--brand-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+dialog::backdrop {
+  background: var(--overlay);
+}
+
+/* Rendered knowledge (react-markdown output). Hand-rolled instead of the typography plugin. */
+.md {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3, .md h4 { font-weight: 500; line-height: 1.3; margin: 1.6em 0 0.6em; letter-spacing: -0.01em; }
+.md h1 { font-size: 1.5rem; }
+.md h2 { font-size: 1.25rem; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
+.md h3 { font-size: 1.075rem; }
+.md h4 { font-size: 1rem; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: 0.85em 0; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.4em; }
+.md li { margin: 0.25em 0; }
+.md li > ul, .md li > ol { margin: 0.25em 0; }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.md a:hover { color: var(--accent-hover); }
+.md strong { font-weight: 600; }
+.md code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 0.1em 0.35em; }
+.md pre { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 0.85em 1em; overflow-x: auto; font-size: 0.85em; line-height: 1.55; }
+.md pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+.md blockquote { border-left: 2px solid var(--brand); padding-left: 1em; color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 1.5em 0; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 0.875em; }
+.md th, .md td { border: 1px solid var(--line); padding: 0.4em 0.7em; text-align: left; vertical-align: top; }
+.md th { background: var(--surface-2); font-weight: 500; }
+.md input[type="checkbox"] { margin-right: 0.4em; }
+.md img { max-width: 100%; border-radius: 6px; }
+.md section.footnotes { margin-top: 2em; padding-top: 1em; border-top: 1px solid var(--line); font-size: 0.85em; color: var(--muted); }
+.md section.footnotes h2 { font-family: var(--font-mono); font-size: 11px; font-weight: 400; border: 0; margin-top: 0; text-transform: uppercase; letter-spacing: 0.06em; color: var(--subtle); }
+.md sup a { text-decoration: none; font-weight: 600; }
+.md-sm { font-size: 0.8125rem; line-height: 1.6; }

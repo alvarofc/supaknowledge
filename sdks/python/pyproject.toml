@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "supaknowledge"
+version = "0.1.0"
+description = "Supaknowledge client: search, read and flag company knowledge, load skills, record agent traces, and expose Supaknowledge as tools for any OpenAI-compatible or JSON Schema tool loop."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Supaknowledge contributors" }]
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27,<1"]
+keywords = ["supaknowledge", "knowledge", "agents", "ai", "llm", "mcp", "supabase", "agent-skills", "tools", "rag"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/alvarofc/supaknowledge"
+Repository = "https://github.com/alvarofc/supaknowledge"
+Issues = "https://github.com/alvarofc/supaknowledge/issues"
+Documentation = "https://github.com/alvarofc/supaknowledge/blob/main/docs/sdk.md#python"
+Changelog = "https://github.com/alvarofc/supaknowledge/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+test = ["pytest==9.2.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/supaknowledge"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/supaknowledge", "tests", "README.md", "LICENSE", "NOTICE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

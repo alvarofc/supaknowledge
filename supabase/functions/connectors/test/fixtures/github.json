@@ -1,0 +1,43 @@
+{
+  "repo": {"id": 1, "full_name": "acme/handbook", "private": true, "visibility": "private", "default_branch": "main", "html_url": "https://github.com/acme/handbook", "owner": {"login": "acme", "type": "Organization"}},
+  "head": {"sha": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", "commit": {"message": "docs: update"}},
+  "tree": {
+    "sha": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", "truncated": false,
+    "tree": [
+      {"path": "README.md", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000001", "size": 40},
+      {"path": "docs", "mode": "040000", "type": "tree", "sha": "ddd0000000000000000000000000000000000000"},
+      {"path": "docs/guide.md", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000002", "size": 60},
+      {"path": "docs/setup.html", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000003", "size": 90},
+      {"path": "docs/logo.png", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000004", "size": 2048},
+      {"path": "docs/schema.sql", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000005", "size": 30},
+      {"path": "src/index.ts", "mode": "100644", "type": "blob", "sha": "aaa0000000000000000000000000000000000006", "size": 30}
+    ]
+  },
+  "blobs": {
+    "aaa0000000000000000000000000000000000001": "# Acme handbook\n\nStart here.\n",
+    "aaa0000000000000000000000000000000000002": "# Support guide\n\nEscalate P1s to on-call within 15 minutes.\n",
+    "aaa0000000000000000000000000000000000003": "<html><head><title>Setup</title></head><body><nav>menu</nav><main><h1>Setup</h1><p>Run <code>make</code>.</p></main></body></html>",
+    "aaa0000000000000000000000000000000000005": "create table refunds (id int);\n",
+    "bbb0000000000000000000000000000000000002": "# Support guide\n\nEscalate P1s to on-call within 10 minutes.\n",
+    "bbb0000000000000000000000000000000000007": "# Billing\n\nInvoices go out on the 1st.\n"
+  },
+  "compare": {
+    "status": "ahead", "ahead_by": 2, "behind_by": 0, "total_commits": 2,
+    "files": [
+      {"sha": "bbb0000000000000000000000000000000000002", "filename": "docs/guide.md", "status": "modified", "additions": 1, "deletions": 1},
+      {"sha": null, "filename": "docs/old.md", "status": "removed", "additions": 0, "deletions": 10},
+      {"sha": "bbb0000000000000000000000000000000000007", "filename": "docs/billing.md", "previous_filename": "docs/invoices.md", "status": "renamed"},
+      {"sha": "bbb0000000000000000000000000000000000008", "filename": "src/new.ts", "status": "added"}
+    ]
+  },
+  "teams": [{"id": 1, "slug": "support", "name": "Support"}, {"id": 2, "slug": "docs-owners", "name": "Docs owners"}],
+  "issues": [
+    {"number": 41, "title": "Refunds for annual plans", "body": "How do we prorate?", "html_url": "https://github.com/acme/handbook/issues/41", "state": "closed", "state_reason": "completed",
+     "user": {"login": "dana"}, "labels": [{"name": "policy"}, {"name": "billing"}], "comments": 1, "comments_url": "https://api.github.com/repos/acme/handbook/issues/41/comments",
+     "created_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-10T10:00:00Z", "closed_at": "2026-11-10T10:00:00Z"},
+    {"number": 42, "title": "Fix typo", "body": null, "html_url": "https://github.com/acme/handbook/pull/42", "state": "closed",
+     "user": {"login": "eli"}, "labels": [], "comments": 0, "comments_url": "https://api.github.com/repos/acme/handbook/issues/42/comments",
+     "created_at": "2026-11-02T10:00:00Z", "updated_at": "2026-11-11T10:00:00Z", "closed_at": "2026-11-11T10:00:00Z", "pull_request": {"merged_at": "2026-11-11T10:00:00Z"}}
+  ],
+  "comments_41": [{"user": {"login": "finn"}, "body": "Prorate by remaining full months.", "created_at": "2026-11-09T10:00:00Z"}]
+}

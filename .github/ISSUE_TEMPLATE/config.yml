@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/alvarofc/supaknowledge/discussions
+    about: Ask a question, share how you use Supaknowledge, or discuss an idea before it becomes an issue.
+  - name: Report a security vulnerability
+    url: https://github.com/alvarofc/supaknowledge/security/advisories/new
+    about: Please report security issues privately, never in a public issue. See SECURITY.md.
