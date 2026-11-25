@@ -24,14 +24,12 @@ export type FlagRow = Pick<
   | "status"
   | "audience"
   | "resolution"
+  | "proposal_id"
 >;
 
 export function conceptHref(base: string, path: string) {
   return `${base}/knowledge/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
-
-// Set by the database when a proposal resolves a flag: "applied in proposal <uuid>".
-const RESOLVED_BY_PROPOSAL = /^applied in proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export function FlagItem({
   flag,
@@ -51,7 +49,8 @@ export function FlagItem({
 }) {
   const author = flag.created_by ? profiles[flag.created_by] : undefined;
   const open = flag.status === "open";
-  const proposalId = flag.resolution?.match(RESOLVED_BY_PROPOSAL)?.[1];
+  // the proposal the flag is in (in_proposal) or that applied it (resolved); a dismissed flag links nowhere
+  const proposalId = flag.status === "in_proposal" || flag.status === "resolved" ? flag.proposal_id : null;
   const status = flag.status.replace("_", " ");
   const showSource = !(inTrace && flag.synthetic);
   return (
@@ -73,7 +72,7 @@ export function FlagItem({
         )}
         <AudienceBadge audience={flag.audience} groups={groups} />
         {open ? null : proposalId ? (
-          <Link href={`${base}/proposals/${proposalId}`} title="Open the proposal that resolved this flag" className="hover:opacity-80">
+          <Link href={`${base}/proposals/${proposalId}`} title={flag.status === "resolved" ? "Open the proposal that resolved this flag" : "Open the proposal for this flag"} className="hover:opacity-80">
             <Badge>{status}</Badge>
           </Link>
         ) : (

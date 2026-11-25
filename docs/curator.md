@@ -226,9 +226,14 @@ The policy (`decideAutoApply()`) refuses, in this order: auto-apply disabled; an
 source kind; a citation of an external URL; no observed evidence (when required).
 The reason is recorded in the task output.
 
-Risk comes from the model (low: a factual fix with direct evidence in one concept, such as a renamed column;
-medium: new concepts, policy or procedure wording, several concepts; high: money, compliance, deletions or weak
-evidence), raised by self-review findings and check problems, and forced to `high` by an escalation.
+Risk comes from the model and measures how likely a change is to be wrong or harmful if applied without a careful
+look, not how important its topic is. Low: a factual fix with direct evidence in one concept, such as a renamed
+column or a fixed example query. Medium: a new concept; a new or reworded step, rule or policy that a person stated
+directly in the evidence (a formatting or compliance rule someone stated is medium, not high); changes across
+several concepts. High: weak, indirect or conflicting evidence; removing or reversing existing meaning; changing
+definitions or figures that money decisions depend on; changing who can see what. Self-review raises it only for a
+blocker or an issue that makes the change more likely to be wrong (warnings alone never make a change high risk),
+check problems raise it, and an escalation forces it to `high`.
 
 ## Prompts
 
