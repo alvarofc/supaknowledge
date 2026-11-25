@@ -5,6 +5,7 @@ import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
 import { getSpaceContext } from "@/server/space.server";
 import { getSupabase } from "@/server/supabase.server";
+import { fetchAllPages } from "@/lib/paginate";
 
 type Kind = Database["public"]["Enums"]["concept_kind"];
 export const KINDS: Kind[] = ["skill", "domain", "data_access"];
@@ -18,24 +19,39 @@ export const loadKnowledge = createServerFn({ method: "GET" })
     const q = (data.q ?? "").trim();
     const kind = KINDS.includes(data.kind as Kind) ? (data.kind as Kind) : null;
 
-    let query = supabase
-      .from("concepts")
-      .select("id, path, kind, type, title, description, status, audience, revision, updated_at, trust, is_stale")
-      .eq("space_id", ctx.space.id)
-      .order("path");
-    if (kind) query = query.eq("kind", kind);
-    const [{ data: concepts, error }, results, kindRows] = await Promise.all([
-      query,
+    // the whole tree, paged: one select is capped at PostgREST's max_rows
+    const tree = fetchAllPages<TreeConcept>((from, to) => {
+      let query = supabase
+        .from("concepts")
+        .select("id, path, kind, type, title, description, status, audience, revision, updated_at, trust, is_stale")
+        .eq("space_id", ctx.space.id)
+        .order("path")
+        .order("id");
+      if (kind) query = query.eq("kind", kind);
+      return query.range(from, to);
+    });
+    const [{ data: all, error }, results, kindCounts] = await Promise.all([
+      tree,
       q ? supabase.rpc("search_knowledge", { p_space: ctx.space.id, p_query: q, p_limit: 30, p_kinds: kind ? [kind] : undefined }) : Promise.resolve(null),
       // counts per kind: from the tree itself unless it is filtered to one kind
-      kind ? supabase.from("concepts").select("kind").eq("space_id", ctx.space.id).then((r) => r.data ?? []) : Promise.resolve(null),
+      kind
+        ? Promise.all(
+            KINDS.map((k) =>
+              supabase
+                .from("concepts")
+                .select("id", { count: "exact", head: true })
+                .eq("space_id", ctx.space.id)
+                .eq("kind", k)
+                .then((r) => [k, r.count ?? 0] as const),
+            ),
+          )
+        : Promise.resolve(null),
     ]);
-    const all = (concepts ?? []) as TreeConcept[];
 
     const counts = Object.fromEntries(KINDS.map((k) => [k, 0])) as Record<Kind, number>;
-    const rows = kindRows ?? all;
-    for (const r of rows) counts[r.kind]++;
-    const total = rows.length;
+    if (kindCounts) for (const [k, n] of kindCounts) counts[k] = n;
+    else for (const r of all) counts[r.kind]++;
+    const total = KINDS.reduce((n, k) => n + counts[k], 0);
 
     return {
       q,

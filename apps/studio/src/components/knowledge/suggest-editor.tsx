@@ -225,7 +225,7 @@ export function SuggestEditor({
               />
             ) : bodyView === "preview" ? (
               body.trim() ? (
-                <Markdown conceptPath={path || undefined} knowledgeBase={`${base}/knowledge`}>
+                <Markdown conceptPath={path || undefined} conceptKind={kind} knowledgeBase={`${base}/knowledge`}>
                   {body}
                 </Markdown>
               ) : (

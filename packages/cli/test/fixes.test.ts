@@ -267,3 +267,42 @@ describe("kf proposal on an applied proposal", () => {
     assert.match(r.stdout, /Also consulted/);
   });
 });
+
+describe("kf init space selection", () => {
+  it("rejects a space spec with more than one slash instead of truncating it", async () => {
+    const h = harness();
+    const r = await h.run("init", "--space", "acme/finance/extra");
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /invalid space "acme\/finance\/extra"/);
+    assert.equal(h.calls.length, 0);
+  });
+
+  it("rejects --workspace that contradicts the space's workspace", async () => {
+    const h = harness();
+    const r = await h.run("init", "--workspace", "other", "--space", "acme/finance");
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /does not match/);
+  });
+
+  it("falls back to the project file's space like other commands", async () => {
+    const h = harness();
+    const WS = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    h.routes.push(
+      (c) => (c.url.includes("/rest/v1/workspaces?") ? json([{ id: WS, slug: "acme", name: "Acme" }]) : undefined),
+      (c) => (c.url.includes("/rest/v1/spaces?") ? json([{ id: SPACE_ID, slug: "finance", name: "Finance" }]) : undefined),
+    );
+    const r = await h.run("init", "--json");
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).space.ref, "acme/finance");
+    assert.ok(h.calls.some((c) => c.url.includes("/rest/v1/workspaces?") && c.url.includes("slug=eq.acme")));
+  });
+});
+
+describe("kf mcp-config --key-env", () => {
+  it("rejects a value that is not an environment variable name", async () => {
+    const h = harness();
+    const r = await h.run("mcp-config", "--agent-key", "--key-env", 'X"; touch /tmp/pwn; "');
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /--key-env must be an environment variable name/);
+  });
+});

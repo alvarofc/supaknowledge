@@ -4,7 +4,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from supaknowledge import Supaknowledge, SupaknowledgeError, TraceRecorder, build_mcp_config, parse_concept_markdown
+from supaknowledge import Supaknowledge, SupaknowledgeError, TraceRecorder, build_mcp_config, parse_concept_markdown, parse_skill_markdown
 
 URL = "http://kf.test"
 KEY = "skn_11111111-1111-1111-1111-111111111111_" + "x" * 40
@@ -86,11 +86,11 @@ def test_read_parses_markdown_and_missing_is_none():
 
 def test_flag_and_http_errors():
     def tool(name: str, args: dict) -> Any:
-        assert args == {"kind": "incorrect", "observation": "renamed", "concept_path": "data/orders"}
+        assert args == {"kind": "incorrect", "observation": "renamed", "concept_path": "data/orders", "evidence": {"error": "42703"}}
         return {"flag_id": "f-1", "status": "open"}
 
     kf = client(Recorder(mcp(tool)))
-    assert kf.flag("incorrect", "renamed", concept_path="data/orders")["id"] == "f-1"
+    assert kf.flag("incorrect", "renamed", concept_path="data/orders", evidence={"error": "42703"})["id"] == "f-1"
     with pytest.raises(SupaknowledgeError):
         kf.flag("missing", "  ")
 
@@ -237,6 +237,18 @@ def test_mcp_config():
     assert KEY in kf.mcp_server_config("cursor")["config"]["mcpServers"]["supaknowledge"]["headers"]["Authorization"]
 
 
+def test_mcp_config_key_env_validation_and_placeholder_notes():
+    for bad in ['X"; rm -rf ~; "', "1KEY", "A-B", "$(id)", ""]:
+        with pytest.raises(ValueError, match="environment variable name"):
+            build_mcp_config("https://p.supabase.co", "a/b", api_key_env=bad)
+    assert build_mcp_config("https://p.supabase.co", "a/b", api_key_env="_MY_KEY2")["command"].endswith('Bearer $_MY_KEY2"')
+    for kind in ("claude-desktop", "generic"):
+        cfg = build_mcp_config("https://p.supabase.co", "a/b", client=kind, api_key_env="MY_KEY")
+        assert "<MY_KEY>" in json.dumps(cfg["config"])
+        assert cfg["notes"][0].startswith("Replace <MY_KEY> in the config")
+    assert build_mcp_config("https://p.supabase.co", "a/b", client="cursor")["notes"][0].startswith("Set SUPAKNOWLEDGE_API_KEY")
+
+
 def test_constructor_validation():
     with pytest.raises(SupaknowledgeError):
         Supaknowledge(URL, "a/b")
@@ -247,6 +259,33 @@ def test_constructor_validation():
 def test_parse_concept_without_links():
     c = parse_concept_markdown("# T\n\npath: a/b\nkind: domain | type: X | status: stable | revision: 1\ntrust: unverified | STALE (stale_after 2020-01-01)\n\n---\n\nhello")
     assert c["stale"] is True and c["trust"] == "unverified" and c["body"] == "hello" and "links" not in c
+
+
+def test_parse_skill_files_only_from_trailer_outside_fences():
+    md = "\n\n".join([
+        "# Skill: r\n\npath: skills/r | revision: 1\n\ndescription: d.",
+        "---",
+        "### Step heading in the instructions\n\n```md\n## Files\n\n### not/a/file.md\n```",
+        "---",
+        "## Files",
+        "### scripts/q.sql",
+        "```sql\nselect 1\n~~~\n### inside/content.txt\n```",
+        "### assets/logo.png",
+        "(binary; 10 bytes; storage: concept-files/x)",
+    ])
+    s = parse_skill_markdown(md)
+    assert s["files"] == [{"path": "scripts/q.sql"}, {"path": "assets/logo.png"}]
+    assert s["body"].startswith("### Step heading in the instructions") and "scripts/q.sql" not in s["body"]
+    assert "files" not in parse_skill_markdown("# Skill: r\n\npath: skills/r\n\n---\n\n### Only a heading")
+
+
+def test_parse_concept_files_trailer():
+    c = parse_concept_markdown(
+        "# R\n\npath: skills/r\nkind: skill | type: Skill | status: stable | revision: 1\ntrust: human_reviewed\n\n---\n\n"
+        "Body\n\n```\nFiles:\n\n- fake\n```\n\nFiles:\n\n- scripts/q.sql (12 bytes)\n\n- README\n\nUse load_skill(\"r\") to get the file contents."
+    )
+    assert c["files"] == [{"path": "scripts/q.sql", "size_bytes": 12}, {"path": "README"}]
+    assert c["body"] == "Body\n\n```\nFiles:\n\n- fake\n```"
 
 
 def test_recorder_standalone_drops_4xx():

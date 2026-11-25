@@ -1,6 +1,6 @@
 ---
 name: revenue-report
-description: Build Acme's monthly revenue report (revenue by region and product line, ARR and NRR) in the house format. Use when someone asks for a revenue report, a monthly or quarterly revenue summary, or revenue numbers for leadership.
+description: Build Acme's monthly revenue report (revenue by region and product line, ARR and NRR) in the house format. Use when someone asks for a revenue report, a monthly revenue summary, or revenue numbers for leadership.
 license: Apache-2.0
 metadata:
   owner: finance-data

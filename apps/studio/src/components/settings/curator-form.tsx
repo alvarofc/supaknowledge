@@ -73,8 +73,11 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
       return;
     }
     startTransition(async () => {
-      const res = await saveSpaceSettings({ data: { spaceId, settings: s } });
+      // `initial` is what this page loaded: fields left unchanged keep what is stored now (another admin may have saved)
+      const res = await saveSpaceSettings({ data: { spaceId, settings: s, base: initial } });
       if (res.ok) {
+        setS(res.settings);
+        setFallbackText(res.settings.curator.fallback_models.join("\n"));
         setErrors({});
         toast.success("Settings saved. The next curator run uses them.");
         void router.invalidate();

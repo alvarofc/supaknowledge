@@ -1083,7 +1083,7 @@ isOneToOne: false
             }[]
                            },
 "search_sources":
-{ Args: { "p_embedding"?: string,"p_limit"?: number,"p_min_similarity"?: number,"p_query": string,"p_space": string,"p_visible_to"?: (string)[] }; Returns: {
+{ Args: { "p_embedding"?: string,"p_limit"?: number,"p_min_similarity"?: number,"p_query": string,"p_source"?: string,"p_space": string,"p_visible_to"?: (string)[] }; Returns: {
               "changed_at": string,"document_id": string,"score": number,"snippet": string,"source_id": string,"title": string,"url": string
             }[]
                            },

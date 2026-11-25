@@ -8,9 +8,10 @@ const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 /**
  * Inline script for <head>: applies the stored theme before the first paint, so there is no flash of the wrong
- * theme. Keep it tiny and dependency-free; it runs before React.
+ * theme. Keep it tiny and dependency-free; it runs before React. Storage can throw (blocked site data): then the
+ * system preference still applies.
  */
-export const themeScript = `(function(){try{var t=localStorage.getItem("${STORAGE_KEY}");var d=t==="dark"||(t!=="light"&&matchMedia("${DARK_QUERY}").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light"}catch(e){}})()`;
+export const themeScript = `(function(){var t=null;try{t=localStorage.getItem("${STORAGE_KEY}")}catch(e){}try{var d=t==="dark"||(t!=="light"&&matchMedia("${DARK_QUERY}").matches);var r=document.documentElement;r.classList.toggle("dark",d);r.style.colorScheme=d?"dark":"light"}catch(e){}})()`;
 
 function readTheme(): Theme {
   try {

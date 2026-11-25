@@ -213,8 +213,10 @@ update public.groups set external_ref = '{"slack_channel": "C0FINANCE"}' where s
 Rules (`lib/acl.ts`), which guarantee a document is **never wider than its source**:
 
 - Source audience empty → document audience = the matched groups (or empty if none match).
-- Source audience restricted → document audience = matched ∩ source. If the intersection is empty the document
-  keeps the source audience (OR-lists cannot express "members of both").
+- Source audience restricted → document audience = matched ∩ source. If the intersection is empty (OR-lists
+  cannot express "members of both"), an upstream-restricted item is skipped (and retracted), whatever
+  `acl_strict` says, since the source audience would be wider than its upstream ACL; an unrestricted item keeps
+  the source audience.
 - Restricted upstream item with no matching group → source audience, or skipped (and retracted) with
   `acl_strict: true`.
 

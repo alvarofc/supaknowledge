@@ -31,8 +31,10 @@ for (const s of suites) {
   const r = spawnSync(
     "npx",
     ["--yes", DENO, "test", "--no-lock", "--minimum-dependency-age", "0", "--allow-read", "--allow-env", "--config", s.config, `supabase/functions/${s.name}/test/`],
-    { cwd: root, stdio: "inherit" },
+    // npx is npx.cmd on Windows, which only runs through a shell (no argument here needs quoting)
+    { cwd: root, stdio: "inherit", shell: process.platform === "win32" },
   );
+  if (r.error) console.error(r.error.message);
   if (r.status !== 0) failed++;
 }
 console.log(failed ? `\n${failed} Deno suite(s) failed` : `\nall ${suites.length} Deno suites passed`);

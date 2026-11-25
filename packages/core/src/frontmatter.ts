@@ -54,10 +54,15 @@ const PREFERRED_ORDER = [
   "metadata",
 ];
 
+/**
+ * Frontmatter with the OKF keys first. Own keys only, written as own data properties: keys such as `constructor`
+ * or `toString` are kept, and a `__proto__` key stays a plain key instead of replacing the prototype.
+ */
 export function orderKeys(fm: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of PREFERRED_ORDER) if (k in fm && fm[k] !== undefined) out[k] = fm[k];
-  for (const [k, v] of Object.entries(fm)) if (!(k in out) && v !== undefined) out[k] = v;
+  const put = (k: string, v: unknown) => Object.defineProperty(out, k, { value: v, enumerable: true, writable: true, configurable: true });
+  for (const k of PREFERRED_ORDER) if (Object.hasOwn(fm, k) && fm[k] !== undefined) put(k, fm[k]);
+  for (const [k, v] of Object.entries(fm)) if (!Object.hasOwn(out, k) && v !== undefined) put(k, v);
   return out;
 }
 

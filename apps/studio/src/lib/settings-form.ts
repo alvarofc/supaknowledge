@@ -89,3 +89,38 @@ export function friendlyIssue(code: string, message: string): string {
     .replace(/^Too big: expected string to have <=?\s*(\d+) characters?$/, "Too long: at most $1 characters")
     .replace(/^Too big: expected array to have <=?\s*(\d+) items?$/, "At most $1 entries");
 }
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The settings document to store: `stored` (what the database holds now) updated with the form's `draft`.
+ * Keys the schema does not know survive, at the top level and inside each section. With `base` (the settings the
+ * form was loaded with), a field the user left unchanged keeps its stored value, so saving a page opened before
+ * another admin's save does not silently revert their changes (a three-way merge per field).
+ */
+export function mergeSettingsUpdate(
+  stored: Record<string, unknown>,
+  draft: Record<string, unknown>,
+  base?: Record<string, unknown>,
+): Record<string, unknown> {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const untouched = (value: unknown, baseValue: unknown, key: string, holder: unknown) =>
+    base !== undefined && same(value, baseValue) && isPlainObject(holder) && key in holder;
+  const merged: Record<string, unknown> = { ...stored };
+  for (const [k, v] of Object.entries(draft)) {
+    const prev = stored[k];
+    if (isPlainObject(v)) {
+      const baseSection = isPlainObject(base?.[k]) ? base[k] : {};
+      const section: Record<string, unknown> = isPlainObject(prev) ? { ...prev } : {};
+      for (const [field, value] of Object.entries(v)) {
+        if (!untouched(value, baseSection[field], field, prev)) section[field] = value;
+      }
+      merged[k] = section;
+    } else if (!untouched(v, base?.[k], k, stored)) {
+      merged[k] = v;
+    }
+  }
+  return merged;
+}

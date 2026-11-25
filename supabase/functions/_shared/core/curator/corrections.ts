@@ -69,15 +69,67 @@ function renderValue(v: unknown, n: number): string {
   return clip(typeof v === "string" ? v : JSON.stringify(v), n);
 }
 
-/** Compact transcript for the model: long tool payloads are clipped, structure is kept. */
+/** Indexes of the events the correction heuristic points at: feedback, correcting user turns, failed tools. */
+function signalEventIndexes(events: TraceEvent[]): number[] {
+  const out: number[] = [];
+  let sawAssistant = false;
+  events.forEach((e, i) => {
+    if (e.role === "assistant") sawAssistant = true;
+    if (e.role === "feedback" || (e.role === "tool" && e.is_error)) out.push(i);
+    else if (e.role === "user" && sawAssistant && e.content && CORRECTION_CUES.some((re) => re.test(e.content!))) out.push(i);
+  });
+  return out;
+}
+
+/**
+ * Compact transcript for the model: long tool payloads are clipped, structure is kept. A transcript over
+ * maxChars keeps the correction moments (and the turn before each), then as much of the end and the start as
+ * fits, and marks what it left out, so a correction late in a long trace is never cut off.
+ */
 export function renderTrace(trace: Trace, maxChars = 24_000): string {
-  const lines: string[] = [`Trace ${trace.id} "${trace.name ?? ""}" outcome=${trace.outcome}`];
-  for (const e of trace.events as TraceEvent[]) {
+  const header = `Trace ${trace.id} "${trace.name ?? ""}" outcome=${trace.outcome}`;
+  const events = trace.events as TraceEvent[];
+  const lines = events.map((e) => {
     const head = `[${e.seq}] ${e.role}${e.tool_name ? `:${e.tool_name}` : ""}${e.is_error ? " (ERROR)" : ""}`;
     const parts = [e.content ? clip(e.content, 2000) : "", e.tool_input !== undefined ? `input=${renderValue(e.tool_input, 800)}` : "", e.tool_output !== undefined ? `output=${renderValue(e.tool_output, 1200)}` : ""].filter(Boolean);
-    lines.push(`${head}: ${parts.join(" | ")}`);
+    return `${head}: ${parts.join(" | ")}`;
+  });
+  const full = [header, ...lines].join("\n");
+  if (full.length <= maxChars) return full;
+
+  // every kept line reserves room for one omission marker before it (and one is reserved for the end)
+  const MARKER = 32;
+  const budget = maxChars - header.length - MARKER;
+  const keep = new Set<number>();
+  let used = 0;
+  const take = (i: number): boolean => {
+    if (i < 0 || i >= lines.length || keep.has(i)) return true;
+    const cost = lines[i]!.length + 1 + MARKER;
+    if (used + cost > budget) return false;
+    keep.add(i);
+    used += cost;
+    return true;
+  };
+  for (const i of signalEventIndexes(events)) {
+    take(i - 1);
+    take(i);
   }
-  return clip(lines.join("\n"), maxChars);
+  for (let i = lines.length - 1; i >= 0 && take(i); i--);
+  for (let i = 0; i < lines.length && take(i); i++);
+
+  const out = [header];
+  let gap = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!keep.has(i)) {
+      gap++;
+      continue;
+    }
+    if (gap) out.push(`…[${gap} event${gap === 1 ? "" : "s"} omitted]`);
+    gap = 0;
+    out.push(lines[i]!);
+  }
+  if (gap) out.push(`…[${gap} event${gap === 1 ? "" : "s"} omitted]`);
+  return clip(out.join("\n"), maxChars);
 }
 
 export async function extractLessons(

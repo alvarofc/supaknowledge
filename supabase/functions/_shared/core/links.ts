@@ -2,7 +2,8 @@
 //   scheme ("https:", "mailto:")  -> external
 //   leading "/"                   -> bundle-root relative
 //   otherwise                     -> relative to the linking file
-// [[wikilinks]] are NOT links. Broken links are allowed.
+// [[wikilinks]] are NOT links. Broken links are allowed. Links in code (fenced blocks, inline code) are not edges.
+import { fencedLines } from "./fences.ts";
 
 export interface ExtractedLink {
   /** resolved concept path (no ".md", no leading "/") or null for external links */
@@ -13,7 +14,6 @@ export interface ExtractedLink {
 }
 
 const LINK_RE = /(!?)\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
-const CODE_FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 const INLINE_CODE_RE = /`[^`\n]*`/g;
 
 export function isExternal(href: string): boolean {
@@ -60,7 +60,9 @@ export function resolveHref(fromPath: string, href: string): string | null {
 }
 
 export function extractLinks(fromPath: string, markdown: string): ExtractedLink[] {
-  const text = markdown.replace(CODE_FENCE_RE, "").replace(INLINE_CODE_RE, "");
+  const lines = markdown.split(/\r?\n/);
+  const fenced = fencedLines(lines);
+  const text = lines.map((l, i) => (fenced[i] ? "" : l)).join("\n").replace(INLINE_CODE_RE, "");
   const seen = new Map<string, ExtractedLink>();
   for (const m of text.matchAll(LINK_RE)) {
     if (m[1] === "!") continue; // images are assets, not edges

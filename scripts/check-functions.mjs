@@ -20,12 +20,13 @@ for (const name of names) {
   const r = spawnSync(
     "npx",
     ["--yes", DENO, "check", "--frozen", "--minimum-dependency-age", "0", "--config", `supabase/functions/${name}/deno.json`, `supabase/functions/${name}/index.ts`],
-    { cwd: root, encoding: "utf8" },
+    // npx is npx.cmd on Windows, which only runs through a shell (no argument here needs quoting)
+    { cwd: root, encoding: "utf8", shell: process.platform === "win32" },
   );
   if (r.status === 0) console.log(`ok   ${name}`);
   else {
     failed++;
-    console.log(`FAIL ${name}\n${r.stdout}${r.stderr}`);
+    console.log(`FAIL ${name}\n${r.error ? `${r.error.message}\n` : ""}${r.stdout ?? ""}${r.stderr ?? ""}`);
   }
 }
 if (!names.length) {

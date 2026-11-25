@@ -10,17 +10,25 @@ export function ConsentActions({ authorizationId, clientName }: { authorizationI
   async function decide(action: "approve" | "deny") {
     setPending(action);
     setError(null);
-    const supabase = createClient();
-    const res =
-      action === "approve"
-        ? await supabase.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true })
-        : await supabase.auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
-    if (res.error || !res.data?.redirect_url) {
-      setError(res.error?.message ?? "The authorization server did not return a redirect. Start the connection again.");
+    const fail = (message: string) => {
+      setError(message);
       setPending(null);
-      return;
+    };
+    try {
+      const supabase = createClient();
+      const res =
+        action === "approve"
+          ? await supabase.auth.oauth.approveAuthorization(authorizationId, { skipBrowserRedirect: true })
+          : await supabase.auth.oauth.denyAuthorization(authorizationId, { skipBrowserRedirect: true });
+      if (res.error || !res.data?.redirect_url) {
+        fail(res.error?.message ?? "The authorization server did not return a redirect. Start the connection again.");
+        return;
+      }
+      window.location.assign(res.data.redirect_url);
+    } catch (err) {
+      // a thrown rejection (network, client bug) must not leave both buttons disabled
+      fail(err instanceof Error && err.message ? err.message : "Could not reach the authorization server. Try again.");
     }
-    window.location.assign(res.data.redirect_url);
   }
 
   return (

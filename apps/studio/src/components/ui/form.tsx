@@ -1,5 +1,19 @@
+import { createContext, useContext } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "./cn";
+
+/** Set by <Field>: the control whose id is `id` gets aria-describedby (hint/error) and aria-invalid (error). */
+const FieldContext = createContext<{ id: string; describedBy?: string; invalid: boolean } | null>(null);
+
+/** aria props a control inherits from its Field (explicit props win). */
+function useFieldAria(props: { id?: string; "aria-describedby"?: string; "aria-invalid"?: ComponentProps<"input">["aria-invalid"] }) {
+  const f = useContext(FieldContext);
+  const wired = f !== null && props.id === f.id;
+  return {
+    "aria-describedby": props["aria-describedby"] ?? (wired ? f.describedBy : undefined),
+    "aria-invalid": props["aria-invalid"] ?? (wired && f.invalid ? true : undefined),
+  };
+}
 
 export const controlClass =
   "rounded-md border border-line-strong bg-control px-3 text-sm text-fg placeholder:text-subtle transition-colors focus:border-accent focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60 aria-invalid:border-danger";
@@ -10,16 +24,16 @@ function control(className: string | undefined, extra: string) {
 }
 
 export function Input({ className, ...props }: ComponentProps<"input">) {
-  return <input className={control(className, "h-8")} {...props} />;
+  return <input className={control(className, "h-8")} {...props} {...useFieldAria(props)} />;
 }
 
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return <textarea className={control(className, "py-2 leading-relaxed")} {...props} />;
+  return <textarea className={control(className, "py-2 leading-relaxed")} {...props} {...useFieldAria(props)} />;
 }
 
 export function Select({ className, children, ...props }: ComponentProps<"select">) {
   return (
-    <select className={control(className, "h-8 pr-8")} {...props}>
+    <select className={control(className, "h-8 pr-8")} {...props} {...useFieldAria(props)}>
       {children}
     </select>
   );
@@ -29,7 +43,10 @@ export function Label({ className, ...props }: ComponentProps<"label">) {
   return <label className={cn("text-sm text-muted", className)} {...props} />;
 }
 
-/** Label + control + hint/error, wired for screen readers via `id`. */
+/**
+ * Label + control + hint/error, wired for screen readers: the Input/Textarea/Select whose id is `htmlFor` gets
+ * aria-describedby pointing at the hint or error, and aria-invalid while there is an error.
+ */
 export function Field({
   label,
   htmlFor,
@@ -47,13 +64,14 @@ export function Field({
   className?: string;
   optional?: boolean;
 }) {
+  const describedBy = error ? `${htmlFor}-error` : hint ? `${htmlFor}-hint` : undefined;
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <Label htmlFor={htmlFor}>
         {label}
         {optional ? <span className="ml-1.5 font-mono text-[10.5px] tracking-[0.06em] text-subtle uppercase">optional</span> : null}
       </Label>
-      {children}
+      <FieldContext.Provider value={{ id: htmlFor, describedBy, invalid: !!error }}>{children}</FieldContext.Provider>
       {error ? (
         <p id={`${htmlFor}-error`} className="text-xs text-danger" role="alert">
           {error}

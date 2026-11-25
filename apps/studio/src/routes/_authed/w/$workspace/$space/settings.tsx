@@ -41,13 +41,15 @@ function SettingsPage() {
     { id: "access", label: "Access", href: href("access") },
   ];
 
+  // forms keep local state: key them by the space / workspace they edit, so switching spaces never shows (or
+  // saves) the previous one's values
   let body: ReactNode = null;
 
   if (data.tab === "general") {
     body = (
       <div className="flex flex-col gap-6">
-        <GeneralForm space={ctx.space} canEdit={spaceAdmin} />
-        {wsAdmin ? <DeleteSpace space={ctx.space} wsSlug={ctx.workspace.slug} /> : null}
+        <GeneralForm key={ctx.space.id} space={ctx.space} canEdit={spaceAdmin} />
+        {wsAdmin ? <DeleteSpace key={ctx.space.id} space={ctx.space} wsSlug={ctx.workspace.slug} /> : null}
       </div>
     );
   } else if (data.tab === "curator") {
@@ -66,6 +68,7 @@ function SettingsPage() {
           <CopyButton value={ctx.user.id} label="Copy ID" />
         </Card>
         <SpaceMembers
+          key={ctx.space.id}
           spaceId={ctx.space.id}
           members={data.members}
           candidates={data.people.map(({ user_id, name, kind }): Person => ({ user_id, name, kind }))}
@@ -74,6 +77,7 @@ function SettingsPage() {
           visibility={ctx.space.visibility}
         />
         <WorkspaceMembers
+          key={ctx.workspace.id}
           workspaceId={ctx.workspace.id}
           workspaceName={ctx.workspace.name}
           members={data.people}
@@ -87,6 +91,7 @@ function SettingsPage() {
   } else if (data.tab === "groups") {
     body = (
       <Groups
+        key={ctx.workspace.id}
         workspaceId={ctx.workspace.id}
         groups={data.groups}
         people={data.people.map(({ user_id, name, kind }) => ({ user_id, name, kind }))}
@@ -95,7 +100,7 @@ function SettingsPage() {
       />
     );
   } else {
-    body = <AccessGrants spaceId={ctx.space.id} grants={data.grants} groups={ctx.groups} canManage={spaceAdmin} />;
+    body = <AccessGrants key={ctx.space.id} spaceId={ctx.space.id} grants={data.grants} groups={ctx.groups} canManage={spaceAdmin} />;
   }
 
   return (

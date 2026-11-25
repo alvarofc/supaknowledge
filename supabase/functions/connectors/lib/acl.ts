@@ -4,8 +4,10 @@
 // everyone who can read the space), so:
 //   * source audience empty      -> doc audience = groups mapped from the upstream ACL (or empty if none)
 //   * source audience restricted -> doc audience = mapped ∩ source; when that intersection is empty we
-//                                   cannot express "members of both", so the doc keeps the source audience
-//                                   (still never wider than the source).
+//                                   cannot express "members of both". An upstream-restricted object is then
+//                                   skipped (its known readers are all outside the source audience, so the
+//                                   source audience would be wider than the upstream ACL); an unrestricted
+//                                   one keeps the source audience.
 // A restricted upstream object (private channel, private repo, unshared file) with no mapped group either
 // inherits the source audience (default) or is skipped when the source sets config.acl_strict = true.
 import type { AclHint } from "./types.ts";
@@ -77,8 +79,9 @@ export function resolveAudience(
   if (!source.length) return { kind: "ok", audience: matched, mode: "mapped", groups: matched };
   const inter = matched.filter((g) => source.includes(g));
   if (inter.length) return { kind: "ok", audience: inter, mode: "mapped", groups: matched };
-  if (opts.strict && acl?.restricted) {
-    return { kind: "skip", reason: "mapped upstream groups do not overlap the source audience (acl_strict)" };
+  if (acl?.restricted) {
+    // whatever acl_strict says: the upstream readers are known and none of their groups may read the source
+    return { kind: "skip", reason: "restricted upstream object whose mapped groups do not overlap the source audience" };
   }
   return { kind: "ok", audience: source, mode: "disjoint", groups: matched };
 }

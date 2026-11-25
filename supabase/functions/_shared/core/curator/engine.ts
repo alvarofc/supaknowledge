@@ -501,6 +501,11 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   // max_clusters_per_run counts every triage task of the run
   const room = Math.max(0, settings.curator.max_clusters_per_run - Number(run.stats?.clusters ?? 0));
   const selected = clusters.slice(0, room);
+  // Clusters over the cap are not drafted. Their flags stay open for the next run; their changed documents do not
+  // come back (the run's watermark moves past them) until they change again, so the run records how many.
+  const selectedDocs = new Set(selected.flatMap((c) => c.document_ids));
+  const docsOverCap = new Set(clusters.slice(room).flatMap((c) => c.document_ids).filter((id) => !selectedDocs.has(id))).size;
+  if (docsOverCap) ctx.log("curator triage: max_clusters_per_run reached", { run: run.id, documents_over_cap: docsOverCap });
   // keyed by content: a retried triage never enqueues the same draft twice. Drafts are enqueued BEFORE any
   // dismissal, so a retry of a task that failed half-way sees the same open flags.
   for (const c of selected) await store.enqueueTask(run.id, "draft", c as unknown as Record<string, unknown>, { dedupeKey: `draft:${clusterKey(c)}` });
@@ -521,12 +526,13 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     dismissed = dismissals.length;
   }
   // deferred signals were counted by the task that deferred them
-  await store.addRunStats(run.id, { flags: deferred ? 0 : flags.length, documents: deferred ? 0 : docs.length, clusters: selected.length, ignored, flags_dismissed: dismissed, triage_passes: passes });
+  await store.addRunStats(run.id, { flags: deferred ? 0 : flags.length, documents: deferred ? 0 : docs.length, clusters: selected.length, ignored, flags_dismissed: dismissed, triage_passes: passes, ...(docsOverCap ? { documents_over_cap: docsOverCap } : {}) });
   return {
     flags: flags.length,
     documents: docs.length,
     clusters: selected.length,
     deferred: clusters.length - selected.length,
+    ...(docsOverCap ? { documents_over_cap: docsOverCap } : {}),
     passes,
     ignored,
     dismissed,
@@ -1171,8 +1177,11 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   }
 
   const blockers = review.issues.filter((i) => i.severity === "blocker");
-  proposal.risk = maxRisk(proposal.risk, review.risk, blockers.length ? "high" : "low", problems.length ? "medium" : "low");
+  // a reviewer verdict of not-ok blocks auto-apply even when it listed no blocker issue
+  const rejectedByReview = reviewed && !review.ok;
+  proposal.risk = maxRisk(proposal.risk, review.risk, blockers.length ? "high" : rejectedByReview ? "medium" : "low", problems.length ? "medium" : "low");
   const notes = [
+    ...(rejectedByReview && !blockers.length ? ["- the self-review did not approve this changeset"] : []),
     ...review.issues.map((i) => `- ${i.severity === "blocker" ? "**BLOCKER** " : ""}${i.kind}: ${i.detail}`),
     ...problems.map((p) => `- check: ${p}`),
   ];
@@ -1198,7 +1207,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   const followUp: string[] = [];
   try {
     if (proposal.flag_ids.length) await store.setFlagsInProposal(proposal.flag_ids, persisted.id);
-    if (decision.autoApply && reviewed && blockers.length === 0 && problems.length === 0) {
+    if (decision.autoApply && reviewed && review.ok && blockers.length === 0 && problems.length === 0) {
       const res = await store.applyProposal(persisted.id, author);
       applied = res.status === "applied";
     }

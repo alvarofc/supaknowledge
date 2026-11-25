@@ -38,7 +38,7 @@ describe("Supaknowledge over MCP", () => {
       mcpRoute((name, args) => {
         if (name === "read_concept") throw new Error(`concept ${args.path} not found`);
         if (name === "flag_knowledge") {
-          assert.deepEqual(args, { kind: "incorrect", observation: "col renamed", concept_path: "data/orders", suggested_fix: "use net" });
+          assert.deepEqual(args, { kind: "incorrect", observation: "col renamed", concept_path: "data/orders", suggested_fix: "use net", evidence: { error: "42703" } });
           return { id: "f-1" };
         }
         throw new Error("unexpected");
@@ -46,7 +46,7 @@ describe("Supaknowledge over MCP", () => {
     ]);
     const kf = new Supaknowledge({ url: URL, space: "acme/finance", apiKey: KEY, fetch });
     assert.equal(await kf.read("nope"), null);
-    const f = await kf.flag({ kind: "incorrect", observation: "col renamed", conceptPath: "data/orders", suggestedFix: "use net" });
+    const f = await kf.flag({ kind: "incorrect", observation: "col renamed", conceptPath: "data/orders", suggestedFix: "use net", evidence: { error: "42703" } });
     assert.equal(f.id, "f-1");
   });
 
@@ -262,6 +262,19 @@ describe("MCP config", () => {
     assert.equal((desk.config as any).mcpServers.supaknowledge.command, "npx");
   });
 
+  it("rejects a key env name that is not an identifier, and says to replace literal placeholders", () => {
+    for (const apiKeyEnv of ["X\"; rm -rf ~; \"", "1KEY", "A-B", "$(id)", ""]) {
+      assert.throws(() => buildMcpConfig({ url: "https://p.supabase.co", space: "a/b", apiKeyEnv }), /environment variable name/);
+    }
+    assert.match(buildMcpConfig({ url: "https://p.supabase.co", space: "a/b", apiKeyEnv: "_MY_KEY2" }).command!, /Bearer \$_MY_KEY2"$/);
+    for (const client of ["claude-desktop", "generic"] as const) {
+      const cfg = buildMcpConfig({ url: "https://p.supabase.co", space: "a/b", client, apiKeyEnv: "MY_KEY" });
+      assert.match(JSON.stringify(cfg.config), /<MY_KEY>/);
+      assert.match(cfg.notes[0]!, /^Replace <MY_KEY> in the config/);
+    }
+    assert.match(buildMcpConfig({ url: "https://p.supabase.co", space: "a/b", client: "cursor" }).notes[0]!, /^Set SUPAKNOWLEDGE_API_KEY/);
+  });
+
   it("kf.mcpServerConfig defaults to the agent key it was built with", () => {
     const { fetch } = mockFetch([]);
     const kf = new Supaknowledge({ url: URL, space: "a/b", apiKey: KEY, fetch });
@@ -287,6 +300,36 @@ describe("MCP markdown parsing", () => {
     const s = parseSkillMarkdown("# Skill: revenue-report\n\npath: skills/revenue-report | revision: 2\n\ndescription: Weekly.\n\n---\n\nStep 1\n\n---\n\n## Files\n\n### scripts/q.sql\n\n```sql\nselect 1\n```");
     assert.deepEqual([s.name, s.path, s.revision, s.description, s.body], ["revenue-report", "skills/revenue-report", 2, "Weekly.", "Step 1"]);
     assert.deepEqual(s.files, [{ path: "scripts/q.sql" }]);
+  });
+
+  it("takes skill files only from the ## Files trailer, outside fenced blocks", async () => {
+    const { parseSkillMarkdown } = await import("../src/index.ts");
+    const md = [
+      "# Skill: r\n\npath: skills/r | revision: 1\n\ndescription: d.",
+      "---",
+      "### Step heading in the instructions\n\n```md\n## Files\n\n### not/a/file.md\n```",
+      "---",
+      "## Files",
+      "### scripts/q.sql",
+      "```sql\nselect 1\n~~~\n### inside/content.txt\n```",
+      "### assets/logo.png",
+      "(binary; 10 bytes; storage: concept-files/x)",
+    ].join("\n\n");
+    const s = parseSkillMarkdown(md);
+    assert.deepEqual(s.files, [{ path: "scripts/q.sql" }, { path: "assets/logo.png" }]);
+    assert.match(s.body, /^### Step heading in the instructions/);
+    assert.ok(!s.body.includes("scripts/q.sql"));
+    // no trailer: headings in the body are not files
+    assert.equal(parseSkillMarkdown("# Skill: r\n\npath: skills/r\n\n---\n\n### Only a heading").files, undefined);
+  });
+
+  it("parses the read_concept Files: trailer into files", async () => {
+    const { parseConceptMarkdown } = await import("../src/index.ts");
+    const c = parseConceptMarkdown(
+      "# R\n\npath: skills/r\nkind: skill | type: Skill | status: stable | revision: 1\ntrust: human_reviewed\n\n---\n\nBody\n\n```\nFiles:\n\n- fake\n```\n\nFiles:\n\n- scripts/q.sql (12 bytes)\n\n- README\n\nUse load_skill(\"r\") to get the file contents.",
+    );
+    assert.deepEqual(c.files, [{ path: "scripts/q.sql", size_bytes: 12 }, { path: "README" }]);
+    assert.equal(c.body, "Body\n\n```\nFiles:\n\n- fake\n```");
   });
 });
 

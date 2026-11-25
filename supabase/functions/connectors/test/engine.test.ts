@@ -27,9 +27,13 @@ Deno.test("acl: narrowing rules", () => {
   // restricted source: intersection
   const r = resolveAudience([G_FIN, G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups);
   assertEquals(r.kind === "ok" && r.audience, [G_FIN]);
-  // disjoint: keep the (narrower-or-equal) source audience, never the mapped group
-  const d = resolveAudience([G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups);
+  // disjoint, restricted upstream: skipped even without acl_strict (the source audience would be wider than the
+  // upstream ACL, the mapped group wider than the source)
+  assertEquals(resolveAudience([G_ENG], { restricted: true, refs: [{ slack_channel: "CFIN" }] }, groups).kind, "skip");
+  // disjoint, unrestricted upstream: keep the (narrower-or-equal) source audience, never the mapped group
+  const d = resolveAudience([G_ENG], { restricted: false, refs: [{ slack_channel: "CFIN" }] }, groups);
   assertEquals(d.kind === "ok" && d.audience, [G_ENG]);
+  assertEquals(d.kind === "ok" && d.mode, "disjoint");
   // unmapped private object: inherit, or skip in strict mode
   assertEquals(resolveAudience([], { restricted: true, refs: [{ slack_channel: "CX" }] }, groups).kind, "ok");
   assertEquals(resolveAudience([], { restricted: true, refs: [{ slack_channel: "CX" }] }, groups, { strict: true }).kind, "skip");
@@ -96,8 +100,9 @@ Deno.test("engine: ACL narrowing applied per document and audience changes are w
 
   // source narrowed later: same content but audience must be rewritten
   const r = await runSync({ ...base, source: source({ audience: [G_OPS] }), store, connector: scripted([priv, pub]) });
-  assertEquals(r.upserted, 2);
-  assertEquals(store.docs.get("CFIN:2026-11-24")!.audience, [G_OPS]); // disjoint -> source audience, never wider
+  assertEquals([r.upserted, r.skipped, r.deleted], [1, 1, 1]);
+  // disjoint private doc: skipped and its earlier copy retracted (G_OPS readers outside #finance must not see it)
+  assertEquals(store.live(), ["CGEN:2026-11-24"]);
   assertEquals(store.docs.get("CGEN:2026-11-24")!.audience, [G_OPS]);
 });
 

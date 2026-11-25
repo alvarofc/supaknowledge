@@ -171,7 +171,7 @@ npm install @supaknowledge/mastra @supaknowledge/sdk @mastra/core zod
 | Export | What |
 |---|---|
 | `supaknowledgeTools(kf, { prefix?, include? })` | Mastra tools (`createTool`): `search_knowledge`, `read_concept`, `list_skills`, `load_skill`, `flag_knowledge`. Results are model-ready text; failures become error results the model can recover from |
-| `supaknowledgeInstructions`, `createSupaknowledgeInstructions({ prefix })` | A short system-prompt section: search before answering about internal things, follow skills, and flag missing, wrong or outdated knowledge and anything the agent had to work out itself |
+| `supaknowledgeInstructions`, `createSupaknowledgeInstructions({ prefix, include })` | A short system-prompt section: search before answering about internal things, follow skills, and flag missing, wrong or outdated knowledge and anything the agent had to work out itself. With `include`, it only names those tools |
 | `withSupaknowledge(agentConfig, kf, { prefix?, include?, instructions? })` | Returns the config with the tools added (yours win on name clashes) and the instructions appended. Works with static and dynamic (function) `instructions` and `tools` |
 | `generateWithTrace(agent, kf, input, { trace?, options?, outcome? })` | `agent.generate()` recorded as a Supaknowledge trace. Resolves to `{ result, traceId, trace }`; agent errors are recorded and re-thrown |
 | `traceRun(kf, { input?, name?, externalId?, metadata?, requestContext? })` | The same for any call shape, including `agent.stream()`: spread `run.options` into the call, then `run.end(result)` or `run.fail(error)` |
