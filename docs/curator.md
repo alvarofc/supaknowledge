@@ -242,7 +242,7 @@ directly in the evidence (a formatting or compliance rule someone stated is medi
 several concepts. High: weak, indirect or conflicting evidence; removing or reversing existing meaning; changing
 definitions or figures that money decisions depend on; changing who can see what. Self-review raises it only for a
 blocker or an issue that makes the change more likely to be wrong (warnings alone never make a change high risk),
-check problems raise it, and an escalation forces it to `high`.
+a check problem sets a floor of `medium` (it never lowers a rating, and alone it doesn't take a proposal above `medium`), and an escalation forces it to `high`. When a change fits both medium and high, such as a stated compliance rule that changes who can see what, it is high.
 
 ## Prompts
 

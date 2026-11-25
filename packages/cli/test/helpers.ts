@@ -38,6 +38,10 @@ export interface Harness {
   stdinIsTTY: boolean;
   /** answers for io.prompt (in order); prompting throws when empty */
   prompts: string[];
+  /** extra environment variables */
+  env: Record<string, string>;
+  /** overrides for the Io (e.g. run, randomHex, sleep) */
+  io: Partial<Io>;
 }
 
 /** Temp project + config dir, scripted fetch, in-memory stdio. */
@@ -70,6 +74,8 @@ export function harness(opts: { loggedIn?: boolean; project?: boolean; expiresIn
     stdin: "",
     stdinIsTTY: false,
     prompts: [],
+    env: {},
+    io: {},
     run: (...argv) => h.runIn(dir, ...argv),
     runIn: async (cwd, ...argv) => {
       let stdout = "";
@@ -85,7 +91,7 @@ export function harness(opts: { loggedIn?: boolean; project?: boolean; expiresIn
         },
         isTTY: false,
         stdinIsTTY: h.stdinIsTTY,
-        env: { SUPAKNOWLEDGE_CONFIG_DIR: configDir, HOME: dir },
+        env: { SUPAKNOWLEDGE_CONFIG_DIR: configDir, HOME: dir, ...h.env },
         cwd,
         now: () => Date.now(),
         sleep: async () => {},
@@ -108,6 +114,7 @@ export function harness(opts: { loggedIn?: boolean; project?: boolean; expiresIn
           }
           return json({ message: `unmocked ${call.method} ${call.url}` }, 599);
         },
+        ...h.io,
       };
       const code = await main(argv, io);
       return { code, stdout, stderr };

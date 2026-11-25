@@ -11,6 +11,7 @@ import { registerAgents } from "./commands/agents.ts";
 import { registerMcp } from "./commands/mcp.ts";
 import { registerSources } from "./commands/sources.ts";
 import { registerMembers } from "./commands/members.ts";
+import { registerDeploy } from "./commands/deploy.ts";
 
 declare const __KF_VERSION__: string | undefined;
 export const VERSION = typeof __KF_VERSION__ === "string" ? __KF_VERSION__ : "0.0.0-dev";
@@ -66,6 +67,7 @@ Getting started:
   registerMcp(program, runner);
   registerSources(program, runner);
   registerMembers(program, runner);
+  registerDeploy(program, runner);
 
   // every subcommand reports errors through the same path
   const configure = (cmd: Command) => {

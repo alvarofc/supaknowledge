@@ -42,7 +42,19 @@ export interface Io {
   fetch: FetchFn;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
+  /** Child processes (`kf deploy` runs the Supabase CLI). Default: node:child_process. Injected by tests. */
+  run?: RunFn;
+  /** Random hex string of `bytes` bytes. Default: node:crypto. Injected by tests. */
+  randomHex?: (bytes: number) => string;
 }
+
+export interface RunResult {
+  code: number;
+  /** stdout and stderr, interleaved */
+  output: string;
+}
+
+export type RunFn = (cmd: string, args: string[], opts: { cwd: string; env: Env; onOutput?: (chunk: string) => void }) => Promise<RunResult>;
 
 export interface GlobalOpts {
   json?: boolean;
