@@ -14,8 +14,9 @@ import { z } from "zod";
 import { skillName } from "../_shared/core/formats.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
 import { embed, toVector } from "../_shared/embed.ts";
-import { corsHeaders, HttpError, json } from "../_shared/http.ts";
+import { corsHeaders, errorResponse, HttpError, json } from "../_shared/http.ts";
 import { isUuid, listSpaces, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
+import { flagEvidence } from "./evidence.ts";
 import { baseCacheHeaders, escapeLike, normalizeConceptPath, publicBase } from "./urls.ts";
 
 const SERVER_INFO = { name: "supaknowledge", version: "0.1.0" };
@@ -283,7 +284,7 @@ function buildServer(ctx: Ctx): McpServer {
         }
         if (c.backlinks?.length) parts.push("Referenced by:", ...c.backlinks.map((b) => `- ${b.path} (${b.title})`));
         if (c.files?.length) {
-          parts.push("Files:", ...c.files.map((f) => `- ${f.path}${f.size_bytes ? ` (${f.size_bytes} bytes)` : ""}`));
+          parts.push("Files:", ...c.files.map((f) => `- ${f.path} (${f.size_bytes == null ? "unknown size" : `${f.size_bytes} bytes`})`));
           if (c.kind === "skill") parts.push(`Use load_skill("${skillName(c.path)}") to get the file contents.`);
         }
         return text(parts.filter((x) => x !== "").join("\n\n"));
@@ -432,11 +433,16 @@ function buildServer(ctx: Ctx): McpServer {
         concept_path: z.string().optional().describe("Path of the concept this is about, if any (omit for missing knowledge)."),
         query: z.string().optional().describe("What you were trying to do or searched for."),
         suggested_fix: z.string().optional().describe("What the knowledge should say instead, if you know."),
+        evidence: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .refine((e) => e === undefined || JSON.stringify(e).length <= 16_000, "evidence must be at most 16,000 characters of JSON")
+          .describe("Optional structured details (e.g. the failing query and the exact error) as a JSON object."),
         space: spaceArg,
         trace_id: traceArg,
       }),
     },
-    async ({ kind, observation, concept_path, query, suggested_fix, space, trace_id }) => {
+    async ({ kind, observation, concept_path, query, suggested_fix, evidence, space, trace_id }) => {
       try {
         const sp = await pickSpace(ctx, space);
         const trace = await resolveTrace(ctx, sp, trace_id);
@@ -448,7 +454,8 @@ function buildServer(ctx: Ctx): McpServer {
           p_query: query ?? null,
           p_suggested_fix: suggested_fix ?? null,
           p_trace: trace,
-          p_evidence: { via: "mcp", client_id: caller.clientId, ...(trace_id && !trace ? { trace_ref: trace_id } : {}) },
+          // the caller's evidence with the server-owned keys (via, client_id, trace_ref) set or stripped by the server
+          p_evidence: flagEvidence(evidence, caller.clientId, trace_id, trace),
         });
         if (error) return fail(`flag_knowledge failed: ${error.message}`);
         return text(asJson({ flag_id: data, space: sp.ref, status: "open", message: "Thanks. The curator will review this flag." }));
@@ -504,8 +511,7 @@ Deno.serve(async (req) => {
     for (const [k, v] of Object.entries(corsHeaders)) if (!headers.has(k)) headers.set(k, v);
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   } catch (e) {
-    console.error(e);
-    return json({ error: errMessage(e) }, 500);
+    return errorResponse(e);
   }
   // No handler.close() here: it would abort a response that is still streaming (SSE). The handler is
   // per request and holds nothing once the exchange ends.

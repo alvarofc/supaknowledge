@@ -8,6 +8,7 @@ import {
   importBundle,
   inAudience,
   isEscalation,
+  isValidConceptPath,
   lintConcept,
   narrowestSafeAudience,
   parseMarkdown,
@@ -89,6 +90,11 @@ test("lint catches bad skills and paths", () => {
   assert.ok(lintConcept({ path: "skills/Bad_Name", kind: "skill", type: "Skill", title: "x", description: "" }).length >= 2);
   assert.ok(lintConcept({ path: "../x" }).length > 0);
   assert.ok(lintConcept({ path: "a/index" }).length > 0);
+  for (const bad of ["metrics//arr", "metrics/./arr", "metrics/arr/", "./metrics"]) {
+    assert.equal(isValidConceptPath(bad), false, bad);
+    assert.ok(lintConcept({ path: bad }).length > 0, bad);
+  }
+  assert.equal(isValidConceptPath("metrics/v1.2/arr"), true);
 });
 
 test("chunking keeps heading trails and respects size", () => {

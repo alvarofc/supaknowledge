@@ -24,6 +24,11 @@ The TypeScript packages run from source with Node's type stripping, so most chan
 `kf` binary is bundled: run `npm run build:cli` after changing `packages/cli` (or `packages/sdk` /
 `packages/core`, which it bundles) if you want `npx kf` to pick it up.
 
+**TypeScript versions.** Every workspace compiles with TypeScript 7 (the native compiler), so `npm run typecheck`
+and the package builds use 7. The repository root keeps `typescript` 6.x on purpose: typescript-eslint, which
+Studio's lint runs, needs the TypeScript JS API, and 7.0 does not ship one. Use `npm run typecheck`, or `npx tsc`
+from a workspace directory; `npx tsc` at the root runs 6.x.
+
 | Where | What | Docs |
 |---|---|---|
 | `supabase/migrations` | Schema, RLS, RPCs, queues, cron | [architecture](docs/architecture.md) |
@@ -52,7 +57,7 @@ which runs, in order:
 | `npm run check:functions` | `deno check` of every Edge Function against its `deno.json` and lockfile |
 | `npm run test:deno` | Every Edge Function Deno suite (`scripts/test-deno.mjs`): `connectors`, `agents`, `bundle`, `maintenance`, `mcp`, `traces` and `_shared`, each against its function's `deno.json` (Deno 2.9.6 through `npx`; `node scripts/test-deno.mjs mcp` runs one suite) |
 | `npm run test:python` | Python SDK tests (`uv venv`, `uv pip install -e ".[test]"`, `pytest`) |
-| `npx supabase test db` | The 702 pgTAP tests of the access model (`npm run test:db`) |
+| `npx supabase test db` | The 739 pgTAP tests of the access model (`npm run test:db`) |
 
 Extra checks worth running when you touch these areas:
 
@@ -98,9 +103,16 @@ Security issues: please do not open a public issue; see [SECURITY.md](SECURITY.m
 
 ## Releases (maintainers)
 
-Versions follow [SemVer](https://semver.org) (0.x while in alpha). To release, bump `version` in
-`packages/sdk`, `packages/mastra`, `packages/cli` (and the `@supaknowledge/sdk` dependency of `packages/mastra`)
-and `sdks/python/pyproject.toml`, move the `[Unreleased]` notes in `CHANGELOG.md` under the new version, merge,
-then push a tag `vX.Y.Z`. The [release workflow](.github/workflows/release.yml) builds and publishes the npm
-packages (with provenance) and the Python package (PyPI trusted publishing). It can also be run by hand from the
-Actions tab, with a dry-run option.
+Versions follow [SemVer](https://semver.org) (0.x while in alpha). To release, bump the version everywhere it is
+recorded:
+
+- `version` in `packages/sdk`, `packages/mastra` and `packages/cli`, and `SDK_VERSION` in `packages/sdk/src/client.ts`;
+- the `@supaknowledge/sdk` dependency of `packages/cli` (an exact version) and of `packages/mastra` (the
+  `devDependencies` pin, plus the `peerDependencies` caret range when the release is not compatible with it);
+- `version` in `sdks/python/pyproject.toml` and `__version__` in `sdks/python/src/supaknowledge/client.py`
+  (PEP 440 spelling for prereleases: `0.2.0-rc.1` is `0.2.0rc1`).
+
+Run `npm install` so `package-lock.json` follows, and `node scripts/check-release.mjs` to check the versions agree.
+Then move the `[Unreleased]` notes in `CHANGELOG.md` under the new version, merge, and push a tag `vX.Y.Z`. The
+[release workflow](.github/workflows/release.yml) builds and publishes the npm packages (with provenance) and the
+Python package (PyPI trusted publishing). It can also be run by hand from the Actions tab, with a dry-run option.

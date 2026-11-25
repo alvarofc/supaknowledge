@@ -68,9 +68,12 @@ candidate concepts that every reader of its audience may read (see [Access](#acc
 keyword searches, except for the first few of a task (embedding many queries in one Edge Function invocation
 would exceed its CPU limit). Clusters that touch the same concept are merged. Up to `max_clusters_per_run`
 clusters per run are queued as `draft` tasks, highest priority first, before any flag is dismissed (a retried
-triage sees the same open flags). Changed documents are read 100 at a time: later pages, and audience passes that
-do not fit one task (at most 6 passes per task), continue in further `triage` tasks of the same run, so no changed
-document is skipped by the run's watermark.
+triage sees the same open flags). Flags in clusters over the cap stay open for the next run; changed documents
+in them are not carried over (the watermark moves on) and are counted as `documents_over_cap` in the run stats,
+so raise the cap if that number is not zero (a document cited by both a drafted and an over-cap cluster counts
+too). Changed documents are read 100 at a time: later pages, and audience passes that do not fit one task (at
+most 6 passes per task), continue in further `triage` tasks of the same run, so apart from those over-cap
+clusters no changed document is skipped by the run's watermark.
 
 **3. Sweep** (staleness runs). Every stable concept past `stale_after` becomes a `draft` task asking the model to
 re-validate it: either move `stale_after` forward (low risk) or fix it.
@@ -128,6 +131,12 @@ sources:
     title: "#finance, 2026-11-20"
     last_modified: "2026-11-20T16:02:11Z"
 ```
+
+An update only appends to `sources`: existing entries keep their ids, titles, resources and order, and every
+other frontmatter key (`tags`, `resource`, `x-*`...) is left as it was. Evidence already listed is not added
+again, a citation of the concept being changed adds nothing, and a new source whose label is already taken gets
+the next free `<label>-N` id. Tags and `stale_after` change only when the model sets a different value (an empty
+tag list or the same review date in another format is not a change).
 
 The citations are also how changed sources find their concepts: when a document cited by a concept changes, the
 next run drafts against that concept.
@@ -195,7 +204,7 @@ update public.spaces set settings = '{
 | `curator.fast_model` | `""` (= `KF_LLM_FAST_MODEL`, else the model) | Cheaper model for correction mining in traces |
 | `curator.fallback_models` | `[]` (= `KF_LLM_FALLBACK_MODELS`) | Tried in order when the model errors (at most 5) |
 | `curator.max_research_steps` | `8` | Agent steps (model calls that may use research tools) per draft (1–20) |
-| `curator.max_clusters_per_run` | `25` | Drafts per run (1–200); the rest wait for the next run |
+| `curator.max_clusters_per_run` | `25` | Drafts per run (1–200). Flags of the clusters over the cap stay open for the next run; changed documents of those clusters are skipped until they change again (counted in the run's `documents_over_cap` stat) |
 | `curator.max_traces_per_run` | `200` | Traces scanned per run (0–5000) |
 | `curator.max_tokens_per_run` | `3000000` | Model tokens (input + output) one run may spend across its tasks (0–2000000000); when spent, the remaining tasks fail with a clear error. `0` = unlimited. The operator ceiling `KF_LLM_MAX_TOKENS_PER_RUN` (env) caps it: a space can go lower, never higher. Tokens of failed calls (e.g. a research phase whose answer failed) count too |
 | `curator.research_scope` | `target_audience` | What the drafting model may research: `target_audience` shows only results readable by everyone who can read the concepts being changed; `all` searches everything (restricted items it reads still escalate) |
@@ -226,9 +235,14 @@ The policy (`decideAutoApply()`) refuses, in this order: auto-apply disabled; an
 source kind; a citation of an external URL; no observed evidence (when required).
 The reason is recorded in the task output.
 
-Risk comes from the model (low: a factual fix with direct evidence in one concept, such as a renamed column;
-medium: new concepts, policy or procedure wording, several concepts; high: money, compliance, deletions or weak
-evidence), raised by self-review findings and check problems, and forced to `high` by an escalation.
+Risk comes from the model and measures how likely a change is to be wrong or harmful if applied without a careful
+look, not how important its topic is. Low: a factual fix with direct evidence in one concept, such as a renamed
+column or a fixed example query. Medium: a new concept; a new or reworded step, rule or policy that a person stated
+directly in the evidence (a formatting or compliance rule someone stated is medium, not high); changes across
+several concepts. High: weak, indirect or conflicting evidence; removing or reversing existing meaning; changing
+definitions or figures that money decisions depend on; changing who can see what. Self-review raises it only for a
+blocker or an issue that makes the change more likely to be wrong (warnings alone never make a change high risk),
+check problems raise it, and an escalation forces it to `high`.
 
 ## Prompts
 

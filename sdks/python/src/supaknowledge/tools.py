@@ -80,6 +80,7 @@ _PARAMETERS: dict[str, dict[str, Any]] = {
             "concept_path": {"type": "string", "description": "Path of the concept this is about (omit for missing knowledge)."},
             "query": {"type": "string", "description": "What you were trying to do or find."},
             "suggested_fix": {"type": "string", "description": "How the knowledge should change, if you know."},
+            "evidence": {"type": "object", "description": "Optional structured details (e.g. the failing query and the exact error) as a JSON object."},
         },
         "required": ["kind", "observation"],
         "additionalProperties": False,
@@ -195,11 +196,16 @@ def handle_tool_call(kf: "Supaknowledge", name: str, input: Any, *, prefix: str 
             kind = _str(args, "kind") or ""
             if kind not in FLAG_KINDS:
                 raise ValueError(f'"kind" must be one of {", ".join(FLAG_KINDS)}')
-            kw = {
+            kw: dict[str, Any] = {
                 "concept_path": _str(args, "concept_path", False),
                 "query": _str(args, "query", False),
                 "suggested_fix": _str(args, "suggested_fix", False),
             }
+            evidence = args.get("evidence")
+            if evidence is not None:
+                if not isinstance(evidence, dict):
+                    raise ValueError('"evidence" must be a JSON object')
+                kw["evidence"] = evidence
             observation = _str(args, "observation") or ""
             r = trace.flag(kind, observation, **kw) if trace else kf.flag(kind, observation, **kw)  # type: ignore[arg-type]
             fid = (r or {}).get("id")

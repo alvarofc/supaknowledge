@@ -55,7 +55,9 @@ Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markd
   `flags`, `curator_runs` and `concepts`, filtered by space, and refresh when rows change. Realtime applies RLS, so
   nobody hears about rows they can't read. A change triggers `router.invalidate()`, which reloads the page's data.
 - **Space settings** (`spaces.settings`) are validated with `SpaceSettingsSchema` from `@supaknowledge/core` before they are
-  saved, in a POST server function (`saveSpaceSettings`). The update itself still runs as the user.
+  saved, in a POST server function (`saveSpaceSettings`). The update itself still runs as the user. It is merged
+  into what is stored: keys the schema does not know are kept, and so are fields the form did not change, so a page
+  opened before another admin saved does not revert their changes.
   - `@supaknowledge/core` is imported only from `src/server/settings.server.ts`. Its main entry also pulls in Mastra (the
     curator's model layer), so it must stay out of the browser bundle.
   - The curator form edits model ids only (`model`, `fast_model`, `fallback_models`, blank = the server's

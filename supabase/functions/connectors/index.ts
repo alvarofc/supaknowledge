@@ -50,7 +50,7 @@ class SupabaseStore implements DocumentStore {
     for (let from = 0; ; from += page) {
       let q = this.client
         .from("source_documents")
-        .select("id, external_id, content_hash, audience, title, deleted_at, storage_path, version:metadata->>version, children:metadata->children")
+        .select("id, external_id, content_hash, audience, title, deleted_at, storage_path, version:metadata->>version, children:metadata->children, acl:metadata->acl")
         .eq("source_id", this.source.id)
         .order("id")
         .range(from, from + page - 1);
@@ -87,7 +87,7 @@ class SupabaseStore implements DocumentStore {
     return { id: data.id };
   }
 
-  async touch(id: string, patch: { metadata: Record<string, unknown>; synced_at: string }): Promise<void> {
+  async touch(id: string, patch: { metadata?: Record<string, unknown>; synced_at?: string; audience?: string[] }): Promise<void> {
     const { error } = await this.client.from("source_documents").update(patch).eq("id", id);
     if (error) throw new Error(`touch ${id}: ${error.message}`);
   }

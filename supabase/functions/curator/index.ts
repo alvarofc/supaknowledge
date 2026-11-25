@@ -89,7 +89,7 @@ async function work(msg: CuratorMessage, job: QueueJob<CuratorMessage>) {
   // Delivered more times than a task may be attempted: earlier deliveries died without recording a failure
   // (wall-clock kill, crash before runTask). Fail it now, before spending anything on a model.
   if (job.read_ct > MAX_TASK_ATTEMPTS) {
-    await failPermanently(row, `task was delivered ${job.read_ct} times without finishing (likely killed by the Edge Function time limit); giving up`);
+    await failPermanently(row, `task was delivered ${job.read_ct} times without finishing (killed by the Edge Function time limit, or rejected before it started, e.g. by a wrong KF_INTERNAL_SECRET); giving up`);
     return;
   }
 

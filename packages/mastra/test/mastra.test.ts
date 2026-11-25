@@ -244,6 +244,19 @@ describe("withSupaknowledge and instructions", () => {
     assert.match(supaknowledgeInstructions, /work something out yourself/);
     assert.match(createSupaknowledgeInstructions({ prefix: "kf_" }), /kf_search_knowledge/);
   });
+
+  it("the instructions only name the tools in `include`", () => {
+    const sub = createSupaknowledgeInstructions({ include: ["search_knowledge", "flag_knowledge"] });
+    assert.match(sub, /search_knowledge/);
+    assert.match(sub, /flag_knowledge/);
+    assert.doesNotMatch(sub, /read_concept|list_skills|load_skill/);
+    assert.equal(createSupaknowledgeInstructions({ include: [] }), "");
+
+    const cfg = withSupaknowledge({ instructions: "base" }, kf, { include: ["load_skill"] });
+    assert.doesNotMatch(cfg.instructions as string, /search_knowledge|flag_knowledge|list_skills|read_concept/);
+    assert.match(cfg.instructions as string, /load it with load_skill/);
+    assert.equal(withSupaknowledge({ instructions: "base" }, kf, { include: [] }).instructions, "base");
+  });
 });
 
 describe("review fixes", () => {

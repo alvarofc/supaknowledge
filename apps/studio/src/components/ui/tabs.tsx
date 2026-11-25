@@ -1,6 +1,7 @@
 import { Link } from "@/components/ui/link";
 import type { ReactNode } from "react";
 import { cn } from "./cn";
+import { handleRadioKeys, radioTabIndex } from "./radio-group";
 
 /** Underline tabs as links (URL is the state, so tabs are shareable and work without JS). */
 export function LinkTabs({
@@ -49,14 +50,22 @@ export function Segmented<T extends string>({
   label: string;
   className?: string;
 }) {
+  const values = options.map((o) => o.value);
+  const current = values.indexOf(value);
   return (
-    <div role="radiogroup" aria-label={label} className={cn("inline-flex rounded-md border border-line bg-surface-2 p-0.5", className)}>
-      {options.map((o) => (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      onKeyDown={(e) => handleRadioKeys(e, values, value, onChange)}
+      className={cn("inline-flex rounded-md border border-line bg-surface-2 p-0.5", className)}
+    >
+      {options.map((o, i) => (
         <button
           key={o.value}
           type="button"
           role="radio"
           aria-checked={o.value === value}
+          tabIndex={radioTabIndex(i, current)}
           onClick={() => onChange(o.value)}
           className={cn(
             "flex-1 rounded-[5px] border px-2.5 py-0.5 text-xs whitespace-nowrap transition-colors",

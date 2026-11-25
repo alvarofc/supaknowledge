@@ -24,13 +24,19 @@ export function DocumentSearch({ spaceId, sourceId, base }: { spaceId: string; s
     }
     setPending(true);
     setError(null);
-    const { data, error: err } = await createClient().rpc("search_sources", { p_space: spaceId, p_query: q.trim(), p_limit: 25 });
+    // on a source page the RPC filters by source before its limit
+    const { data, error: err } = await createClient().rpc("search_sources", {
+      p_space: spaceId,
+      p_query: q.trim(),
+      p_limit: 25,
+      ...(sourceId ? { p_source: sourceId } : {}),
+    });
     setPending(false);
     if (err) {
       setError(errorMessage(err));
       return;
     }
-    setHits(((data ?? []) as Hit[]).filter((h) => !sourceId || h.source_id === sourceId));
+    setHits(data ?? []);
   }
 
   return (

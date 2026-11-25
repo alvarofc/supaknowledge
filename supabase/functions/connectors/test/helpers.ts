@@ -117,7 +117,7 @@ export class MemoryStore implements DocumentStore {
       m.set(d.external_id, {
         id: d.id, external_id: d.external_id, content_hash: d.content_hash, audience: d.audience, title: d.title,
         deleted_at: this.deleted.has(d.id) ? "2026-01-01T00:00:00Z" : null, storage_path: d.storage_path,
-        version: (d.metadata.version as string) ?? null, children: (d.metadata.children as string[]) ?? [],
+        version: (d.metadata.version as string) ?? null, children: (d.metadata.children as string[]) ?? [], acl: d.metadata.acl,
       });
     }
     return Promise.resolve(m);
@@ -133,9 +133,13 @@ export class MemoryStore implements DocumentStore {
     this.deleted.delete(id);
     return Promise.resolve({ id });
   }
-  touch(id: string, patch: { metadata: Record<string, unknown> }) {
+  touch(id: string, patch: { metadata?: Record<string, unknown>; audience?: string[] }) {
     this.touched.push(id);
-    for (const d of this.docs.values()) if (d.id === id) d.metadata = patch.metadata;
+    for (const d of this.docs.values()) {
+      if (d.id !== id) continue;
+      if (patch.metadata) d.metadata = patch.metadata;
+      if (patch.audience) d.audience = patch.audience;
+    }
     return Promise.resolve();
   }
   markDeleted(ids: string[]) {
