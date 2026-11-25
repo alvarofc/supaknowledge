@@ -4,7 +4,7 @@ name: Release
 # the `supaknowledge` Python package to PyPI (trusted publishing).
 #
 # Triggers: a pushed tag vX.Y.Z (must match the package versions), or a manual run from the Actions tab
-# (dry run by default). Never runs on forks.
+# (dry run by default; a real publish only from main or a v* tag). Never runs on forks.
 #
 # Maintainer setup:
 #   - npm: an organization/scope `supaknowledge`, and a repository secret NPM_TOKEN (granular automation token
@@ -37,6 +37,15 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Real publishes only from main or a v* tag
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run }}
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/heads/main|refs/tags/v*) ;;
+            *) echo "::error::a non-dry-run release must be dispatched from main or a v* tag (got $REF)"; exit 1 ;;
+          esac
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:

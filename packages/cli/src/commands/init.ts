@@ -20,7 +20,7 @@ export function registerInit(program: Command, run: Runner): void {
     .command("init")
     .description("create the workspace and space if missing, and write .supaknowledge.json (default space for this directory)")
     .option("-w, --workspace <slug>", "workspace slug (created if it does not exist)")
-    .addHelpText("before", "Uses the global --space <slug> (or --space <workspace>/<space>) for the space to create or select.\n")
+    .addHelpText("before", "Uses the global --space <slug> (or --space <workspace>/<space>, else SUPAKNOWLEDGE_SPACE or the project file) for the space to create or select.\n")
     .option("--name <name>", "space display name (default: the slug)")
     .option("--workspace-name <name>", "workspace display name (default: the slug)")
     .option("--description <text>", "space description")
@@ -31,9 +31,15 @@ export function registerInit(program: Command, run: Runner): void {
 }
 
 async function init(ctx: Ctx, opts: InitOpts): Promise<void> {
-  // --space is a global option; accept "<space>" with --workspace, or "<workspace>/<space>"
-  const spec = ctx.g.space ?? "";
-  const [wsPart, spPart] = spec.includes("/") ? spec.split("/", 2) : [undefined, spec];
+  // --space is a global option; accept "<space>" with --workspace, or "<workspace>/<space>". Like every other command,
+  // fall back to SUPAKNOWLEDGE_SPACE and then the project file (re-running init in a project re-selects its space).
+  const spec = ctx.g.space ?? ctx.io.env.SUPAKNOWLEDGE_SPACE ?? ctx.project()?.data.space ?? "";
+  const parts = spec.split("/");
+  if (parts.length > 2) throw new CliError(`invalid space "${spec}" (expected <space> or <workspace>/<space>)`, { exitCode: 2 });
+  const [wsPart, spPart] = parts.length === 2 ? parts : [undefined, parts[0]];
+  if (wsPart !== undefined && opts.workspace && opts.workspace !== wsPart) {
+    throw new CliError(`--workspace ${opts.workspace} does not match the space "${spec}"`, { exitCode: 2 });
+  }
   opts.workspace ??= wsPart;
   const space = spPart ?? "";
   if (!opts.workspace || !space) throw new CliError("usage: kf init --workspace <slug> --space <slug>", { exitCode: 2 });

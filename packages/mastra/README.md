@@ -38,7 +38,7 @@ const { result, traceId } = await generateWithTrace(analyst, kf, "What was reven
 | Export | What |
 |---|---|
 | `supaknowledgeTools(kf, { prefix?, include? })` | Mastra tools: `search_knowledge`, `read_concept`, `list_skills`, `load_skill`, `flag_knowledge` |
-| `supaknowledgeInstructions`, `createSupaknowledgeInstructions({ prefix })` | The system-prompt section |
+| `supaknowledgeInstructions`, `createSupaknowledgeInstructions({ prefix, include })` | The system-prompt section (only names the tools in `include`; `withSupaknowledge` passes its own `include`) |
 | `withSupaknowledge(agentConfig, kf, options?)` | Adds the tools and instructions to an Agent config |
 | `generateWithTrace(agent, kf, input, options?)` | `agent.generate()` recorded as a Supaknowledge trace |
 | `traceRun(kf, options?)` | The same for any call shape, including `agent.stream()` |

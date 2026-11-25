@@ -4,7 +4,8 @@ import { AudienceBadge, FlagKindBadge, KindBadge, KindIcon, StaleBadge, TrustBad
 import { LiveRefresh } from "@/components/kf/live-refresh";
 import { Markdown } from "@/components/kf/markdown";
 import { ConceptActions } from "@/components/knowledge/concept-actions";
-import { FrontmatterPanel, parseSources, SourcesList } from "@/components/knowledge/frontmatter";
+import { FrontmatterPanel, SourcesList } from "@/components/knowledge/frontmatter";
+import { parseSources } from "@/lib/okf-sources";
 import { ConceptHistory } from "@/components/knowledge/history";
 import { conceptHref } from "@/components/knowledge/paths";
 import { Badge } from "@/components/ui/badge";
@@ -178,7 +179,7 @@ function ConceptPage() {
             ) : null}
             <Card className="px-5 py-5 sm:px-7">
               {concept.body.trim() ? (
-                <Markdown conceptPath={concept.path} knowledgeBase={`${ctx.base}/knowledge`}>
+                <Markdown conceptPath={concept.path} conceptKind={concept.kind} knowledgeBase={`${ctx.base}/knowledge`}>
                   {concept.body}
                 </Markdown>
               ) : (
@@ -225,7 +226,7 @@ function ConceptPage() {
           <aside className="space-y-4" aria-label="Concept details">
             <Card>
               <CardHeader title={`Sources${sourcesCount ? ` (${sourcesCount})` : ""}`} />
-              <SourcesList frontmatter={concept.frontmatter} />
+              <SourcesList frontmatter={concept.frontmatter} base={ctx.base} access={{ documents: canEdit, traces: canVerify }} />
             </Card>
             <Card>
               <CardHeader title="Links" description="Parsed from the markdown body" />

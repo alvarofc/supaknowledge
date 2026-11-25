@@ -126,6 +126,10 @@ export interface FlagInput {
   query?: string;
   suggestedFix?: string;
   traceId?: string;
+  /**
+   * Structured details stored with the flag (e.g. the failing query and error). The mcp function caps it at
+   * 16,000 characters of JSON and sets its own `via` / `client_id` keys.
+   */
   evidence?: Record<string, unknown>;
 }
 

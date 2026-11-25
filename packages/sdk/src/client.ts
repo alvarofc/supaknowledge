@@ -228,6 +228,7 @@ export class Supaknowledge {
           ...(input.query ? { query: input.query } : {}),
           ...(input.suggestedFix ? { suggested_fix: input.suggestedFix } : {}),
           ...(input.traceId ? { trace_id: input.traceId } : {}),
+          ...(input.evidence && Object.keys(input.evidence).length ? { evidence: input.evidence } : {}),
         });
         if (typeof r === "string") return { id: /[0-9a-f-]{36}/i.exec(r)?.[0] ?? null, message: r };
         const o = (r ?? {}) as Record<string, unknown>;

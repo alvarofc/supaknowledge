@@ -225,7 +225,7 @@ class Supaknowledge:
             raise SupaknowledgeError("observation is required")
 
         def via_mcp() -> dict[str, Any]:
-            args = {"kind": kind, "observation": observation, "concept_path": concept_path, "query": query, "suggested_fix": suggested_fix, "trace_id": trace_id}
+            args: dict[str, Any] = {"kind": kind, "observation": observation, "concept_path": concept_path, "query": query, "suggested_fix": suggested_fix, "trace_id": trace_id, "evidence": evidence}
             r = self._mcp.call_tool("flag_knowledge", {k: v for k, v in args.items() if v})
             if isinstance(r, str):
                 m = re.search(r"[0-9a-f-]{36}", r, re.I)

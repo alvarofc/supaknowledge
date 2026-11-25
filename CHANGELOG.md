@@ -19,7 +19,7 @@ First public release, planned as **0.1.0**. Highlights:
   tiers, staleness, an audit log, and hybrid search (pgvector + full-text) with gte-small embeddings computed in
   the Edge Runtime (no API key).
 - **Access control in the database.** Humans, OAuth-connected MCP clients and headless agents are all Supabase
-  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 702 pgTAP tests.
+  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 739 pgTAP tests.
 - **Remote MCP server** (`mcp` Edge Function) with OAuth 2.1 through Supabase Auth, and agent API keys
   (`skn_...`) for headless agents.
 - **Trace ingest** (JSON and OTLP) and correction mining from agent traces.
