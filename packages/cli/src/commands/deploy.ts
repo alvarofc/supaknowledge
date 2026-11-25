@@ -22,6 +22,7 @@ import {
   configWithoutSecrets,
   formatMB,
   FUNCTION_SECRET_RE,
+  lineRedactor,
   mergeAllowList,
   parseDotenv,
   parseFunctionSizes,
@@ -99,6 +100,7 @@ export function registerDeploy(program: Command, run: Runner): void {
       "after",
       `
 Steps:
+  [preflight]            the repo's Supabase CLI is installed and _shared/core is in sync (nothing changed yet)
   [1/7] Project          check the project and the access token (Management API)
   [2/7] Database         supabase db push --remote=<ref> --yes --skip-vault
   [3/7] Vault            kf_internal_secret (reused if present, else generated) and project_url
@@ -200,6 +202,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   let internalSecret: string | undefined;
   const redact = redactor(() => [token, internalSecret, ...(fileSel?.upload.map((s) => s.value) ?? [])]);
   const dry = !!opts.dryRun;
+  const checkFetch = (url: string, init: RequestInit = {}) => io.fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
 
   // ---- step reporting --------------------------------------------------------------------------------------
   const steps: StepRecord[] = [];
@@ -207,8 +210,10 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   const info = (s: string) => say(`      ${c.dim(s)}`);
   const warn = (s: string) => say(`      ${c.yellow("warning:")} ${s}`);
   type Outcome = { status?: StepStatus; detail: string };
+  /** n = 0: the preflight checks, which run before anything changes */
   const step = async (n: number, name: string, skip: string | false, fn: () => Promise<Outcome>): Promise<void> => {
-    say(`${c.bold(`[${n}/${TOTAL}]`)} ${name}`);
+    const label = n === 0 ? "[preflight]" : `[${n}/${TOTAL}]`;
+    say(`${c.bold(label)} ${name}`);
     if (skip) {
       steps.push({ step: n, name, status: "skipped", detail: skip });
       say(`      ${c.dim(`skipped (${skip})`)}`);
@@ -222,7 +227,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
       const detail = redact(err.message);
       steps.push({ step: n, name, status: "failed", detail });
       say(`      ${c.red("✗")} ${detail}`);
-      throw new CliError(`deploy stopped at [${n}/${TOTAL}] ${name}`, {
+      throw new CliError(`deploy stopped at ${label} ${name}`, {
         exitCode: err instanceof CliError ? err.exitCode : 1,
         hint: err.hint ? redact(err.hint) : undefined,
         data: { steps },
@@ -240,7 +245,9 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     return bin;
   };
   const supabase = async (args: string[], cwd: string) => {
-    const r = await runCmd(supabaseBin(), args, { cwd, env, onOutput: opts.verbose ? (s) => io.stderr(redact(s)) : undefined });
+    const stream = opts.verbose ? lineRedactor(redact, io.stderr) : undefined;
+    const r = await runCmd(supabaseBin(), args, { cwd, env, onOutput: stream?.push });
+    stream?.flush();
     return { code: r.code, output: redact(r.output) };
   };
   const failed = (what: string, output: string, hint?: string) =>
@@ -248,11 +255,26 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
 
   if (dry) say(c.yellow("dry run: nothing will be changed"));
 
-  // functions bundle supabase/functions/_shared/core, a copy of packages/core: refuse a stale copy before changing anything
+  // ---- preflight: everything that can fail without the network, before anything changes -------------------
+  // (the Supabase CLI is needed by steps 2 and 5; functions bundle supabase/functions/_shared/core, a copy of
+  // packages/core, so a stale copy is refused here rather than after migrations and secrets changed)
+  const needsCli = !dry && (!opts.skipDb || !opts.skipFunctions);
   const checkShared = join(dir, "scripts", "check-shared.mjs");
-  if (!opts.skipFunctions && existsSync(checkShared)) {
-    const r = await runCmd(process.execPath, [checkShared], { cwd: dir, env });
-    if (r.code !== 0) throw failed("supabase/functions/_shared/core is out of date with packages/core", redact(r.output), "run npm run sync:shared, then kf deploy again");
+  const runCheckShared = !opts.skipFunctions && existsSync(checkShared);
+  if (needsCli || runCheckShared) {
+    await step(0, "Preflight", false, async () => {
+      const parts: string[] = [];
+      if (needsCli) {
+        supabaseBin();
+        parts.push("Supabase CLI found");
+      }
+      if (runCheckShared) {
+        const r = await runCmd(process.execPath, [checkShared], { cwd: dir, env });
+        if (r.code !== 0) throw failed("supabase/functions/_shared/core is out of date with packages/core", redact(r.output), "run npm run sync:shared, then kf deploy again");
+        parts.push("_shared/core up to date");
+      }
+      return { detail: parts.join(", ") };
+    });
   }
 
   // ---- 1. project --------------------------------------------------------------------------------------------
@@ -334,7 +356,25 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
 
   // ---- 4. function secrets -----------------------------------------------------------------------------------
   let modelConfigured = false;
-  let publicUrlKept = false;
+  /** SHA-256 digest of a custom KF_PUBLIC_URL kept on the project (its value is not readable) */
+  let keptPublicDigest: string | undefined;
+  /** false while a kept custom KF_PUBLIC_URL has not been identified (the summary then does not guess) */
+  let publicUrlKnown = true;
+  const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+  const matchesKept = (origin: string) => [origin, `${origin}/`].some((v) => sha(v) === keptPublicDigest);
+  const mcpMetadataUrl = `${projectUrl}/functions/v1/mcp/.well-known/oauth-protected-resource`;
+  /** The origin the deployed mcp function advertises (from its protected-resource metadata). */
+  const advertisedOrigin = async (): Promise<{ origin?: string; error: string }> => {
+    try {
+      const res = await checkFetch(mcpMetadataUrl);
+      const body = (await res.json().catch(() => null)) as { resource?: unknown } | null;
+      if (!res.ok) return { error: `HTTP ${res.status}` };
+      const m = typeof body?.resource === "string" ? /^(https?:\/\/[^/]+)\/functions\/v1\/mcp$/.exec(body.resource) : null;
+      return m ? { origin: m[1]!, error: "" } : { error: `resource is ${JSON.stringify(body?.resource)}` };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+  };
   await step(4, "Function secrets", false, async () => {
     const entries = await api.secrets();
     const existing = new Set(entries.map((s) => s.name));
@@ -343,10 +383,16 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     // keep a custom KF_PUBLIC_URL (custom domain, proxy) on re-runs without --public-url: the API returns the value's
     // SHA-256, so a digest that is not the default origin's means someone set it on purpose
     const storedPublic = entries.find((s) => s.name === "KF_PUBLIC_URL")?.value;
-    const sha = (v: string) => createHash("sha256").update(v).digest("hex");
     if (!opts.publicUrl && storedPublic && storedPublic !== sha(projectUrl)) {
-      publicUrlKept = true;
-      info("KF_PUBLIC_URL: keeping the project's custom value (pass --public-url to change it)");
+      keptPublicDigest = storedPublic;
+      publicUrlKnown = false;
+      // identify it from what the deployed mcp function advertises, accepted only if its digest matches
+      const adv = await advertisedOrigin();
+      if (adv.origin && matchesKept(adv.origin)) {
+        publicUrl = adv.origin;
+        publicUrlKnown = true;
+      }
+      info(`KF_PUBLIC_URL: keeping the project's custom value${publicUrlKnown ? ` (${publicUrl})` : ""} (pass --public-url to change it)`);
     } else set.set("KF_PUBLIC_URL", publicUrl);
     for (const s of fileSel?.upload ?? []) set.set(s.name, s.value);
     if (taskBudget) set.set("KF_CURATOR_TASK_BUDGET_MS", taskBudget);
@@ -432,7 +478,6 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   });
 
   // ---- 7. check ----------------------------------------------------------------------------------------------
-  const checkFetch = (url: string, init: RequestInit = {}) => io.fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
   await step(7, "Check", opts.skipCheck ? "--skip-check" : false, async () => {
     const mcpUrl = `${publicUrl}/functions/v1/mcp`;
     if (dry) return { status: "planned", detail: "check the MCP metadata, the internal secret (embed, like cron) and the OAuth server metadata" };
@@ -443,18 +488,15 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     let ok = false;
     for (let attempt = 0; attempt < 5 && !ok; attempt++) {
       if (attempt) await io.sleep(3000);
-      try {
-        const res = await checkFetch(`${projectUrl}/functions/v1/mcp/.well-known/oauth-protected-resource`);
-        const body = (await res.json().catch(() => null)) as { resource?: string } | null;
-        // a kept custom KF_PUBLIC_URL is unknown here: any resource ending in the MCP path will do
-        if (res.ok && (publicUrlKept ? /^https?:\/\/[^/]+\/functions\/v1\/mcp$/.test(body?.resource ?? "") : body?.resource === mcpUrl)) {
-          ok = true;
-          if (publicUrlKept) publicUrl = body!.resource!.replace(/\/functions\/v1\/mcp$/, "");
-        }
-        else lastErr = res.ok ? `resource is ${JSON.stringify(body?.resource)}, expected ${mcpUrl}` : `HTTP ${res.status}`;
-      } catch (e) {
-        lastErr = (e as Error).message;
-      }
+      const adv = await advertisedOrigin();
+      // a kept custom KF_PUBLIC_URL: the advertised origin must be the one whose digest is stored
+      if (adv.origin && (keptPublicDigest ? matchesKept(adv.origin) : adv.origin === publicUrl)) {
+        ok = true;
+        publicUrl = adv.origin;
+        publicUrlKnown = true;
+      } else if (adv.origin) {
+        lastErr = `resource is ${adv.origin}/functions/v1/mcp, expected ${keptPublicDigest ? "the project's custom KF_PUBLIC_URL" : mcpUrl}`;
+      } else lastErr = adv.error;
     }
     if (!ok) throw new CliError(`MCP metadata check failed: ${lastErr}`, { hint: "is the mcp function deployed, and is KF_PUBLIC_URL right?" });
     done.push("MCP metadata");
@@ -505,13 +547,15 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   } catch {
     /* printed as a placeholder below */
   }
-  const mcpUrl = `${publicUrl}/functions/v1/mcp`;
+  // a custom KF_PUBLIC_URL that could not be identified is reported as unknown, not as the default origin
+  const mcpUrl = publicUrlKnown ? `${publicUrl}/functions/v1/mcp` : null;
+  const mcpShown = mcpUrl ?? "<KF_PUBLIC_URL>/functions/v1/mcp";
   const key = publishableKey ?? "sb_publishable_...";
   const result = {
     project_ref: ref,
     project: { name: project.name ?? null, region: project.region ?? null, status: project.status ?? null },
     project_url: projectUrl,
-    public_url: publicUrl,
+    public_url: publicUrlKnown ? publicUrl : null,
     mcp_url: mcpUrl,
     publishable_key: publishableKey ?? null,
     site_url: siteUrl ?? null,
@@ -525,7 +569,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
       dry ? c.yellow("Dry run complete: nothing was changed.") : c.green(`Deployed to ${project.name ?? ref}.`),
       "",
       `  ${c.dim("Project URL    ")} ${projectUrl}`,
-      `  ${c.dim("MCP URL        ")} ${mcpUrl}`,
+      `  ${c.dim("MCP URL        ")} ${mcpUrl ?? c.dim("<the project's custom KF_PUBLIC_URL>/functions/v1/mcp (not verified: run without --skip-check / --dry-run)")}`,
       `  ${c.dim("Publishable key")} ${publishableKey ?? c.dim("(see Settings → API Keys)")}`,
       "",
       c.bold("Next steps"),
@@ -533,7 +577,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
       `     and VITE_SUPABASE_PUBLISHABLE_KEY=${key}, deploy apps/studio${studio.length ? "" : ", then run kf deploy again with --studio-url <studio-url> --skip-db --skip-functions"}`,
       `  2. Sign up in Studio, then: kf login --url ${projectUrl} --publishable-key ${key} --email you@example.com`,
       "  3. kf init --workspace <workspace> --space <space>",
-      `  4. claude mcp add --transport http supaknowledge '${mcpUrl}?space=<workspace>/<space>'   (or: kf mcp-config)`,
+      `  4. claude mcp add --transport http supaknowledge '${mcpShown}?space=<workspace>/<space>'   (or: kf mcp-config)`,
     ];
     return lines.join("\n");
   });

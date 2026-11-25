@@ -31,8 +31,8 @@ First public release, planned as **0.1.0**. Highlights:
   members and MCP client config.
 - **`kf deploy`** deploys a clone of this repository to a hosted Supabase project: migrations, the Vault secrets
   cron needs, function secrets through the Management API (so a local `supabase/.env` can no longer overwrite
-  hosted values), Edge Functions from a clean copy, Auth (OAuth 2.1 server, Before User Created hook, Site URL and
-  redirect URLs) and a post-deploy check that the functions accept the internal secret cron sends. `--dry-run`
+  hosted values), Edge Functions from a clean copy, Auth (OAuth 2.1 server, Before User Created hook, and the Site URL and
+  redirect URLs when `--studio-url` is given) and a post-deploy check that the functions accept the internal secret cron sends. `--dry-run`
   prints the plan. See [deploy](docs/deploy.md#deploy-with-kf-deploy-recommended).
 - **SDKs**: `@supaknowledge/sdk` (TypeScript, dependency-free), `@supaknowledge/mastra` (tools, instructions and
   trace capture for Mastra agents) and `supaknowledge` for Python.

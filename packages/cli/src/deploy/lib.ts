@@ -191,12 +191,38 @@ export function parseFunctionSizes(output: string): Map<string, number> {
 
 export const formatMB = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
 
-/** Replace every occurrence of each secret (6+ chars) with ***. */
+/**
+ * Replace every occurrence of each secret (6+ chars: shorter values are settings like `true` or `50`, and blanking
+ * them would mangle all output) with ***. Longest first, so a secret that is a prefix of another cannot leave the
+ * longer one's tail visible.
+ */
 export function redactor(secrets: () => Iterable<string | undefined>): (s: string) => string {
   return (s) => {
     let out = s;
-    for (const v of secrets()) if (v && v.length >= 6) out = out.split(v).join("***");
+    const values = [...secrets()].filter((v): v is string => !!v && v.length >= 6).sort((a, b) => b.length - a.length);
+    for (const v of values) out = out.split(v).join("***");
     return out;
+  };
+}
+
+/**
+ * Streamed child output, redacted: only complete lines are printed (secrets never contain newlines), so a secret
+ * split across two chunks is still caught. `flush` prints the rest.
+ */
+export function lineRedactor(redact: (s: string) => string, write: (s: string) => void): { push: (chunk: string) => void; flush: () => void } {
+  let pending = "";
+  return {
+    push(chunk) {
+      pending += chunk;
+      const nl = pending.lastIndexOf("\n");
+      if (nl === -1) return;
+      write(redact(pending.slice(0, nl + 1)));
+      pending = pending.slice(nl + 1);
+    },
+    flush() {
+      if (pending) write(redact(pending));
+      pending = "";
+    },
   };
 }
 

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { AUTH_SETTINGS } from "../src/commands/deploy.ts";
 import type { RunFn } from "../src/context.ts";
-import { configWithoutSecrets, jsoncToJson, mergeAllowList, parseDotenv, parseFunctionSizes, selectEnvSecrets, sqlLiteral } from "../src/deploy/lib.ts";
+import { configWithoutSecrets, jsoncToJson, lineRedactor, mergeAllowList, parseDotenv, parseFunctionSizes, redactor, selectEnvSecrets, sqlLiteral } from "../src/deploy/lib.ts";
 import { harness, json, type Call, type Harness } from "./helpers.ts";
 
 const REF = "abcdefghijklmnopqrst";
@@ -70,6 +70,8 @@ interface Backend {
   runResult: (c: RunCall) => { code: number; output: string } | undefined;
   /** the function secret the deployed functions expect (set by POST /secrets) */
   fnSecret?: string;
+  /** origin the mcp function advertises in its protected-resource metadata (default: the project URL) */
+  mcpOrigin?: string;
 }
 
 function listFiles(root: string, rel = ""): string[] {
@@ -134,7 +136,7 @@ function setup(over: Partial<Backend> = {}): { h: Harness; dir: string; b: Backe
     if (c.url === `${API}/config/auth` && c.method === "GET") return json(b.auth);
     if (c.url === `${API}/config/auth` && c.method === "PATCH") return json({ ...b.auth, ...c.body });
     if (c.url === `${API}/api-keys?reveal=false`) return json([{ name: "anon", type: "legacy", api_key: "eyJ..." }, { name: "default", type: "publishable", api_key: "sb_publishable_abc" }]);
-    if (c.url === `${PROJECT_URL}/functions/v1/mcp/.well-known/oauth-protected-resource`) return json({ resource: `${PROJECT_URL}/functions/v1/mcp` });
+    if (c.url === `${PROJECT_URL}/functions/v1/mcp/.well-known/oauth-protected-resource`) return json({ resource: `${b.mcpOrigin ?? PROJECT_URL}/functions/v1/mcp` });
     if (c.url === `${PROJECT_URL}/functions/v1/embed`) {
       return c.headers["x-kf-internal"] && c.headers["x-kf-internal"] === b.fnSecret ? json({ completed: [], failed: [], archived: [], requeued: 0 }) : json({ error: "invalid internal secret" }, 401);
     }
@@ -210,6 +212,19 @@ describe("deploy helpers", () => {
     assert.deepEqual(mergeAllowList(null, []), { value: "", added: [] });
   });
 
+  it("redacts the longest secret first, and whole lines of streamed output", () => {
+    const redact = redactor(() => ["abcdef", "abcdefghijkl", undefined, "123"]);
+    assert.equal(redact("x abcdefghijkl y abcdef z 123"), "x *** y *** z 123");
+    let out = "";
+    const stream = lineRedactor(redact, (s) => void (out += s));
+    stream.push("a abc");
+    stream.push("def\nb abcdefgh");
+    assert.equal(out, "a ***\n");
+    stream.push("ijkl");
+    stream.flush();
+    assert.equal(out, "a ***\nb ***");
+  });
+
   it("strips JSONC and edge_runtime.secrets, quotes SQL, parses function sizes", () => {
     assert.equal(JSON.parse(jsoncToJson(CONFIG_JSONC)).project_id, "supaknowledge");
     const cfg = JSON.parse(configWithoutSecrets(CONFIG_JSONC)!);
@@ -280,7 +295,7 @@ describe("kf deploy", () => {
   it("keeps a custom KF_PUBLIC_URL on re-runs without --public-url, and resets the default one", async () => {
     const sha = (v: string) => createHash("sha256").update(v).digest("hex");
     const posted = async (digest: string) => {
-      const { h, dir } = setup({ secrets: ["KF_PUBLIC_URL"], digests: { KF_PUBLIC_URL: digest } });
+      const { h, dir } = setup({ secrets: ["KF_PUBLIC_URL"], digests: { KF_PUBLIC_URL: digest }, mcpOrigin: digest === sha(PROJECT_URL) ? PROJECT_URL : "https://kb.example.com" });
       const r = await h.run("deploy", "--project-ref", REF, "--dir", dir);
       assert.equal(r.code, 0, r.stderr);
       const body = h.calls.find((c) => c.method === "POST" && c.url.endsWith("/secrets"))!.body as { name: string }[];
@@ -288,8 +303,32 @@ describe("kf deploy", () => {
     };
     const custom = await posted(sha("https://kb.example.com"));
     assert.ok(!custom.names.includes("KF_PUBLIC_URL"));
-    assert.match(custom.out, /keeping the project's custom value/);
+    assert.match(custom.out, /keeping the project's custom value \(https:\/\/kb\.example\.com\)/);
+    assert.match(custom.out, /MCP URL\s+https:\/\/kb\.example\.com\/functions\/v1\/mcp/);
     assert.ok((await posted(sha(PROJECT_URL))).names.includes("KF_PUBLIC_URL"));
+  });
+
+  it("reports a kept custom KF_PUBLIC_URL without running the check, and never substitutes the default", async () => {
+    const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+    const digests = { KF_PUBLIC_URL: sha("https://kb.example.com") };
+    // identified from the deployed function's metadata (digest matches): reported even with --skip-check
+    let { h, dir } = setup({ secrets: ["KF_PUBLIC_URL"], digests, mcpOrigin: "https://kb.example.com" });
+    let r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions", "--skip-check", "--json");
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).mcp_url, "https://kb.example.com/functions/v1/mcp");
+    // the function still advertises the default origin (stale): unknown, not the default
+    ({ h, dir } = setup({ secrets: ["KF_PUBLIC_URL"], digests }));
+    r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions", "--skip-check", "--json");
+    assert.equal(r.code, 0, r.stderr);
+    const doc = JSON.parse(r.stdout);
+    assert.equal(doc.mcp_url, null);
+    assert.equal(doc.public_url, null);
+    r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions", "--skip-check");
+    assert.match(r.stdout, /<KF_PUBLIC_URL>\/functions\/v1\/mcp\?space=/);
+    // ... and the check does not accept the stale origin
+    r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /expected the project's custom KF_PUBLIC_URL/);
   });
 
   it("happy path: creates the Vault secret and pushes the same value to the functions, in order", async () => {
@@ -432,6 +471,49 @@ describe("kf deploy", () => {
     assert.match(r.stderr, /run npm run sync:shared/);
     assert.equal(b.runs.length, 1);
     assert.equal(h.calls.length, 0);
+    assert.match(r.stderr, /deploy stopped at \[preflight\]/);
+    const j = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--json");
+    assert.deepEqual(JSON.parse(j.stdout).steps.map((x: { step: number; status: string }) => [x.step, x.status]), [[0, "failed"]]);
+  });
+
+  it("checks for the Supabase CLI before changing anything, also with --skip-db", async () => {
+    const { h, dir, b } = setup();
+    rmSync(join(dir, "node_modules"), { recursive: true });
+    const r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /Supabase CLI was not found/);
+    assert.match(r.stderr, /run npm install/);
+    assert.equal(h.calls.length, 0);
+    assert.equal(b.runs.length, 0);
+    // not needed when both steps that use it are skipped
+    const ok = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions", "--skip-check");
+    assert.equal(ok.code, 0, ok.stderr);
+  });
+
+  it("refuses an unexpected GET /secrets response instead of assuming no secrets", async () => {
+    const { h, dir } = setup();
+    h.routes.unshift((c) => (c.url === `${API}/secrets` && c.method === "GET" ? json({ secrets: [] }) : undefined));
+    const r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--skip-db", "--skip-functions");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /unexpected response/);
+    assert.ok(!h.calls.some((c) => c.method === "POST" && c.url.endsWith("/secrets")));
+  });
+
+  it("--verbose redacts a token split across output chunks", async () => {
+    const { h, dir, b } = setup();
+    const half = TOKEN.length / 2;
+    h.io.run = async (cmd, args, opts) => {
+      b.runs.push({ cmd, args, cwd: opts.cwd, env: {} });
+      if (args.includes("db")) {
+        opts.onOutput?.(`token ${TOKEN.slice(0, half)}`);
+        opts.onOutput?.(`${TOKEN.slice(half)} in use\nno newline at the end ${TOKEN}`);
+      }
+      return { code: args.includes("db") ? 1 : 0, output: "" };
+    };
+    const r = await h.run("deploy", "--project-ref", REF, "--dir", dir, "--verbose");
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /token \*\*\* in use\nno newline at the end \*\*\*/);
+    assert.ok(!r.stderr.includes(TOKEN.slice(0, half)) && !r.stderr.includes(TOKEN.slice(half)));
   });
 
   it("reports a rejected token with exit 3 and never prints it", async () => {

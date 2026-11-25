@@ -88,12 +88,15 @@ export class ManagementApi {
   /** Run SQL as a privileged role; returns the result rows. */
   async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
     const rows = await this.request<unknown>("POST", "/database/query", { query: sql });
-    return Array.isArray(rows) ? (rows as T[]) : [];
+    if (!Array.isArray(rows)) throw new ApiError("POST /database/query: unexpected response (expected an array of rows)", 0);
+    return rows as T[];
   }
 
   async secrets(): Promise<SecretEntry[]> {
+    // an empty list would make step 4 overwrite settings it should keep: refuse anything but an array
     const rows = await this.request<unknown>("GET", "/secrets");
-    return Array.isArray(rows) ? (rows as SecretEntry[]) : [];
+    if (!Array.isArray(rows)) throw new ApiError("GET /secrets: unexpected response (expected an array)", 0);
+    return rows as SecretEntry[];
   }
 
   setSecrets(secrets: { name: string; value: string }[]): Promise<unknown> {
