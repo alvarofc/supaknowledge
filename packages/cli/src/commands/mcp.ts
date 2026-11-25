@@ -22,6 +22,7 @@ export function registerMcp(program: Command, run: Runner): void {
       run(async (ctx: Ctx, opts: { agentKey?: string | boolean; oauth?: boolean; client: string; name: string; keyEnv: string }) => {
         if (!CLIENTS.includes(opts.client as McpClientKind)) throw new CliError(`--client must be one of ${CLIENTS.join(", ")}`, { exitCode: 2 });
         if (opts.agentKey && opts.oauth) throw new CliError("use either --agent-key or --oauth", { exitCode: 2 });
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(opts.keyEnv)) throw new CliError("--key-env must be an environment variable name (letters, digits and _, not starting with a digit)", { exitCode: 2 });
         const spec = ctx.spaceSpec();
         const space = UUID_RE.test(spec) ? (await ctx.space()).ref : spec;
         const apiKey = typeof opts.agentKey === "string" ? opts.agentKey : undefined;

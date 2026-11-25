@@ -52,6 +52,7 @@ const INPUT_SCHEMAS = {
     concept_path: z.string().optional().describe("Path of the concept this is about (omit for missing knowledge)."),
     query: z.string().optional().describe("What you were trying to do or find."),
     suggested_fix: z.string().optional().describe("How the knowledge should change, if you know."),
+    evidence: z.record(z.string(), z.unknown()).optional().describe("Optional structured details (e.g. the failing query and the exact error) as a JSON object."),
   }),
 } satisfies Record<KnowledgeToolName, z.ZodType>;
 

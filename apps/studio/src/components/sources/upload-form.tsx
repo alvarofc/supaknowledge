@@ -47,6 +47,7 @@ export function UploadForm({ sourceId }: { sourceId: string }) {
       },
       { success: "Document uploaded. It will be chunked and embedded shortly." },
     );
+    // the fields are disabled while the upload runs, so clearing them never drops later edits
     if (res.ok) {
       setTitle("");
       setContent("");
@@ -62,24 +63,28 @@ export function UploadForm({ sourceId }: { sourceId: string }) {
         </Callout>
       ) : null}
       <Field label="Title" htmlFor="upload-title">
-        <Input id="upload-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Q3 pricing review notes" required />
+        <Input id="upload-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Q3 pricing review notes" required disabled={pending} />
       </Field>
       <Field label="Content" htmlFor="upload-content" hint="Markdown or plain text. Pick a .md/.txt file or paste below." error={fileError}>
         <div className="flex flex-col gap-2">
-          <label className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-dashed border-line-strong px-3 py-1.5 text-sm text-muted hover:bg-surface-2 hover:text-fg">
+          <label
+            aria-disabled={pending || undefined}
+            className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-dashed border-line-strong px-3 py-1.5 text-sm text-muted hover:bg-surface-2 hover:text-fg aria-disabled:pointer-events-none aria-disabled:opacity-60"
+          >
             <FileUp className="size-4" /> Choose file
             <input
               ref={fileRef}
               type="file"
               accept=".md,.markdown,.txt,text/plain,text/markdown"
               className="sr-only"
+              disabled={pending}
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (f) readFile(f);
               }}
             />
           </label>
-          <Textarea id="upload-content" rows={10} className="font-mono text-xs" value={content} onChange={(e) => setContent(e.target.value)} placeholder={"# Pricing review\n\nWe agreed to…"} required />
+          <Textarea id="upload-content" rows={10} className="font-mono text-xs" value={content} onChange={(e) => setContent(e.target.value)} placeholder={"# Pricing review\n\nWe agreed to…"} required disabled={pending} />
         </div>
       </Field>
       <div>

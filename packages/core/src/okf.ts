@@ -390,11 +390,25 @@ export function exportBundle(concepts: ExportConcept[], opts: ExportOptions): Bu
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/**
+ * A storable concept path (the database's concepts_path_check; private.valid_concept_path also caps it at 512):
+ * letters, digits, _ . / -, starting with a letter, digit or _; no "..", no ".md" suffix, and no empty or "."
+ * segment ("a//b", "a/./b", trailing "/"). Reserved names (index, log) are checked separately.
+ */
+export function isValidConceptPath(path: string): boolean {
+  return (
+    /^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(path) &&
+    !path.includes("..") &&
+    !path.endsWith(".md") &&
+    !path.split("/").some((s) => s === "" || s === ".")
+  );
+}
+
 /** Validate a concept draft against OKF + Agent Skills rules. Returns human-readable problems. */
 export function lintConcept(d: Partial<ConceptDraft> & { path: string }, files: ConceptFile[] = []): string[] {
   const problems: string[] = [];
-  if (!/^[A-Za-z0-9_][A-Za-z0-9_./-]*$/.test(d.path) || d.path.includes("..") || d.path.endsWith(".md")) {
-    problems.push(`invalid path "${d.path}" (use letters, digits, _ . / -; no ".md")`);
+  if (!isValidConceptPath(d.path)) {
+    problems.push(`invalid path "${d.path}" (use letters, digits, _ . / -; no empty or "." segments, no ".md")`);
   }
   if (d.path.split("/").some((s) => s === "index" || s === "log")) problems.push(`"index" and "log" are reserved names`);
   if (d.type !== undefined && !d.type.trim()) problems.push("type is required");

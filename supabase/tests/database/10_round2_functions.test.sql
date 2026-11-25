@@ -89,7 +89,7 @@ select throws_ok($$select * from public.kf_rejected_proposals(tests.id('s1'), ar
 select tests.as_postgres();
 select ok(not has_function_privilege('authenticated', 'public.kf_rejected_proposals(uuid,text[],int)', 'execute')
           and not has_function_privilege('anon', 'public.search_knowledge(uuid,text,extensions.vector,public.concept_kind[],int,boolean,uuid[],double precision)', 'execute')
-          and has_function_privilege('authenticated', 'public.search_sources(uuid,text,extensions.vector,int,uuid[],double precision)', 'execute'),
+          and has_function_privilege('authenticated', 'public.search_sources(uuid,text,extensions.vector,int,uuid[],double precision,uuid)', 'execute'),
   'grants: rejections service-only, searches for authenticated (not anon)');
 
 -- ---------------------------------------------------------------------------------------------------------

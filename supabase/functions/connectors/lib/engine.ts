@@ -2,7 +2,7 @@
 // Storage-agnostic so the bookkeeping (hash dedupe, audiences, soft deletes, cursor checkpoints, caps)
 // is unit-tested with an in-memory store; index.ts provides the Supabase-backed store.
 import { sha256 } from "../../_shared/core/chunk.ts";
-import { resolveAudience, type GroupRef, isNarrowerOrEqual } from "./acl.ts";
+import { decideAudience, resolveAudience, type GroupRef, isNarrowerOrEqual } from "./acl.ts";
 import type { Connector, ConnectorKind, Cursor, FetchLike, Logger, PreviousDoc, RawExport, SyncContext, SyncedDocument } from "./types.ts";
 
 export interface SourceRow {
@@ -25,6 +25,8 @@ export interface ExistingDoc {
   storage_path: string | null;
   version: string | null;
   children: string[];
+  /** metadata.acl as recorded by the last upsert: the upstream restriction and the groups it mapped to */
+  acl?: unknown;
 }
 
 /** Row written to public.source_documents (minus source_id/space_id, which the store adds). */
@@ -48,8 +50,8 @@ export interface DocumentStore {
   existing(): Promise<Map<string, ExistingDoc>>;
   putRaw(path: string, raw: RawExport): Promise<void>;
   upsert(row: DocumentRow): Promise<{ id: string }>;
-  /** small metadata-only update for unchanged content (new version marker) */
-  touch(id: string, patch: { metadata: Record<string, unknown>; synced_at: string }): Promise<void>;
+  /** small update for unchanged content: a new version marker, or a narrower audience after a re-check */
+  touch(id: string, patch: { metadata?: Record<string, unknown>; synced_at?: string; audience?: string[] }): Promise<void>;
   markDeleted(ids: string[]): Promise<void>;
   /** content unchanged but the row came back from deleted: chunks were dropped, re-embed */
   reembed(id: string): Promise<void>;
@@ -93,6 +95,13 @@ export async function storagePath(spaceId: string, sourceId: string, externalId:
   const h = (await sha256(externalId)).slice(0, 10);
   const e = (ext || "bin").replace(/[^A-Za-z0-9]/g, "").toLowerCase().slice(0, 10) || "bin";
   return `${spaceId}/${sourceId}/${safe}-${h}.${e}`;
+}
+
+function storedAcl(v: unknown): { restricted: boolean; groups: string[] } | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const a = v as Record<string, unknown>;
+  if (typeof a.restricted !== "boolean" || !Array.isArray(a.groups)) return null;
+  return { restricted: a.restricted, groups: a.groups.filter((g): g is string => typeof g === "string") };
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -203,9 +212,29 @@ export async function runSync(o: RunOptions): Promise<RunResult> {
     existing.set(doc.externalId, {
       id, external_id: doc.externalId, content_hash: hash, audience: decision.audience, title: row.title, deleted_at: null,
       storage_path: path, version: doc.version ?? null, children: Array.isArray(metadata.children) ? metadata.children as string[] : [],
+      acl: metadata.acl,
     });
     result.upserted++;
   };
+
+  // Connectors skip upstream items that did not change (blob sha, last_edited_time...), so a stored document is
+  // otherwise never re-checked when the source audience, acl_strict or the audience rules change. Re-apply the
+  // current rules to what each live document recorded at its last upsert: a document the rules now skip is
+  // retracted, one they now narrow is narrowed. Widening waits for the item to be fetched again.
+  const retract: string[] = [];
+  for (const d of existing.values()) {
+    const acl = d.deleted_at ? null : storedAcl(d.acl);
+    if (!acl) continue;
+    const decision = decideAudience(o.source.audience, acl.groups, acl.restricted, { strict });
+    if (decision.kind === "skip") {
+      o.log(`retracting ${d.external_id}: ${decision.reason}`);
+      retract.push(d.external_id);
+    } else if (!sameSet(d.audience, decision.audience) && isNarrowerOrEqual(d.audience, decision.audience)) {
+      await o.store.touch(d.id, { audience: decision.audience });
+      d.audience = decision.audience;
+    }
+  }
+  await markDeleted(retract);
 
   const iter = o.connector.sync(ctx)[Symbol.asyncIterator]();
   try {

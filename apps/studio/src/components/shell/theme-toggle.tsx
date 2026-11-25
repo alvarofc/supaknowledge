@@ -1,5 +1,6 @@
 import { Monitor, Moon, Sun } from "lucide-react";
 import { cn } from "@/components/ui/cn";
+import { handleRadioKeys, radioTabIndex } from "@/components/ui/radio-group";
 import { useTheme } from "@/lib/theme";
 
 export function ThemeToggle({ className }: { className?: string }) {
@@ -9,9 +10,16 @@ export function ThemeToggle({ className }: { className?: string }) {
     { value: "system", label: "System theme", Icon: Monitor },
     { value: "dark", label: "Dark theme", Icon: Moon },
   ] as const;
+  const values = options.map((o) => o.value);
+  const current = theme === undefined ? -1 : values.indexOf(theme);
   return (
-    <div role="radiogroup" aria-label="Theme" className={cn("inline-flex rounded-md border border-line bg-surface-2 p-0.5", className)}>
-      {options.map(({ value, label, Icon }) => {
+    <div
+      role="radiogroup"
+      aria-label="Theme"
+      onKeyDown={(e) => handleRadioKeys(e, values, theme, setTheme)}
+      className={cn("inline-flex rounded-md border border-line bg-surface-2 p-0.5", className)}
+    >
+      {options.map(({ value, label, Icon }, i) => {
         // theme is undefined until hydrated (it is only known in the browser)
         const active = theme === value;
         return (
@@ -20,6 +28,7 @@ export function ThemeToggle({ className }: { className?: string }) {
             type="button"
             role="radio"
             aria-checked={active}
+            tabIndex={radioTabIndex(i, current)}
             aria-label={label}
             title={label}
             onClick={() => setTheme(value)}

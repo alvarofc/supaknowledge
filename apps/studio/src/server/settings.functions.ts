@@ -121,8 +121,8 @@ export const loadSettings = createServerFn({ method: "GET" })
 
 /** Validate (SpaceSettingsSchema) and save space settings as the signed-in user; RLS allows space admins only. */
 export const saveSpaceSettings = createServerFn({ method: "POST" })
-  .validator((d: { spaceId: string; settings: SpaceSettings }) => {
+  .validator((d: { spaceId: string; settings: SpaceSettings; base?: SpaceSettings }) => {
     if (typeof d.spaceId !== "string") throw new Error("Bad request");
     return d;
   })
-  .handler(async ({ data }): Promise<SaveSettingsResult> => saveSettings(data.spaceId, data.settings));
+  .handler(async ({ data }): Promise<SaveSettingsResult> => saveSettings(data.spaceId, data.settings, data.base));

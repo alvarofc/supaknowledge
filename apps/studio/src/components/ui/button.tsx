@@ -32,15 +32,17 @@ export function Button({
   pending,
   children,
   type = "button",
+  disabled,
   ...props
 }: ComponentProps<"button"> & { variant?: Variant; size?: Size; pending?: boolean }) {
   return (
     <button
+      {...props}
       type={type}
       className={buttonClass(variant, size, className)}
-      disabled={pending || props.disabled}
+      // after the spread: an explicit disabled={false} must not re-enable a pending button
+      disabled={pending || disabled}
       aria-busy={pending || undefined}
-      {...props}
     >
       {pending ? <Spinner /> : null}
       {children}

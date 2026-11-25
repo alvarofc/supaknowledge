@@ -43,18 +43,28 @@ export function shellQuote(s: string): string {
   return /^[A-Za-z0-9_\-./:=%@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Env var names usable in shell and client-config references (`$NAME`, `${NAME}`, `${env:NAME}`). */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function buildMcpConfig(o: McpConfigOptions): McpConfig {
   const client = o.client ?? "claude-code";
   const name = o.name ?? "supaknowledge";
   const endpoint = mcpEndpoint(o.url, o.space);
   const oauth = o.auth === "oauth";
   const envName = o.apiKeyEnv ?? "SUPAKNOWLEDGE_API_KEY";
+  // it is interpolated unquoted into shell text and config references
+  if (!ENV_NAME.test(envName)) throw new Error(`apiKeyEnv must be an environment variable name (letters, digits and _, not starting with a digit), got ${JSON.stringify(envName)}`);
   const notes: string[] = [];
 
   if (oauth) {
     notes.push("The client will open a browser to sign in with your Supaknowledge (Supabase Auth) account; it sees exactly what you can see.");
   } else if (!o.apiKey) {
-    notes.push(`Set ${envName} to an agent key (kf agents create <name>) before starting the client.`);
+    // Claude Code and Cursor expand env references in their config; the other configs get a literal placeholder
+    notes.push(
+      client === "claude-code" || client === "cursor"
+        ? `Set ${envName} to an agent key (kf agents create <name>) before starting the client.`
+        : `Replace <${envName}> in the config with an agent key (kf agents create <name>): this client does not expand environment variables.`,
+    );
   } else {
     notes.push("This config contains a secret agent key. Do not commit it.");
   }
@@ -89,7 +99,7 @@ export function buildMcpConfig(o: McpConfigOptions): McpConfig {
         client, name, url: endpoint,
         config: { mcpServers: { [name]: entry } },
         file: "claude_desktop_config.json (Settings > Developer > Edit Config)",
-        notes: [...notes, "Uses the mcp-remote bridge (needs Node). Replace the placeholder with the key if it was not inlined."],
+        notes: [...notes, "Uses the mcp-remote bridge (needs Node)."],
       };
     }
     default: {

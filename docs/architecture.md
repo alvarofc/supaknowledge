@@ -55,7 +55,7 @@ users, writing skill files to Storage). See [access control](access-control.md).
 
 ## Data model
 
-Twenty migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…20` review fixes and follow-ups):
+Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups):
 
 | Migration | Contents |
 |---|---|
@@ -79,6 +79,12 @@ Twenty migrations in `supabase/migrations` (`20261124000001`–`…10` the base 
 | `…18_maintenance` | `util.cleanup()` (cron `kf-cleanup`: job history, pgmq archives, old task payloads, per-space trace / usage retention), cron `kf-curator-reaper`, `process_queue` does not dequeue without secrets, `agents.last_seen_at`, `knowledge_health()` fixes, `set_source_secret()` locking |
 | `…19_privileges` | Default privileges for future objects (nothing for `anon`, no `TRUNCATE`) |
 | `…20_followups` | `agents.revoked_at` (and `key_prefix` no longer user-writable), `kf_revoke_user_sessions()` (service role), validation of every `SpaceSettingsSchema` key, `kf_storage_gc_objects()` + cron `kf-storage-gc`, `kf-embed` at 4 jobs per request, `kf_strip_proposal_files()`, workspace invitations (`workspace_invitations`, `invite_to_workspace()`, `list_my_invitations()`, `accept_invitation()`, `decline_invitation()`; no direct inserts into `workspace_members`), `find_user_by_email()` dropped, cron `kf-invitations-cleanup` |
+| `…21_round2` | Own-row policy branches need current space access, revoked agents lose every role, agent passwords change only through key rotation, citation audiences that never relax, `retire_group()`, Storage GC liveness, invitation owner protection, authorize-first `apply_proposal()` / `reject_proposal()` |
+| `…22_round2_functions` | `flag_knowledge()` path normalization, `p_visible_to` / `p_min_similarity` on `search_knowledge` / `search_sources`, `kf_rejected_proposals()`, settings length limits |
+| `…23_round2_embed` | Compare-and-swap embedding writes (`kf_embed_write_concept()` / `kf_embed_write_document()`) and `kf_embed_requeue()` |
+| `…24_pr1_followups` | `search_sources(p_source)` (per-source search filtered before the limit), concept paths reject empty and `.` segments |
+| `…25_pr5_followups` | Proposal path validation (`private.valid_concept_path`) rejects empty and `.` segments like `concepts.path` |
+| `…26_settings_cas` | `update_space_settings()`: compare-and-swap saves of space settings (RLS and settings validation still apply) |
 
 ### One write path
 

@@ -15,6 +15,7 @@ export function Dialog({
   children,
   footer,
   size = "md",
+  dismissible = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -23,6 +24,8 @@ export function Dialog({
   children?: ReactNode;
   footer?: ReactNode;
   size?: "sm" | "md" | "lg" | "xl";
+  /** false blocks Escape, backdrop clicks and the close button (e.g. while a request whose result must be shown is pending) */
+  dismissible?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -37,9 +40,16 @@ export function Dialog({
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      onClose={onClose}
+      onCancel={(e) => {
+        if (!dismissible) e.preventDefault();
+      }}
+      onClose={() => {
+        // a close we did not ask for while not dismissible (the browser ignored preventDefault): reopen
+        if (open && !dismissible) ref.current?.showModal();
+        else onClose();
+      }}
       onClick={(e) => {
-        if (e.target === ref.current) onClose();
+        if (dismissible && e.target === ref.current) onClose();
       }}
       className={cn(
         "m-auto w-[calc(100%-2rem)] rounded-md border border-line-strong bg-surface p-0 text-fg shadow-xl",
@@ -55,7 +65,7 @@ export function Dialog({
               </h2>
               {description ? <p className="mt-0.5 text-xs text-subtle">{description}</p> : null}
             </div>
-            <button type="button" onClick={onClose} aria-label="Close" className="-mr-1 rounded p-1 text-subtle hover:bg-surface-2 hover:text-fg">
+            <button type="button" onClick={onClose} disabled={!dismissible} aria-label="Close" className="-mr-1 rounded p-1 text-subtle hover:bg-surface-2 hover:text-fg disabled:pointer-events-none disabled:opacity-50">
               <X className="size-4" />
             </button>
           </div>
