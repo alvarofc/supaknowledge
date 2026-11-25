@@ -130,7 +130,7 @@ export const loadTrace = createServerFn({ method: "GET" })
       supabase
         .from("flags")
         .select(
-          "id, kind, concept_id, concept_path, query, observation, suggested_fix, created_by, trace_id, synthetic, created_at, status, audience, resolution",
+          "id, kind, concept_id, concept_path, query, observation, suggested_fix, created_by, trace_id, synthetic, created_at, status, audience, resolution, proposal_id",
         )
         .eq("trace_id", trace.id)
         .order("created_at"),

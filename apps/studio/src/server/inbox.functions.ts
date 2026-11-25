@@ -12,7 +12,7 @@ import { myInvitations } from "@/server/invitations.functions";
 const PROPOSAL_COLS =
   "id, title, author, risk, escalation, status, auto_applied, created_at, applied_at, reviewed_at, reviewed_by, created_by, proposal_ops(count)";
 const FLAG_COLS =
-  "id, kind, concept_id, concept_path, query, observation, suggested_fix, created_by, trace_id, synthetic, created_at, status, audience, resolution";
+  "id, kind, concept_id, concept_path, query, observation, suggested_fix, created_by, trace_id, synthetic, created_at, status, audience, resolution, proposal_id";
 
 /** Inbox: pending proposals, decided proposals (history) and open flags. */
 export const loadInbox = createServerFn({ method: "GET" })
