@@ -129,7 +129,7 @@ function TracePage() {
           <Card>
             <ul className="divide-y divide-line">
               {flags.map((f) => (
-                <FlagItem key={f.id} flag={f} base={ctx.base} profiles={profiles} groups={ctx.groups} canDismiss={atLeast(ctx.role, "reviewer")} />
+                <FlagItem key={f.id} flag={f} base={ctx.base} profiles={profiles} groups={ctx.groups} canDismiss={atLeast(ctx.role, "reviewer")} inTrace />
               ))}
             </ul>
           </Card>
