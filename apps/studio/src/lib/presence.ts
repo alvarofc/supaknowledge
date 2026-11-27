@@ -29,9 +29,10 @@ export function viewersFrom(state: Record<string, unknown[]>, selfId: string): V
   return out.sort((a, b) => (a.state === b.state ? a.userId.localeCompare(b.userId) : a.state === "reviewing" ? -1 : 1));
 }
 
-/** "AL" for "Ana López", "B" for "bob", "?" for nothing. */
+/** "AL" for "Ana López", "B" for "bob", "E" for "Eli (engineer)", "?" for nothing. */
 export function initials(name: string): string {
-  const parts = name.replace(/@.*$/, "").split(/[\s._-]+/).filter(Boolean);
+  // a parenthetical is a role or note, not part of the name; only letters and digits start a part
+  const parts = name.replace(/@.*$/, "").replace(/\([^)]*\)/g, " ").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (!parts.length) return "?";
   const first = [...(parts[0] ?? "")][0] ?? "";
   const last = parts.length > 1 ? ([...parts.at(-1)!][0] ?? "") : "";

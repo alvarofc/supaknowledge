@@ -20,17 +20,24 @@ export function nodeRadius(n: GraphNode): number {
   return n.type === "evidence" ? 4 : 5 + Math.min(7, Math.sqrt(n.degree) * 1.6);
 }
 
+/** Graphs this small show every concept label, so the layout keeps room for them. */
+const LABELLED_MAX = 40;
+/** Approximate width of an 11px label in layout units (labels are drawn at a constant screen size). */
+const labelWidth = (n: GraphNode) => (n.type === "concept" ? Math.min(48, n.title.length) * 6.2 + 4 : 0);
+
 /** Runs the force layout to rest synchronously (deterministic: d3 seeds nodes on a phyllotaxis spiral). */
 function layout(nodes: GraphNode[], edges: GraphEdge[]): Positions {
-  const sim: SimNode[] = nodes.map((n) => ({ id: n.id, r: nodeRadius(n) }));
+  const labelled = nodes.length <= LABELLED_MAX;
+  // with labels shown, each concept's collision circle also covers about half its label, so labels rarely overlap
+  const sim: SimNode[] = nodes.map((n) => ({ id: n.id, r: nodeRadius(n) + (labelled ? labelWidth(n) / 2 : 0) }));
   const links: SimulationLinkDatum<SimNode>[] = edges.map((e) => ({ source: e.source, target: e.target }));
   const simulation = forceSimulation(sim)
-    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((d) => d.id).distance(48).strength(0.6))
-    .force("charge", forceManyBody<SimNode>().strength(-90).distanceMax(400))
-    .force("collide", forceCollide<SimNode>().radius((d) => d.r + 6))
+    .force("link", forceLink<SimNode, SimulationLinkDatum<SimNode>>(links).id((d) => d.id).distance(labelled ? 110 : 48).strength(labelled ? 0.3 : 0.6))
+    .force("charge", forceManyBody<SimNode>().strength(labelled ? -320 : -90).distanceMax(labelled ? 800 : 400))
+    .force("collide", forceCollide<SimNode>().radius((d) => d.r + 6).strength(0.9))
     // weak pull to the middle keeps disconnected concepts from drifting away
     .force("x", forceX<SimNode>(0).strength(0.06))
-    .force("y", forceY<SimNode>(0).strength(0.06))
+    .force("y", forceY<SimNode>(0).strength(labelled ? 0.12 : 0.06))
     // large graphs settle in about half the ticks (~150 instead of ~300) so the main thread stays responsive
     .alphaDecay(nodes.length > 600 ? 0.045 : 0.0228)
     .stop();
@@ -55,11 +62,11 @@ function fit(pos: Positions, nodes: GraphNode[], width: number, height: number):
     const r = nodeRadius(n) + 8;
     minX = Math.min(minX, p.x - r);
     minY = Math.min(minY, p.y - r);
-    maxX = Math.max(maxX, p.x + r);
+    maxX = Math.max(maxX, p.x + r + (nodes.length <= LABELLED_MAX ? labelWidth(n) : 0));
     maxY = Math.max(maxY, p.y + r);
   }
   const pad = 32;
-  const k = Math.min(2, Math.max(0.1, Math.min((width - pad * 2) / (maxX - minX || 1), (height - pad * 2) / (maxY - minY || 1))));
+  const k = Math.min(1.25, Math.max(0.1, Math.min((width - pad * 2) / (maxX - minX || 1), (height - pad * 2) / (maxY - minY || 1))));
   return { k, x: width / 2 - ((minX + maxX) / 2) * k, y: height / 2 - ((minY + maxY) / 2) * k };
 }
 
@@ -138,7 +145,7 @@ export function ForceGraph({
 
   const lit = hover ? new Set([hover, ...(neighbours.get(hover) ?? [])]) : null;
   const hovered = hover ? nodes.find((n) => n.id === hover) : undefined;
-  const showAllLabels = nodes.length <= 40 || t.k >= 1.6;
+  const showAllLabels = nodes.length <= LABELLED_MAX || t.k >= 1.6;
 
   const open = (n: GraphNode) => {
     const href = hrefFor(n);

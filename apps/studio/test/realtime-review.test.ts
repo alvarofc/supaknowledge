@@ -29,6 +29,8 @@ test("initials and name lists", () => {
   assert.equal(initials("bob"), "B");
   assert.equal(initials("cleo.smith@example.com"), "CS");
   assert.equal(initials(""), "?");
+  assert.equal(initials("Eli (engineer)"), "E");
+  assert.equal(initials("Fiona Reyes (finance lead)"), "FR");
   assert.equal(nameList(["Ana"]), "Ana");
   assert.equal(nameList(["Ana", "Bob"]), "Ana and Bob");
   assert.equal(nameList(["Ana", "Bob", "Cleo"]), "Ana, Bob and Cleo");
