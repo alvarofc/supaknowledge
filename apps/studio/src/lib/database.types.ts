@@ -983,8 +983,14 @@ isOneToOne: false
 "kf_trace_events":
 { Args: { "p_max_per_trace"?: number,"p_trace_ids": (string)[] }; Returns: Json
                            },
+"knowledge_graph":
+{ Args: { "p_limit"?: number,"p_space": string }; Returns: Json
+                           },
 "knowledge_health":
 { Args: { "p_days"?: number,"p_space": string }; Returns: Json
+                           },
+"knowledge_recap":
+{ Args: { "p_month": string,"p_space"?: string,"p_workspace"?: string }; Returns: Json
                            },
 "list_my_invitations":
 { Args: Record<PropertyKey, never>; Returns: {

@@ -23,7 +23,9 @@ import { Route as AuthedWWorkspaceIndexRouteImport } from './routes/_authed/w/$w
 import { Route as AuthedWWorkspaceSpaceRouteRouteImport } from './routes/_authed/w/$workspace/$space/route'
 import { Route as AuthedWWorkspaceSpaceIndexRouteImport } from './routes/_authed/w/$workspace/$space/index'
 import { Route as AuthedWWorkspaceSpaceAgentsRouteImport } from './routes/_authed/w/$workspace/$space/agents'
+import { Route as AuthedWWorkspaceSpaceGraphRouteImport } from './routes/_authed/w/$workspace/$space/graph'
 import { Route as AuthedWWorkspaceSpaceHealthRouteImport } from './routes/_authed/w/$workspace/$space/health'
+import { Route as AuthedWWorkspaceSpaceRecapRouteImport } from './routes/_authed/w/$workspace/$space/recap'
 import { Route as AuthedWWorkspaceSpaceSettingsRouteImport } from './routes/_authed/w/$workspace/$space/settings'
 import { Route as AuthedWWorkspaceSpaceSuggestRouteImport } from './routes/_authed/w/$workspace/$space/suggest'
 import { Route as AuthedWWorkspaceSpaceActivityIndexRouteImport } from './routes/_authed/w/$workspace/$space/activity/index'
@@ -106,10 +108,22 @@ const AuthedWWorkspaceSpaceAgentsRoute =
     path: '/agents',
     getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
   } as any)
+const AuthedWWorkspaceSpaceGraphRoute =
+  AuthedWWorkspaceSpaceGraphRouteImport.update({
+    id: '/graph',
+    path: '/graph',
+    getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
+  } as any)
 const AuthedWWorkspaceSpaceHealthRoute =
   AuthedWWorkspaceSpaceHealthRouteImport.update({
     id: '/health',
     path: '/health',
+    getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
+  } as any)
+const AuthedWWorkspaceSpaceRecapRoute =
+  AuthedWWorkspaceSpaceRecapRouteImport.update({
+    id: '/recap',
+    path: '/recap',
     getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
   } as any)
 const AuthedWWorkspaceSpaceSettingsRoute =
@@ -185,7 +199,9 @@ export interface FileRoutesByFullPath {
   '/w/$workspace/$space': typeof AuthedWWorkspaceSpaceRouteRouteWithChildren
   '/w/$workspace/': typeof AuthedWWorkspaceIndexRoute
   '/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/w/$workspace/$space/graph': typeof AuthedWWorkspaceSpaceGraphRoute
   '/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
+  '/w/$workspace/$space/recap': typeof AuthedWWorkspaceSpaceRecapRoute
   '/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
   '/w/$workspace/$space/': typeof AuthedWWorkspaceSpaceIndexRoute
@@ -209,7 +225,9 @@ export interface FileRoutesByTo {
   '/oauth/consent': typeof AuthedOauthConsentRoute
   '/w/$workspace': typeof AuthedWWorkspaceIndexRoute
   '/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/w/$workspace/$space/graph': typeof AuthedWWorkspaceSpaceGraphRoute
   '/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
+  '/w/$workspace/$space/recap': typeof AuthedWWorkspaceSpaceRecapRoute
   '/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
   '/w/$workspace/$space': typeof AuthedWWorkspaceSpaceIndexRoute
@@ -237,7 +255,9 @@ export interface FileRoutesById {
   '/_authed/w/$workspace/$space': typeof AuthedWWorkspaceSpaceRouteRouteWithChildren
   '/_authed/w/$workspace/': typeof AuthedWWorkspaceIndexRoute
   '/_authed/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/_authed/w/$workspace/$space/graph': typeof AuthedWWorkspaceSpaceGraphRoute
   '/_authed/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
+  '/_authed/w/$workspace/$space/recap': typeof AuthedWWorkspaceSpaceRecapRoute
   '/_authed/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/_authed/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
   '/_authed/w/$workspace/$space/': typeof AuthedWWorkspaceSpaceIndexRoute
@@ -264,7 +284,9 @@ export interface FileRouteTypes {
     | '/w/$workspace/$space'
     | '/w/$workspace/'
     | '/w/$workspace/$space/agents'
+    | '/w/$workspace/$space/graph'
     | '/w/$workspace/$space/health'
+    | '/w/$workspace/$space/recap'
     | '/w/$workspace/$space/settings'
     | '/w/$workspace/$space/suggest'
     | '/w/$workspace/$space/'
@@ -288,7 +310,9 @@ export interface FileRouteTypes {
     | '/oauth/consent'
     | '/w/$workspace'
     | '/w/$workspace/$space/agents'
+    | '/w/$workspace/$space/graph'
     | '/w/$workspace/$space/health'
+    | '/w/$workspace/$space/recap'
     | '/w/$workspace/$space/settings'
     | '/w/$workspace/$space/suggest'
     | '/w/$workspace/$space'
@@ -315,7 +339,9 @@ export interface FileRouteTypes {
     | '/_authed/w/$workspace/$space'
     | '/_authed/w/$workspace/'
     | '/_authed/w/$workspace/$space/agents'
+    | '/_authed/w/$workspace/$space/graph'
     | '/_authed/w/$workspace/$space/health'
+    | '/_authed/w/$workspace/$space/recap'
     | '/_authed/w/$workspace/$space/settings'
     | '/_authed/w/$workspace/$space/suggest'
     | '/_authed/w/$workspace/$space/'
@@ -437,11 +463,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedWWorkspaceSpaceAgentsRouteImport
       parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
     }
+    '/_authed/w/$workspace/$space/graph': {
+      id: '/_authed/w/$workspace/$space/graph'
+      path: '/graph'
+      fullPath: '/w/$workspace/$space/graph'
+      preLoaderRoute: typeof AuthedWWorkspaceSpaceGraphRouteImport
+      parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
+    }
     '/_authed/w/$workspace/$space/health': {
       id: '/_authed/w/$workspace/$space/health'
       path: '/health'
       fullPath: '/w/$workspace/$space/health'
       preLoaderRoute: typeof AuthedWWorkspaceSpaceHealthRouteImport
+      parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
+    }
+    '/_authed/w/$workspace/$space/recap': {
+      id: '/_authed/w/$workspace/$space/recap'
+      path: '/recap'
+      fullPath: '/w/$workspace/$space/recap'
+      preLoaderRoute: typeof AuthedWWorkspaceSpaceRecapRouteImport
       parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
     }
     '/_authed/w/$workspace/$space/settings': {
@@ -519,7 +559,9 @@ declare module '@tanstack/react-router' {
 
 interface AuthedWWorkspaceSpaceRouteRouteChildren {
   AuthedWWorkspaceSpaceAgentsRoute: typeof AuthedWWorkspaceSpaceAgentsRoute
+  AuthedWWorkspaceSpaceGraphRoute: typeof AuthedWWorkspaceSpaceGraphRoute
   AuthedWWorkspaceSpaceHealthRoute: typeof AuthedWWorkspaceSpaceHealthRoute
+  AuthedWWorkspaceSpaceRecapRoute: typeof AuthedWWorkspaceSpaceRecapRoute
   AuthedWWorkspaceSpaceSettingsRoute: typeof AuthedWWorkspaceSpaceSettingsRoute
   AuthedWWorkspaceSpaceSuggestRoute: typeof AuthedWWorkspaceSpaceSuggestRoute
   AuthedWWorkspaceSpaceIndexRoute: typeof AuthedWWorkspaceSpaceIndexRoute
@@ -536,7 +578,9 @@ interface AuthedWWorkspaceSpaceRouteRouteChildren {
 const AuthedWWorkspaceSpaceRouteRouteChildren: AuthedWWorkspaceSpaceRouteRouteChildren =
   {
     AuthedWWorkspaceSpaceAgentsRoute: AuthedWWorkspaceSpaceAgentsRoute,
+    AuthedWWorkspaceSpaceGraphRoute: AuthedWWorkspaceSpaceGraphRoute,
     AuthedWWorkspaceSpaceHealthRoute: AuthedWWorkspaceSpaceHealthRoute,
+    AuthedWWorkspaceSpaceRecapRoute: AuthedWWorkspaceSpaceRecapRoute,
     AuthedWWorkspaceSpaceSettingsRoute: AuthedWWorkspaceSpaceSettingsRoute,
     AuthedWWorkspaceSpaceSuggestRoute: AuthedWWorkspaceSpaceSuggestRoute,
     AuthedWWorkspaceSpaceIndexRoute: AuthedWWorkspaceSpaceIndexRoute,
