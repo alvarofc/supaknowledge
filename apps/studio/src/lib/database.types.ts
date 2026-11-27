@@ -928,6 +928,9 @@ isOneToOne: false
 "is_stale":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: boolean
                            },
+"join_demo":
+{ Args: { "p_space"?: string }; Returns: Json
+                           },
 "kf_add_run_stats":
 { Args: { "p_delta": Json,"p_run": string }; Returns: Json
                            },
@@ -936,6 +939,18 @@ isOneToOne: false
                            },
 "kf_curator_progress":
 { Args: { "p_events": Json,"p_space": string }; Returns: number
+                           },
+"kf_demo_disable":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_enable":
+{ Args: { "p_flags_per_day"?: number,"p_flags_per_visitor_per_hour"?: number,"p_space": string }; Returns: Json
+                           },
+"kf_demo_reset":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_status":
+{ Args: { "p_space": string }; Returns: Json
                            },
 "kf_embed_requeue":
 { Args: { "p_delay"?: number,"p_message": Json,"p_msg_id": number }; Returns: boolean
@@ -966,6 +981,9 @@ isOneToOne: false
                            },
 "kf_queue_send":
 { Args: { "p_delay"?: number,"p_messages": (Json)[],"p_queue": string }; Returns: (number)[]
+                           },
+"kf_record_schema_drift":
+{ Args: { "p_flags": Json,"p_source": string }; Returns: number
                            },
 "kf_rejected_proposals":
 { Args: { "p_limit"?: number,"p_paths": (string)[],"p_space": string }; Returns: {
@@ -1101,21 +1119,6 @@ isOneToOne: false
                            },
 "trust":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: Database["public"]['Enums']["trust_tier"]
-                           },
-"join_demo":
-{ Args: { "p_space"?: string }; Returns: Json
-                           },
-"kf_demo_disable":
-{ Args: { "p_space": string }; Returns: Json
-                           },
-"kf_demo_enable":
-{ Args: { "p_flags_per_day"?: number,"p_flags_per_visitor_per_hour"?: number,"p_space": string }; Returns: Json
-                           },
-"kf_demo_reset":
-{ Args: { "p_space": string }; Returns: Json
-                           },
-"kf_demo_status":
-{ Args: { "p_space": string }; Returns: Json
                            },
 "update_space_settings":
 { Args: { "p_expected": Json,"p_settings": Json,"p_space": string }; Returns: string
