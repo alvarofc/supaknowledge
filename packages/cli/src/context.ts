@@ -46,6 +46,8 @@ export interface Io {
   run?: RunFn;
   /** Random hex string of `bytes` bytes. Default: node:crypto. Injected by tests. */
   randomHex?: (bytes: number) => string;
+  /** Open a URL in the browser (`kf deploy --login`). Default: open / xdg-open / start. Injected by tests. */
+  openBrowser?: (url: string) => Promise<void>;
 }
 
 export interface RunResult {

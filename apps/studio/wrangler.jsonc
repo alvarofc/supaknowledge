@@ -1,0 +1,13 @@
+// Studio on Cloudflare Workers. `npm run build:cloudflare` (Nitro's cloudflare_module preset) merges this file into
+// .output/server/wrangler.json; `npm run deploy:cloudflare` deploys that build with Wrangler.
+// VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY are build-time variables (set them where the build runs).
+// SITE_URL and KF_DEMO are read at runtime: set them under "vars" or in the Cloudflare dashboard.
+{
+  "name": "supaknowledge-studio",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    // "SITE_URL": "https://studio.example.com",
+    // "KF_DEMO": "true"
+  }
+}

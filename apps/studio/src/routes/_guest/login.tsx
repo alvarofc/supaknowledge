@@ -1,7 +1,9 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { AuthForm } from "@/components/auth/auth-form";
+import { DemoSignIn } from "@/components/auth/demo-sign-in";
 import { title } from "@/lib/meta";
 import { safeNext } from "@/lib/safe-next";
+import { loadDemoMode } from "@/server/demo.functions";
 
 export const Route = createFileRoute("/_guest/login")({
   validateSearch: (search: Record<string, unknown>): { next?: string; error?: string } => ({
@@ -11,12 +13,14 @@ export const Route = createFileRoute("/_guest/login")({
   beforeLoad: ({ context, search }) => {
     if (context.user) throw redirect({ href: safeNext(search.next) });
   },
+  loader: () => loadDemoMode(),
   head: () => ({ meta: [title("Sign in")] }),
   component: LoginPage,
 });
 
 function LoginPage() {
   const search = Route.useSearch();
+  const demo = Route.useLoaderData();
   const next = safeNext(search.next);
   const isConsent = next.startsWith("/oauth/consent");
   return (
@@ -30,6 +34,7 @@ function LoginPage() {
         </p>
       </div>
       <AuthForm key={search.error ?? ""} mode="signin" next={next} initialError={search.error} />
+      {demo.enabled ? <DemoSignIn next={next} /> : null}
     </div>
   );
 }

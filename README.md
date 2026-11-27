@@ -78,6 +78,8 @@ query it). What Supaknowledge adds to the post:
 | Embeddings (no API key) | Edge Runtime `Supabase.ai` gte-small, kept in sync by triggers → Queues → cron | `embed` function |
 | Agent interface | Remote MCP server on an Edge Function | `mcp` function |
 | Sign-in for people and MCP clients | Auth, including the OAuth 2.1 server | Studio `/oauth/consent` |
+| Public demo without an account | Auth anonymous sign-ins + RLS (visitors read, search and flag) | `join_demo()`, `kf demo` |
+| Deploy from the CLI | Management API, OAuth for integrations | `kf deploy [--login]` |
 | Headless agents | Auth users with `app_metadata.kind = 'agent'` and an API key | `agents` function |
 | Trace ingest (JSON, OTLP) | Edge Function | `traces` function |
 | Curator | Queues (pgmq) + Cron + Edge Function, any model through Mastra (your OpenAI-compatible endpoint, Vercel AI Gateway, OpenRouter) | `curator` function, `packages/core/src/curator` |
@@ -147,8 +149,8 @@ More: [getting started](docs/getting-started.md).
 | Path | What |
 |---|---|
 | `supabase/migrations` | Schema, RLS, RPCs, queues, cron jobs, Storage buckets, Realtime |
-| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance` |
-| `supabase/tests/database` | 739 pgTAP tests of the access model |
+| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance`, and `oauth-broker` (only for whoever runs the Supabase OAuth app of `kf deploy --login`) |
+| `supabase/tests/database` | 784 pgTAP tests of the access model |
 | `packages/core` | `@supaknowledge/core` (internal, not published): OKF + Agent Skills formats, chunking, access rules, policy, the curator engine |
 | `packages/cli` | `@supaknowledge/cli`: the `supaknowledge` command, alias `kf` |
 | `packages/sdk`, `sdks/python` | `@supaknowledge/sdk` (TypeScript) and `supaknowledge` (Python): search, flag, traces, OpenAI-compatible / JSON Schema tool helpers |
@@ -164,9 +166,12 @@ More: [getting started](docs/getting-started.md).
 - [MCP](docs/mcp.md): tools, and connecting Claude Code, Cursor, Claude Desktop and others
 - [Curator](docs/curator.md): pipeline, prompts, settings and policy, provenance, costs
 - [OKF and Agent Skills](docs/okf.md): file formats and round-trip rules
-- [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>` does the Supabase side), Studio on Vercel, self-hosting
+- [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>`, or `npx kf deploy --login` to sign in
+  with Supabase and pick or create the project), Studio on Cloudflare Workers or Vercel, a public read-only demo,
+  self-hosting
 - [CLI](docs/cli.md) · [SDKs](docs/sdk.md) · [Connectors](docs/connectors.md) · [Studio](docs/studio.md)
 - [Design](docs/DESIGN.md): the decisions behind all of this
+- [Releasing](docs/releasing.md) · [Supaknowledge on Supabase](docs/partners.md) (summary for Supabase's integrations listing)
 
 ## Status
 

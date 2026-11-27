@@ -30,8 +30,16 @@ export function registerAuth(program: Command, run: Runner): void {
   program
     .command("logout")
     .description("revoke the saved session and remove it from the profile")
+    .option("--supabase", "instead: forget the Supabase sign-in saved by kf deploy --login")
     .action(
-      run(async (ctx) => {
+      run(async (ctx, opts: { supabase?: boolean }) => {
+        if (opts.supabase) {
+          const had = !!ctx.config().supabase_oauth;
+          ctx.config().supabase_oauth = null;
+          ctx.saveConfig();
+          ctx.out({ ok: true, supabase: had }, () => (had ? "Forgot the saved Supabase sign-in." : "No saved Supabase sign-in."));
+          return;
+        }
         const prof = ctx.profile();
         const s = prof.session;
         if (s?.access_token && prof.url && prof.publishable_key) {

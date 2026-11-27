@@ -17,7 +17,8 @@ import { basename, join, relative, resolve } from "node:path";
 import type { Env } from "../config.ts";
 import { CliError, type Ctx, type RunFn } from "../context.ts";
 import type { Runner } from "../program.ts";
-import { ApiError, ManagementApi, type AuthConfig } from "../deploy/api.ts";
+import { AccountApi, ApiError, ManagementApi, type AuthConfig, type Organization, type ProjectSummary } from "../deploy/api.ts";
+import { oauthSetup, supabaseAccessToken } from "../deploy/oauth.ts";
 import {
   configWithoutSecrets,
   formatMB,
@@ -39,7 +40,10 @@ const REF_RE = /^[a-z]{20}$/;
 /** Supabase's per-function limit is 20 MB; warn when the curator gets close. */
 const SIZE_WARN_BYTES = 19.5e6;
 const DEFAULT_TASK_BUDGET_MS = "140000";
-const TOKEN_HINT = "create a personal access token at https://supabase.com/dashboard/account/tokens and export SUPABASE_ACCESS_TOKEN (or pipe it with --access-token-stdin)";
+const TOKEN_HINT =
+  "create a personal access token at https://supabase.com/dashboard/account/tokens and export SUPABASE_ACCESS_TOKEN (or pipe it with --access-token-stdin), or sign in with --login";
+/** Functions in supabase/functions that `kf deploy` does not deploy (the OAuth broker runs only on the OAuth app owner's project). */
+export const NOT_DEPLOYED = new Set(["oauth-broker"]);
 
 /** Auth settings Supaknowledge needs (docs/deploy.md#4-auth). mailer_autoconfirm is never turned on. */
 export const AUTH_SETTINGS: AuthConfig = {
@@ -52,7 +56,11 @@ export const AUTH_SETTINGS: AuthConfig = {
 };
 
 interface DeployOpts {
-  projectRef: string;
+  projectRef?: string;
+  login?: boolean;
+  org?: string;
+  createProject?: string;
+  region?: string;
   dir?: string;
   accessTokenStdin?: boolean;
   publicUrl?: string;
@@ -82,7 +90,11 @@ export function registerDeploy(program: Command, run: Runner): void {
   program
     .command("deploy")
     .description("deploy this repository to a hosted Supabase project: migrations, Vault, function secrets, Edge Functions, Auth, checks")
-    .requiredOption("--project-ref <ref>", "the hosted project's ref (Settings → General, 20 lowercase letters)")
+    .option("--project-ref <ref>", "the hosted project's ref (Settings → General, 20 lowercase letters); with --login, omit it to pick or create one")
+    .option("--login", "sign in with Supabase in the browser (OAuth) instead of SUPABASE_ACCESS_TOKEN; the token is saved for next time")
+    .option("--org <slug>", "with --login: the organization to pick a project from or create one in")
+    .option("--create-project <name>", "with --login: create a new project with this name, wait until it is ready, then deploy")
+    .option("--region <region>", "with --create-project: the region, e.g. us-east-1 (default: Supabase's choice)")
     .option("--dir <path>", "the supaknowledge repository clone (default: the current directory)")
     .option("--access-token-stdin", "read the Supabase personal access token from stdin (default: SUPABASE_ACCESS_TOKEN)")
     .option("--public-url <url>", "KF_PUBLIC_URL: the API origin MCP clients see (default: https://<ref>.supabase.co)")
@@ -111,12 +123,18 @@ Steps:
   [7/7] Check            MCP metadata, the internal secret (calls embed like cron does), OAuth metadata
 
 Run it from a clone of the supaknowledge repository (after npm install). Studio hosting stays manual
-(docs/deploy.md#5-studio-on-vercel).
+(docs/deploy.md#5-studio).
+
+--login uses Supabase's OAuth for integrations: set KF_SUPABASE_OAUTH_CLIENT_ID and either
+KF_SUPABASE_OAUTH_BROKER_URL or KF_SUPABASE_OAUTH_CLIENT_SECRET (docs/deploy.md#deploy-with-kf-deploy---login).
+Forget the saved sign-in with: kf logout --supabase
 
 Examples:
   export SUPABASE_ACCESS_TOKEN=sbp_...
   kf deploy --project-ref abcdefghijklmnopqrst --dry-run
-  kf deploy --project-ref abcdefghijklmnopqrst --env-file ./hosted.env --studio-url https://studio.example.com`,
+  kf deploy --project-ref abcdefghijklmnopqrst --env-file ./hosted.env --studio-url https://studio.example.com
+  kf deploy --login                                   # pick an organization and project, or create one
+  kf deploy --login --org acme --create-project supaknowledge --region eu-central-1`,
     )
     .action(run(deploy));
 }
@@ -155,18 +173,25 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   const usage = (msg: string, hint?: string) => new CliError(msg, { exitCode: 2, hint });
 
   // ---- validate everything before touching the network ----------------------------------------------------
-  const ref = opts.projectRef.trim();
-  if (!REF_RE.test(ref)) throw usage(`invalid project ref "${ref}" (20 lowercase letters)`, "find it in the dashboard under Settings → General, or in the project URL");
+  let ref = opts.projectRef?.trim() ?? "";
+  if (ref && !REF_RE.test(ref)) throw usage(`invalid project ref "${ref}" (20 lowercase letters)`, "find it in the dashboard under Settings → General, or in the project URL");
+  if (!ref && !opts.login) throw usage("--project-ref is required (or use --login to pick or create a project)");
+  if (!opts.login && (opts.org || opts.createProject || opts.region)) throw usage("--org, --create-project and --region need --login");
+  if (opts.login && opts.accessTokenStdin) throw usage("use either --login or --access-token-stdin");
+  if (ref && opts.createProject) throw usage("use either --project-ref or --create-project");
+  if (opts.region && !opts.createProject) throw usage("--region needs --create-project");
+  if (opts.createProject && opts.dryRun) throw usage("--dry-run cannot preview a project that does not exist yet", "create it without --dry-run, or pass --project-ref");
+  if (opts.createProject !== undefined && !opts.createProject.trim()) throw usage("--create-project needs a project name");
+  const oauth = opts.login ? oauthSetup(io.env) : null;
   const dir = resolve(io.cwd, opts.dir ?? ".");
   for (const p of ["supabase/config.jsonc", "supabase/migrations", "supabase/functions"]) {
     if (!existsSync(join(dir, p))) throw usage("run kf deploy from a clone of the supaknowledge repository (or pass --dir)", `${join(dir, p)} not found`);
   }
-  const projectUrl = `https://${ref}.supabase.co`;
-  let publicUrl = projectUrl;
+  let publicOverride: string | undefined;
   if (opts.publicUrl) {
     const o = parseOrigin(opts.publicUrl);
     if (!o) throw usage(`--public-url must be an http(s) origin without a path, got "${opts.publicUrl}"`);
-    publicUrl = o;
+    publicOverride = o;
   }
   const studio: string[] = [];
   for (const s of opts.studioUrl ?? []) {
@@ -192,11 +217,36 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     }
     fileSel = selectEnvSecrets(parseDotenv(text));
   }
-  const token = (opts.accessTokenStdin ? await io.readStdin() : (io.env.SUPABASE_ACCESS_TOKEN ?? "")).trim();
-  if (!token) throw usage(opts.accessTokenStdin ? "no access token on stdin" : "SUPABASE_ACCESS_TOKEN is not set", TOKEN_HINT);
+  const randomHex = io.randomHex ?? defaultRandomHex;
+  let token: string;
+  let created: { ref: string; name: string; organization: string } | null = null;
+  if (oauth) {
+    token = await supabaseAccessToken({
+      fetch: io.fetch,
+      setup: oauth,
+      config: ctx.config(),
+      save: () => ctx.saveConfig(),
+      nowMs: io.now(),
+      open: async (url) => {
+        ctx.note(`Opening the browser to sign in with Supabase. If it does not open, visit:\n  ${url}`);
+        await (io.openBrowser ?? defaultOpenBrowser)(url).catch(() => {});
+      },
+      note: (m) => ctx.note(m),
+      organizationSlug: opts.org,
+    });
+    if (!ref) {
+      const picked = await chooseProject(ctx, new AccountApi(io.fetch, token), opts, randomHex, usage);
+      ref = picked.ref;
+      created = picked.created;
+    }
+  } else {
+    token = (opts.accessTokenStdin ? await io.readStdin() : (io.env.SUPABASE_ACCESS_TOKEN ?? "")).trim();
+    if (!token) throw usage(opts.accessTokenStdin ? "no access token on stdin" : "SUPABASE_ACCESS_TOKEN is not set", TOKEN_HINT);
+  }
+  const projectUrl = `https://${ref}.supabase.co`;
+  let publicUrl = publicOverride ?? projectUrl;
 
   const runCmd = io.run ?? defaultRun;
-  const randomHex = io.randomHex ?? defaultRandomHex;
   const api = new ManagementApi(io.fetch, token, ref);
   const env = childEnv(io.env, token);
   let internalSecret: string | undefined;
@@ -283,7 +333,8 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     try {
       project = await api.project();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) throw new CliError("the Management API rejected the access token (HTTP 401)", { exitCode: 3, hint: TOKEN_HINT });
+      if (e instanceof ApiError && e.status === 401)
+        throw new CliError("the Management API rejected the access token (HTTP 401)", { exitCode: 3, hint: oauth ? "run kf logout --supabase, then kf deploy --login again (check the OAuth app's scopes)" : TOKEN_HINT });
       if (e instanceof ApiError && (e.status === 404 || e.status === 403))
         throw new CliError(`project ${ref} not found, or this token's account cannot access it (HTTP ${e.status})`, { hint: "check --project-ref and which account created the token" });
       throw e;
@@ -419,7 +470,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
   // ---- 5. edge functions -------------------------------------------------------------------------------------
   await step(5, "Edge Functions", opts.skipFunctions ? "--skip-functions" : false, async () => {
     const fnDir = join(dir, "supabase", "functions");
-    const fns = readdirSync(fnDir).filter((f) => !f.startsWith("_") && !f.startsWith(".") && statSync(join(fnDir, f)).isDirectory());
+    const fns = readdirSync(fnDir).filter((f) => !f.startsWith("_") && !f.startsWith(".") && !NOT_DEPLOYED.has(f) && statSync(join(fnDir, f)).isDirectory());
     const useApi = opts.useApi ? ["--use-api"] : [];
     if (dry) return { status: "planned", detail: `run supabase functions deploy --remote=${ref} --yes${useApi.length ? " --use-api" : ""} from a clean copy (${fns.join(", ")})` };
     supabaseBin();
@@ -430,6 +481,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
         recursive: true,
         filter: (src) => {
           const b = basename(src);
+          if (NOT_DEPLOYED.has(b) && relative(fnDir, src) === b) return false;
           return b !== "node_modules" && !b.startsWith(".env");
         },
       });
@@ -559,6 +611,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     mcp_url: mcpUrl,
     publishable_key: publishableKey ?? null,
     site_url: siteUrl ?? null,
+    created_project: created,
     dry_run: dry,
     model_configured: modelConfigured,
     steps,
@@ -573,7 +626,7 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
       `  ${c.dim("Publishable key")} ${publishableKey ?? c.dim("(see Settings → API Keys)")}`,
       "",
       c.bold("Next steps"),
-      `  1. Studio (docs/deploy.md#5-studio-on-vercel): set VITE_SUPABASE_URL=${projectUrl}`,
+      `  1. Studio (docs/deploy.md#5-studio): set VITE_SUPABASE_URL=${projectUrl}`,
       `     and VITE_SUPABASE_PUBLISHABLE_KEY=${key}, deploy apps/studio${studio.length ? "" : ", then run kf deploy again with --studio-url <studio-url> --skip-db --skip-functions"}`,
       `  2. Sign up in Studio, then: kf login --url ${projectUrl} --publishable-key ${key} --email you@example.com`,
       "  3. kf init --workspace <workspace> --space <space>",
@@ -581,4 +634,101 @@ async function deploy(ctx: Ctx, opts: DeployOpts): Promise<void> {
     ];
     return lines.join("\n");
   });
+}
+
+/** Best effort: the URL is printed as well, so a failure here only means the visitor copies it. */
+const defaultOpenBrowser = (url: string): Promise<void> =>
+  new Promise((done) => {
+    const [cmd, args] =
+      process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+    try {
+      const child = spawn(cmd as string, args as string[], { stdio: "ignore", detached: true });
+      child.on("error", () => done());
+      child.unref();
+      done();
+    } catch {
+      done();
+    }
+  });
+
+const PROJECT_READY_ATTEMPTS = 60;
+const PROJECT_READY_INTERVAL_MS = 10_000;
+
+/**
+ * `kf deploy --login` without --project-ref: pick an organization (--org, the only one, or a prompt), then a
+ * project of it (prompt) or create one (--create-project, or the prompt's "n"). A new project gets a generated
+ * database password, printed once: the Management API cannot return it later.
+ */
+async function chooseProject(
+  ctx: Ctx,
+  account: AccountApi,
+  opts: DeployOpts,
+  randomHex: (bytes: number) => string,
+  usage: (msg: string, hint?: string) => CliError,
+): Promise<{ ref: string; created: { ref: string; name: string; organization: string } | null }> {
+  const io = ctx.io;
+  const c = ctx.c;
+  const ask = async (q: string) => (await io.prompt(q)).trim();
+  const orgs: Organization[] = await account.organizations();
+  if (!orgs.length) throw new CliError("this Supabase account belongs to no organization", { hint: "create one at https://supabase.com/dashboard" });
+  let org: Organization | undefined;
+  if (opts.org) {
+    org = orgs.find((o) => o.slug === opts.org);
+    if (!org) throw usage(`organization "${opts.org}" not found (or the OAuth app was not granted it)`, `available: ${orgs.map((o) => o.slug).join(", ")}`);
+  } else if (orgs.length === 1) {
+    org = orgs[0];
+  } else {
+    if (!io.stdinIsTTY) throw usage("several organizations: pass --org <slug>", `available: ${orgs.map((o) => o.slug).join(", ")}`);
+    ctx.note(c.bold("Organizations"));
+    orgs.forEach((o, i) => ctx.note(`  ${i + 1}) ${o.name ?? o.slug} (${o.slug})`));
+    const n = Number(await ask(`Organization [1-${orgs.length}]: `));
+    org = orgs[n - 1];
+  }
+  if (!org) throw usage("no organization chosen");
+
+  let name = opts.createProject?.trim();
+  if (!name) {
+    const projects = (await account.projects()).filter((p) => !p.organization_slug || p.organization_slug === org.slug);
+    if (!io.stdinIsTTY) {
+      throw usage(
+        `pass --project-ref <ref> or --create-project <name> (organization ${org.slug})`,
+        projects.length ? `projects: ${projects.map((p) => `${p.ref ?? p.id} (${p.name ?? ""})`).join(", ")}` : undefined,
+      );
+    }
+    ctx.note(c.bold(`Projects in ${org.name ?? org.slug}`));
+    projects.forEach((p, i) => ctx.note(`  ${i + 1}) ${p.name ?? p.ref} (${p.ref ?? p.id}${p.region ? `, ${p.region}` : ""}${p.status ? `, ${p.status}` : ""})`));
+    ctx.note("  n) create a new project");
+    const answer = await ask(projects.length ? `Project [1-${projects.length} or n]: ` : "Create a new project? [n]: ");
+    if (answer.toLowerCase() === "n" || (!projects.length && answer === "")) {
+      name = await ask("New project name: ");
+      if (!name) throw usage("no project name given");
+    } else {
+      const p = projects[Number(answer) - 1];
+      const ref = p?.ref ?? p?.id;
+      if (!ref || !REF_RE.test(ref)) throw usage("no project chosen");
+      return { ref, created: null };
+    }
+  }
+
+  const dbPass = randomHex(16);
+  ctx.note(`Creating project ${name} in ${org.slug}${opts.region ? ` (${opts.region})` : ""}...`);
+  let project: ProjectSummary;
+  try {
+    project = await account.createProject({ name, organizationSlug: org.slug, dbPass, region: opts.region });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 402) throw new CliError(`Supabase refused to create the project (HTTP 402): ${e.message}`, { hint: "the organization's plan does not allow another project" });
+    throw e;
+  }
+  const ref = project.ref ?? project.id;
+  if (!ref || !REF_RE.test(ref)) throw new CliError("the Management API returned no project ref for the new project");
+  ctx.note(`${c.bold("Database password")} (shown once; kf does not store it, and the Management API cannot return it later):\n  ${dbPass}`);
+  let status = project.status ?? "";
+  for (let i = 0; status !== "ACTIVE_HEALTHY"; i++) {
+    if (/INIT_FAILED|REMOVED|GOING_DOWN/.test(status)) throw new CliError(`project ${ref} is ${status}`, { hint: "check the project in the Supabase dashboard" });
+    if (i >= PROJECT_READY_ATTEMPTS) throw new CliError(`project ${ref} is still ${status || "starting"} after ${(PROJECT_READY_ATTEMPTS * PROJECT_READY_INTERVAL_MS) / 60_000} minutes`, { hint: `run kf deploy --login --project-ref ${ref} once it is ready` });
+    ctx.note(`  waiting for ${ref} (${status || "starting"})`);
+    await io.sleep(PROJECT_READY_INTERVAL_MS);
+    status = (await account.project(ref)).status ?? "";
+  }
+  return { ref, created: { ref, name, organization: org.slug } };
 }

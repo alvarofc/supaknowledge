@@ -31,7 +31,7 @@ type NavSpace = { id: string; slug: string; name: string; workspace_id: string }
 
 export interface ShellProps {
   base: string;
-  user: { email: string | null };
+  user: { email: string | null; isAnonymous?: boolean };
   workspace: NavWorkspace;
   space: { id: string; slug: string; name: string };
   role: SpaceRole | null;
@@ -413,7 +413,7 @@ function TopBar({ onOpenNav, ...props }: ShellProps & { onOpenNav: () => void })
 
       <div className="flex shrink-0 items-center gap-2 pr-3 pl-2">
         <SearchBox base={base} />
-        <UserMenu email={user.email} />
+        <UserMenu email={user.email} demo={user.isAnonymous === true} />
       </div>
     </header>
   );
@@ -473,10 +473,10 @@ function SearchBox({ base }: { base: string }) {
   );
 }
 
-function UserMenu({ email }: { email: string | null }) {
+function UserMenu({ email, demo }: { email: string | null; demo: boolean }) {
   const { open, setOpen, ref } = usePopover();
   const panelId = useId();
-  const initial = (email ?? "?").slice(0, 1).toUpperCase();
+  const initial = demo ? "D" : (email ?? "?").slice(0, 1).toUpperCase();
   return (
     <div ref={ref} className="relative">
       <button
@@ -494,7 +494,7 @@ function UserMenu({ email }: { email: string | null }) {
           <div className="px-2 pt-1.5 pb-2">
             <div className="text-xs text-subtle">Signed in as</div>
             <div className="truncate text-sm text-fg" title={email ?? undefined}>
-              {email}
+              {demo ? "Demo visitor" : email}
             </div>
           </div>
           <div className="flex items-center justify-between gap-2 border-t border-line px-2 py-2">

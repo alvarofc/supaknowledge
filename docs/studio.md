@@ -147,6 +147,7 @@ Optional, server-only (read at runtime by the auth routes, not inlined; no `VITE
 |---|---|
 | `SITE_URL` | Studio's public URL, such as `https://studio.example.com`. When set, sign-in / sign-out redirects always go there instead of being derived from request headers. Recommended in production. |
 | `TRUST_PROXY` | `1` only behind a reverse proxy that overwrites `X-Forwarded-Host` / `X-Forwarded-Proto`. Without it Studio ignores those headers and uses the `Host` header (validated), then the request URL. |
+| `KF_DEMO` | `true` only on a [public demo](deploy.md#host-a-public-demo): the sign-in page offers **Try the demo**, an anonymous Supabase Auth session that joins the demo space as a reader. The database decides what demo visitors can do. |
 
 That's all. Don't add a secret or service-role key: nothing in Studio needs one.
 
@@ -230,6 +231,34 @@ Wherever you deploy, configure Supabase Auth for Studio's URL. In the Supabase d
 3. (Optional) For cross-device email confirmation, point the email templates at
    `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/`. The default PKCE links go to
    `/auth/callback`, which only works in the browser that started the sign-in.
+
+### Cloudflare Workers
+
+`apps/studio/wrangler.jsonc` names the Worker (`supaknowledge-studio`) and turns on `nodejs_compat`. Nitro's
+`cloudflare_module` preset merges it into `apps/studio/.output/server/wrangler.json`, with the static assets in
+`.output/public`.
+
+```bash
+npm ci
+export VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+export VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+npm run build:cloudflare -w @supaknowledge/studio     # NITRO_PRESET=cloudflare_module vite build
+npm run deploy:cloudflare -w @supaknowledge/studio    # wrangler deploy --config .output/server/wrangler.json
+```
+
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` are **build-time** values: Vite inlines them, so set them
+  in the shell (or the CI job) that runs `build:cloudflare`, and rebuild after changing them.
+- `SITE_URL`, `TRUST_PROXY` and `KF_DEMO` are **runtime** values: set them as Worker variables, under `vars` in
+  `apps/studio/wrangler.jsonc` or in the dashboard (**Workers & Pages → supaknowledge-studio → Settings → Variables
+  and Secrets**). With `nodejs_compat` and a compatibility date from 2025-04-01 on, Workers expose them as
+  `process.env`, which is where Studio reads them.
+- `wrangler deploy` signs in through the browser, or reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI.
+- With Git-connected builds (Workers Builds), keep the root directory at the repository root (Studio needs the
+  workspace package `@supaknowledge/core`), use `npm run build:cloudflare -w @supaknowledge/studio` as the build
+  command and `npm run deploy:cloudflare -w @supaknowledge/studio` as the deploy command, and add the two `VITE_*`
+  values as build variables.
+- Add the Worker's URL (`https://supaknowledge-studio.<account>.workers.dev` or your custom domain) to the Supabase
+  Auth Site URL and redirect URLs, as above.
 
 ### Vercel
 

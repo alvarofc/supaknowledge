@@ -6,7 +6,7 @@ JWT. Edge Functions do not re-implement permissions; they call the database as t
 and the CLI only hide buttons.
 
 The model was designed in [DESIGN.md §5a](DESIGN.md#5a-access-control-supabase-auth--rls) and is pinned down by
-739 pgTAP tests ([below](#tests)).
+784 pgTAP tests ([below](#tests)).
 
 ## Principals
 
@@ -15,6 +15,7 @@ The model was designed in [DESIGN.md §5a](DESIGN.md#5a-access-control-supabase-
 | **Person** | Supabase Auth (password or email link) in Studio; `kf login` | Their memberships, roles and groups |
 | **MCP client acting for a person** (Claude Code, Cursor, Claude Desktop…) | OAuth 2.1 through Supabase Auth's authorization server; consent in Studio | Exactly what that person can see, but it can only read, search, log usage, flag and send traces ([below](#what-oauth-clients-can-do)). The token carries the OAuth `client_id`, which the `mcp` function records on flags |
 | **Headless agent** (CI job, service, bot) | API key `skn_<agent-id>_<secret>` | Only the spaces it was granted (usually as `reader`), filtered by the groups it belongs to |
+| **Demo visitor** (public demo only) | Anonymous Supabase Auth session from Studio's **Try the demo**, joined to the demo space by `join_demo()` | Knowledge without an audience in the demo space; read, search and rate-limited flags only ([below](#demo-visitors)) |
 | **Internal workers** (cron → embed, connectors, curator) | Shared secret `x-kf-internal`, then the service role | Everything; see [service role](#service-role-and-internal-calls) |
 
 Agents are Auth users with `app_metadata.kind = 'agent'` (mirrored into `profiles.kind`, which users cannot edit).
@@ -195,6 +196,24 @@ signed in to Studio or the CLI:
 So connecting Claude Code with OAuth lets it use and improve knowledge through flags, but never review or
 administer on your behalf. Use Studio or `kf` (signed in as yourself) for that.
 
+## Demo visitors
+
+A [public demo](deploy.md#host-a-public-demo) lets people try one space without an account. A workspace owner lists
+the space with `kf_demo_enable()` (`kf demo enable`); Studio's **Try the demo** signs the visitor in anonymously
+(Supabase Auth, JWT claim `is_anonymous`) and calls `join_demo()`, which makes them a workspace `member` and a space
+`reader` and records them in `private.demo_visitors`.
+
+- `private.is_oauth_client()` is also true for demo visitors (an anonymous session, or a user who joined through
+  `join_demo()` and later converted the account), so every rule above for OAuth clients applies to them. On top of
+  that they cannot send traces.
+- Flags from visitors are limited per visitor per hour and per demo space per day (`PT429` beyond that), and their
+  text is length-limited.
+- `kf_demo_enable()` refuses a workspace that has another space every member can read (visitors are workspace
+  members), and turns auto-apply off in the space.
+- `kf_demo_reset()` (`kf demo reset`, and the nightly cron `kf-demo-reset`) deletes visitor flags, traces and usage,
+  unapplied proposals created since the demo was enabled, visitor memberships and the anonymous users.
+- The Edge Functions refuse anonymous sessions with HTTP 403 unless `KF_DEMO=true` is set on them.
+
 ## Agent keys
 
 - **Format:** `skn_<agent-id>_<secret>`: the agent id is a lowercase UUID, the secret 32 random bytes base64url. The
@@ -278,6 +297,7 @@ material; every test file runs inside a transaction that is rolled back.
 | `13_pr1_db_followups.test.sql` | 8 | `search_sources(p_source)` filtering before the limit without widening visibility, concept paths without empty or `.` segments |
 | `14_pr5_followups.test.sql` | 12 | `p_source` finding a source's documents outside the space-wide candidate sets (text, vector, hybrid), proposal path validation |
 | `15_settings_cas.test.sql` | 6 | `update_space_settings()` compare-and-swap: saved, conflict, forbidden for non-admins, not found |
+| `16_demo_mode.test.sql` | 45 | Public demo: only workspace owners enable it, anonymous visitors join as readers, read unrestricted knowledge, flag within the limits, and cannot create workspaces, send traces, add sources, run the curator, verify, invite, change settings or reset; converted visitors stay restricted; the reset clears visitor data |
 
 Run them against a running local stack:
 

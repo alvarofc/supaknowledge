@@ -17,9 +17,21 @@ export interface Profile {
   session?: StoredSession | null;
 }
 
+/** Supabase Management API tokens from `kf deploy --login` (Supabase OAuth for integrations). */
+export interface StoredSupabaseOAuth {
+  client_id: string;
+  /** the oauth-broker the tokens came through (null: your own OAuth app) */
+  broker_url?: string | null;
+  access_token: string;
+  refresh_token?: string | null;
+  /** epoch seconds */
+  expires_at: number;
+}
+
 export interface ConfigFile {
   current_profile?: string;
   profiles: Record<string, Profile>;
+  supabase_oauth?: StoredSupabaseOAuth | null;
 }
 
 export interface ProjectFile {
@@ -47,7 +59,11 @@ export function loadConfig(env: Env): ConfigFile {
   if (!existsSync(p)) return { profiles: {} };
   try {
     const parsed = JSON.parse(readFileSync(p, "utf8")) as Partial<ConfigFile>;
-    return { current_profile: parsed.current_profile, profiles: parsed.profiles ?? {} };
+    return {
+      current_profile: parsed.current_profile,
+      profiles: parsed.profiles ?? {},
+      ...(parsed.supabase_oauth ? { supabase_oauth: parsed.supabase_oauth } : {}),
+    };
   } catch (e) {
     throw new Error(`could not parse ${p}: ${(e as Error).message}`);
   }

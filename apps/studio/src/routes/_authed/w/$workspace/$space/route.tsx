@@ -12,7 +12,7 @@ function SpaceLayout() {
   return (
     <AppShell
       base={ctx.base}
-      user={{ email: ctx.user.email }}
+      user={{ email: ctx.user.email, isAnonymous: ctx.user.isAnonymous }}
       workspace={ctx.workspace}
       space={ctx.space}
       role={ctx.role}

@@ -62,7 +62,7 @@ function loadDir(ctx: Ctx, dir: string): BundleFile[] {
 
 const count = (v: unknown): number => (Array.isArray(v) ? v.length : Number(v ?? 0));
 
-async function importCmd(ctx: Ctx, dir: string, opts: { apply?: boolean; title?: string }): Promise<void> {
+export async function importCmd(ctx: Ctx, dir: string, opts: { apply?: boolean; title?: string }): Promise<void> {
   const files = loadDir(ctx, dir);
   const sp = await ctx.space();
   let res: ImportResponse;

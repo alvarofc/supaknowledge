@@ -1093,6 +1093,21 @@ isOneToOne: false
 "trust":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: Database["public"]['Enums']["trust_tier"]
                            },
+"join_demo":
+{ Args: { "p_space"?: string }; Returns: Json
+                           },
+"kf_demo_disable":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_enable":
+{ Args: { "p_flags_per_day"?: number,"p_flags_per_visitor_per_hour"?: number,"p_space": string }; Returns: Json
+                           },
+"kf_demo_reset":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_status":
+{ Args: { "p_space": string }; Returns: Json
+                           },
 "update_space_settings":
 { Args: { "p_expected": Json,"p_settings": Json,"p_space": string }; Returns: string
                            },
