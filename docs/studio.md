@@ -12,8 +12,9 @@ Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markd
 ## How it talks to Supabase
 
 - **Only the publishable key.** Every query, RPC and Realtime subscription runs with the signed-in user's session, so
-  RLS decides what each person sees and can do. Studio never holds a secret or service-role key. Hiding a button for a
-  role is only a convenience; the database still enforces every rule.
+  RLS decides what each person sees and can do. Studio never holds a secret or service-role key; the only secret it can
+  hold is the optional model key for [Ask](#ask). Hiding a button for a role is only a convenience; the database still
+  enforces every rule.
 - **Sessions in cookies.** `@supabase/ssr` keeps the session in cookies that the server and the browser share.
   - On the server, `src/server/supabase.server.ts` creates one `createServerClient` per request. It reads cookies with
     Start's `getCookies()` and writes refreshed tokens back with `setCookie()`, plus the `Cache-Control: no-store`
@@ -49,7 +50,9 @@ Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markd
   - `bundle/sync-files`: after approving a proposal whose ops carry skill files, copies them into Storage (as
     `kf approve` does).
   - `connectors/upload`: upload documents to `upload` sources.
-  - `mcp`: the address shown in the "connect your agent" snippets.
+  - `mcp`: the address shown in the "connect your agent" snippets. The [Ask](#ask) page also calls it from the Studio
+    server, with the user's access token.
+  - `traces`: the Ask page records conversations through it, from the Studio server, with the user's access token.
 
   If a function isn't deployed, Studio says so in place.
 - **Realtime.** Three uses, all with the user's JWT:
@@ -160,14 +163,22 @@ added to a workspace without accepting; see [access control](access-control.md#j
 | `VITE_SUPABASE_URL` | yes | Project URL, such as `https://<ref>.supabase.co`. Locally `http://127.0.0.1:54321`. |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | yes | The project's **publishable** key (`sb_publishable_…`). The legacy anon key also works. |
 
-Optional, server-only (read at runtime by the auth routes, not inlined; no `VITE_` prefix):
+Optional, server-only (read at runtime, not inlined; no `VITE_` prefix):
 
 | Variable | Value |
 |---|---|
 | `SITE_URL` | Studio's public URL, such as `https://studio.example.com`. When set, sign-in / sign-out redirects always go there instead of being derived from request headers. Recommended in production. |
 | `TRUST_PROXY` | `1` only behind a reverse proxy that overwrites `X-Forwarded-Host` / `X-Forwarded-Proto`. Without it Studio ignores those headers and uses the `Host` header (validated), then the request URL. |
+| `KF_LLM_MODEL` | The model the [Ask](#ask) page uses. Without it, Ask says that no model is configured. |
+| `KF_LLM_BASE_URL`, `KF_LLM_API_KEY`, `KF_LLM_HEADERS`, `KF_LLM_API`, `KF_LLM_EXTRA_BODY` | Your own OpenAI-compatible endpoint for that model. |
+| `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY` | Gateway keys, for `vercel/...` and `openrouter/...` model ids. |
+| `KF_LLM_FALLBACK_MODELS` | Models tried in order when the model errors. |
+| `KF_ASK_MESSAGES_PER_MINUTE` | Questions one person may ask per minute (default 10). |
 
-That's all. Don't add a secret or service-role key: nothing in Studio needs one.
+The `KF_LLM_*` variables mean the same as for the curator; see [model configuration](curator.md#model-configuration).
+Set them on the Studio server: they are separate from the Edge Function secrets, so Ask and the curator can use the
+same model or different ones. `vite dev` and `vite preview` also read them from `apps/studio/.env.local`; a
+production server reads only its environment. Don't add a service-role key: nothing in Studio needs one.
 
 Vite only exposes variables with the `VITE_` prefix, and it **inlines them at build time** into both the browser and
 the server bundle. Set them where the build runs (for example in Vercel's or Netlify's project settings), and rebuild
@@ -299,6 +310,7 @@ CDN cache them.
 | `/w/<ws>/<space>` | **Inbox**: pending proposals (risk, escalation, who has each open), open flags (dismiss), and history including auto-applied changes. Updates live. |
 | `…/proposals/<id>` | **Review**: who else has it open and who is reviewing it (Presence); rationale; per-change field, frontmatter and body diffs (split or unified); skill files by name and size; citations with quotes and links to documents, traces and flags; evidence the curator consulted but did not cite, listed separately (it still decides visibility and escalation); review notes; approve with an optional note (skill files are then synced into Storage) or reject with a required one; conflicts explained. |
 | `…/knowledge` | Concept tree (kind icons, trust, stale, restricted), kind filters, full-text search (`search_knowledge`). |
+| `…/ask` | **Ask**: chat with an agent that has the MCP tools and acts as you (see [Ask](#ask)). Answers stream in, with the concepts they used and the tool calls folded below; "Flag this answer" raises a flag. |
 | `…/knowledge/<path>` | Rendered markdown with footnotes, frontmatter, OKF sources, links and backlinks, files, open flags. History tab with diffs between revisions. Actions: verify, revert (`propose_revert`), suggest an edit, report a problem. |
 | `…/suggest[?path=]` | Editor that creates a human proposal (`create_proposal`, atomic), with a live diff and preview. |
 | `…/sources` | Sources with status, last sync and errors. Add a source (connector config forms with the keys each connector reads, such as GitHub `ref` or Web `follow_links` / `sitemap` / `max_pages` / `same_origin_only`; audience), set a write-only token, sync now, browse and search documents, upload to `upload` sources. |
@@ -307,7 +319,7 @@ CDN cache them.
 | `…/health` | `knowledge_health`: counts by kind and trust, stale, open and missing flags, flag rate per concept, never-used concepts, last run. |
 | `…/graph` | Knowledge graph (`knowledge_graph`): concepts colored by kind, links between them, and for editors the documents, traces, flags and concepts that applied proposals cited. Filters: kind, only concepts with open flags, only stale, citations on or off. Click a node to open it. Below the `md` breakpoint, or with `?view=list`, the same concepts show as a list. See [below](#knowledge-graph-and-recap). |
 | `…/recap` | Monthly recap (`knowledge_recap`) for the space or the whole workspace, with a month picker, Download PNG, Copy image and Copy for Slack. See [below](#knowledge-graph-and-recap). |
-| `…/settings` | General (name, visibility, delete), curator (model ids, research steps and scope, caps incl. the token budget per run, flag cooldown, stuck-run timeout, auto-dismissing flags, house rules), auto-apply policy (incl. untrusted source kinds) and retention (trace and usage days) — a field for every key of `SpaceSettingsSchema`; members (space and workspace; invite by e-mail, pending invitations), groups and their members, group grants. |
+| `…/settings` | General (name, visibility, delete), curator (model ids, research steps and scope, caps incl. the token budget per run, flag cooldown, stuck-run timeout, auto-dismissing flags, house rules), auto-apply policy (incl. untrusted source kinds), retention (trace and usage days) and whether Ask conversations are recorded (a field for every key of `SpaceSettingsSchema`); members (space and workspace; invite by e-mail, pending invitations), groups and their members, group grants. |
 
 Roles shape the navigation:
 - Readers don't see Sources or Activity.
@@ -371,6 +383,41 @@ The page, the PNG and the Slack text all render from `recapKpis()` in `src/lib/r
 The PNG is drawn on a `<canvas>` in the browser with the current theme's colors (`src/components/recap/recap-image.ts`);
 nothing is sent to an external service. Copy image uses the async Clipboard API; where a browser cannot copy images,
 Download PNG still works.
+## Ask
+
+`…/ask` lets anyone with access to a space ask questions to an agent that works exactly like an agent connected over
+MCP, acting as them. It shows the loop in one place: the agent searches and reads knowledge, the person corrects it
+or flags the answer, and the curator learns from both.
+
+- **Same tools, same permissions.** The Studio server calls the `mcp` function with the person's access token,
+  scoped to the space (`?space=<ws>/<space>`). The model gets the server's own instructions, and its tools with their
+  descriptions, input schemas and result text, from `initialize` and `tools/list`. RLS decides what it sees, so
+  audience-restricted concepts appear only for members of their groups. `list_spaces` is left out, and the route sets
+  `space` and `trace_id` itself instead of letting the model choose them.
+- **Model.** A Mastra agent on the `KF_LLM_*` model of the Studio server ([environment variables](#environment-variables)),
+  through the same `modelChain()` the curator uses. Tokens stream to the browser as newline-delimited JSON from the
+  server route `POST /api/ask` (`src/server/ask/handler.server.ts`), along with each tool call and its result. At most
+  8 model steps per question, and the 20 latest messages of the conversation are sent back to the model.
+- **Each answer** lists the concepts it used, linked to their pages: read (`read_concept`), loaded (`load_skill`) or
+  only seen in search results. The tool calls, with their arguments and the text the MCP server returned, are in a
+  folded list below.
+- **Flag this answer** opens a short form (what is wrong, which concept, a note) and calls `flag_knowledge` through
+  the same MCP function as the person. The flag carries the question, the answer and the concepts it used as
+  evidence (`source: "studio-ask"`), is linked to the conversation's trace, and shows in the inbox like any other.
+- **Traces.** Each conversation is one trace (`external_id` `studio-ask:<conversation id>`, metadata
+  `source: "studio-ask"`), written through the `traces` function as the person in the format the SDK's
+  `TraceRecorder` uses: the question, the agent's text and every tool call. Corrections typed after an answer ("no,
+  that column is X") are then mined by the curator like any agent trace. The page says so under its heading.
+  - When the model saw restricted concepts, the trace's audience is narrowed to the groups every one of those concepts
+    lists, so only reviewers in that audience can read it. When no group fits (concepts from groups that do not
+    overlap), that answer is not recorded, and the page says so.
+  - Space admins can turn recording off in **Settings → Curator & policy → Ask** (`ask.record_traces`). Ask then
+    records no traces. Reads still count as concept usage, and flags the agent raises still reach the inbox, as with
+    any MCP client.
+- **Limits.** One question at a time per person, and `KF_ASK_MESSAGES_PER_MINUTE` questions per minute (default 10),
+  counted in the memory of each Studio server process. Questions are at most 4,000 characters.
+
+The conversation lives in the browser tab; "New conversation" starts a new trace.
 
 ## Troubleshooting
 
@@ -380,6 +427,8 @@ Download PNG still works.
   `apps/studio/.env.local`, or set the variables in your host's build settings and rebuild.
 - **Signed in on `localhost` but OAuth or email links land on `127.0.0.1` (or the other way round).** Cookies belong to
   one host. Use the same host as `site_url`.
+- **Ask says "No model is configured for Ask".** Set `KF_LLM_MODEL` (and the endpoint or gateway key it needs) in
+  the Studio server's environment, or in `apps/studio/.env.local` for `npm run studio`, and restart Studio.
 - **"The agents function is not available yet".** Deploy the Edge Functions (`supabase functions deploy`), or serve them
   locally with `npm run functions:serve`.
 - **Changes I approved don't show up.** If someone else changed the concept after the curator drafted the proposal,
