@@ -39,6 +39,32 @@ export interface ToolEvent {
   metadata?: Record<string, unknown>;
 }
 
+/** A call to a tool of another MCP server (for example the Supabase MCP server's `execute_sql`). */
+export interface McpToolEvent {
+  /** the server's name in your MCP config, e.g. "supabase" */
+  server: string;
+  /** the tool's own name, e.g. "execute_sql" */
+  name: string;
+  input?: unknown;
+  /** the MCP CallToolResult (`{ content, isError }`), or whatever your MCP client returned */
+  result?: unknown;
+  /** the error, when the call threw instead of returning a result */
+  error?: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+/** Tools of the Supabase MCP server whose successful results are table rows (never sent; see mcpTool). */
+const SQL_RESULT_TOOLS = new Set(["execute_sql"]);
+
+function mcpText(result: unknown): unknown {
+  const r = result as { content?: unknown } | null;
+  if (r && typeof r === "object" && Array.isArray(r.content)) {
+    const texts = (r.content as { type?: string; text?: unknown }[]).filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text as string);
+    if (texts.length) return texts.join("\n");
+  }
+  return result;
+}
+
 function retryable(e: unknown): boolean {
   if (!(e instanceof SupaknowledgeError)) return true;
   return e.status === undefined || e.status === 408 || e.status === 429 || e.status >= 500;
@@ -95,6 +121,24 @@ export class TraceRecorder {
       is_error: t.isError ?? false,
       metadata: t.metadata,
     });
+  }
+
+  /**
+   * Record a call to another MCP server's tool from its CallToolResult, in one line:
+   * `trace.mcpTool({ server: "supabase", name: "execute_sql", input: args, result })`. The event is named
+   * `mcp__<server>__<name>`, `isError: true` in the result (or `error`) marks it failed, and a successful
+   * `execute_sql` result is replaced by `{ omitted: "row data" }` so rows never leave your process. The traces
+   * function redacts literals in the SQL and parses the Postgres error; the curator turns errors such as
+   * `column "x" does not exist` into flags.
+   */
+  mcpTool(t: McpToolEvent): this {
+    const failed = t.error !== undefined || (!!t.result && typeof t.result === "object" && (t.result as { isError?: unknown }).isError === true);
+    const output = t.error !== undefined
+      ? (t.error instanceof Error ? t.error.message : t.error)
+      : failed || !SQL_RESULT_TOOLS.has(t.name)
+        ? mcpText(t.result)
+        : { omitted: "row data" };
+    return this.tool({ name: `mcp__${t.server}__${t.name}`, input: t.input, output, isError: failed, metadata: t.metadata });
   }
 
   /** Human feedback or a correction ("no, use revenue_usd_net"). The curator mines these. */

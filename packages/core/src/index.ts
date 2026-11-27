@@ -6,3 +6,4 @@ export * from "./access.ts";
 export * from "./okf.ts";
 export * from "./settings.ts";
 export * from "./llm.ts";
+export * from "./sql-errors.ts";

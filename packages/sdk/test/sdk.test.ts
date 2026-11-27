@@ -594,3 +594,22 @@ describe("429 retries", () => {
     await assert.rejects(kf2.search("arr"), (e: any) => e.status === 429);
   });
 });
+
+describe("TraceRecorder.mcpTool", () => {
+  it("records another MCP server's call in one line, without row data", async () => {
+    const events: any[] = [];
+    const trace = new TraceRecorder({ create: async (b) => (events.push(...(b.events as any[])), { trace_id: "t" }), update: async () => {}, flag: async () => ({ id: null }) }, { flushIntervalMs: 0 });
+    trace.mcpTool({ server: "supabase", name: "execute_sql", input: { query: "select revenue_usd from orders" }, result: { content: [{ type: "text", text: 'ERROR:  42703: column "revenue_usd" does not exist' }], isError: true } });
+    trace.mcpTool({ server: "supabase", name: "execute_sql", input: { query: "select email from users" }, result: { content: [{ type: "text", text: '[{"email":"bob@example.com"}]' }] } });
+    trace.mcpTool({ server: "supabase", name: "list_tables", input: { schemas: ["public"] }, result: { content: [{ type: "text", text: "orders, users" }] } });
+    trace.mcpTool({ server: "supabase", name: "apply_migration", input: { name: "x", query: "create table t()" }, error: new Error("network down") });
+    await trace.end();
+    assert.deepEqual(events.map((e) => [e.tool_name, e.is_error, e.tool_output]), [
+      ["mcp__supabase__execute_sql", true, 'ERROR:  42703: column "revenue_usd" does not exist'],
+      ["mcp__supabase__execute_sql", false, { omitted: "row data" }],
+      ["mcp__supabase__list_tables", false, "orders, users"],
+      ["mcp__supabase__apply_migration", true, "network down"],
+    ]);
+    assert.doesNotMatch(JSON.stringify(events), /bob@example\.com/);
+  });
+});
