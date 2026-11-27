@@ -6,7 +6,8 @@ It is also where MCP clients (Claude Code, Cursor…) send people to approve acc
 screen for Supabase Auth's OAuth 2.1 server.
 
 Stack: [TanStack Start](https://tanstack.com/start) (React 19, TanStack Router file routes, server functions, Vite,
-Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markdown` + `remark-gfm`, `diff`.
+Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markdown` + `remark-gfm`, `diff`,
+`d3-force` (graph layout only; rendering is plain SVG).
 
 ## How it talks to Supabase
 
@@ -286,6 +287,8 @@ CDN cache them.
 | `…/agents` | "Connect as yourself" (OAuth) snippets; headless agents (create shows the key once, plus snippets for Claude Code, Cursor and generic clients; rotate, revoke, restore, delete; revoked agents are marked); connected applications. Revoke, rotate and delete sign the agent's sessions out; its old key stops working within seconds. |
 | `…/activity` | Curator runs (run now, cancel a queued or running run, stats, tasks for admins with their input and output loaded on demand), traces with a transcript viewer (reviewers and up), audit log (admins). |
 | `…/health` | `knowledge_health`: counts by kind and trust, stale, open and missing flags, flag rate per concept, never-used concepts, last run. |
+| `…/graph` | Knowledge graph (`knowledge_graph`): concepts colored by kind, links between them, and for editors the documents, traces, flags and concepts that applied proposals cited. Filters: kind, only concepts with open flags, only stale, citations on or off. Click a node to open it. Below the `md` breakpoint, or with `?view=list`, the same concepts show as a list. See [below](#knowledge-graph-and-recap). |
+| `…/recap` | Monthly recap (`knowledge_recap`) for the space or the whole workspace, with a month picker, Download PNG, Copy image and Copy for Slack. See [below](#knowledge-graph-and-recap). |
 | `…/settings` | General (name, visibility, delete), curator (model ids, research steps and scope, caps incl. the token budget per run, flag cooldown, stuck-run timeout, auto-dismissing flags, house rules), auto-apply policy (incl. untrusted source kinds) and retention (trace and usage days) — a field for every key of `SpaceSettingsSchema`; members (space and workspace; invite by e-mail, pending invitations), groups and their members, group grants. |
 
 Roles shape the navigation:
@@ -295,6 +298,61 @@ Roles shape the navigation:
 - Sources, members and settings need admin.
 
 `my_space_role` provides the effective role, and the sidebar shows it.
+
+## Knowledge graph and recap
+
+Both pages read one `SECURITY INVOKER` RPC each (migration `20261127000500_graph_recap`), called from a server
+function with the person's session. Every table inside is read through RLS, so concepts outside the person's
+groups, flags they cannot read, proposals they cannot fully see and evidence outside their audience are neither
+drawn nor counted. pgTAP coverage: `supabase/tests/database/16_graph_recap.test.sql`.
+
+**`knowledge_graph(p_space, p_limit default 1000)`** returns the non-deprecated concepts (up to 2000, by path,
+with `truncated` when there are more), each with its kind, trust tier, `stale` and number of open flags; the
+`concept_links` between visible concepts; and the citations of applied proposals. A citation belongs to its op's
+concept, or to every concept the proposal wrote when it has no op. Citations of documents, traces and flags are
+kept only when that row is readable, so readers (who cannot read proposals) see no citations and editors see no
+trace citations (traces are reviewer-only).
+
+How the graph draws it (`src/components/graph/force-graph.tsx`): `d3-force` computes the layout in the browser,
+once per filter change and only while the graph is visible; React renders SVG with hairline edges and
+`vector-effect: non-scaling-stroke`, colors from the theme tokens, so light and dark mode both work.
+
+| Mark | Meaning |
+|---|---|
+| Filled circle in the kind color (skill violet, domain green, data access blue) | Verified concept (human reviewed or machine confirmed) |
+| Hollow circle | Unverified concept |
+| Dashed amber ring | Stale: past its `stale_after` date |
+| Red ring, thicker from three | Open flags |
+| Solid line / dashed line | Link between concepts / citation |
+| Square, diamond, triangle | Cited source document, trace, flag |
+
+Drag the background to pan, scroll or use the buttons to zoom, hover or focus a node to highlight its neighbours.
+Concept nodes are focusable and open with Enter. Documents open for editors, traces for reviewers, and a cited flag
+opens the proposal that resolved it.
+
+**`knowledge_recap(p_month, p_space default null, p_workspace default null)`** counts one UTC calendar month for a
+space, or for every space of a workspace the person can read. It is computed in SQL so a month is one round trip and
+the definitions are tested next to the RLS rules that limit them:
+
+| Field | Definition |
+|---|---|
+| `concepts_added` | Concepts whose first revision was written in the month |
+| `concepts_changed`, `revisions` | Concepts with a later revision in the month; all revisions in the month |
+| `most_corrected` | The concept with the most later revisions in the month (ties: most recent change) |
+| `applied_by_people` / `_agents` / `_policy` | Proposals behind the month's revisions, by who applied them: a person, an agent reviewer, or the service role (auto-apply policy) |
+| `flags_raised`, `flags_fixed` | Flags raised in the month; flags resolved by an applied proposal in the month |
+| `top_flagger` | Who raised the most of those fixed flags (name and kind from `profiles`) |
+| `median_fix_seconds` | Median time from a flag being raised to the proposal that resolved it being applied |
+| `went_stale`, `stale_fixed` | Stable concepts whose `stale_after` fell in the month while that revision was current, and how many of them got a new revision before the month ended |
+
+Proposal counts come from `concept_revisions`, which readers can read, so a reader's recap still says how many
+changes people and the policy applied to the knowledge they can see. Flag numbers follow flag RLS: readers count
+only their own flags.
+
+The page, the PNG and the Slack text all render from `recapKpis()` in `src/lib/recap.ts`, so they never disagree.
+The PNG is drawn on a `<canvas>` in the browser with the current theme's colors (`src/components/recap/recap-image.ts`);
+nothing is sent to an external service. Copy image uses the async Clipboard API; where a browser cannot copy images,
+Download PNG still works.
 
 ## Troubleshooting
 

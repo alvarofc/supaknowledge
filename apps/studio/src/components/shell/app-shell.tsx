@@ -2,12 +2,14 @@ import {
   Activity,
   BookOpen,
   Bot,
+  CalendarRange,
   Check,
   ChevronsUpDown,
   HeartPulse,
   Inbox,
   LogOut,
   Menu,
+  Network,
   Plug,
   Plus,
   Search,
@@ -268,10 +270,12 @@ function useSections({ base, role, inboxCount }: ShellProps): Section[] {
   const all: (Section & { show: boolean })[] = [
     { id: "inbox", href: base, label: "Inbox", icon: <Inbox />, show: true, active: inboxActive, count: inboxCount, groups: inboxGroups },
     { id: "knowledge", href: kb, label: "Knowledge", icon: <BookOpen />, show: true, active: knowledgeActive, groups: knowledgeGroups },
+    { id: "graph", href: `${base}/graph`, label: "Graph", icon: <Network />, show: true, active: under(`${base}/graph`) },
     { id: "sources", href: `${base}/sources`, label: "Sources", icon: <Plug />, show: isEditor, active: under(`${base}/sources`) },
     { id: "agents", href: `${base}/agents`, label: "Agents", icon: <Bot />, show: true, active: under(`${base}/agents`) },
     { id: "activity", href: act, label: "Activity", icon: <Activity />, show: isEditor, active: activityActive, groups: activityGroups },
     { id: "health", href: `${base}/health`, label: "Health", icon: <HeartPulse />, show: true, active: under(`${base}/health`) },
+    { id: "recap", href: `${base}/recap`, label: "Recap", icon: <CalendarRange />, show: true, active: under(`${base}/recap`) },
     { id: "settings", href: st, label: "Settings", icon: <Settings />, show: true, active: settingsActive, groups: settingsGroups },
   ];
   return all.filter((s) => s.show);
