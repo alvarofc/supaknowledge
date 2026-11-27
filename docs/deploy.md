@@ -363,6 +363,8 @@ also limits anonymous sign-ins per IP address (`rate_limit.anonymous_users`).
 4. **Studio** on Cloudflare Workers ([step 5](#cloudflare-workers)) with the demo project's `VITE_*` values and the
    Worker variables `KF_DEMO=true` and `SITE_URL`. Then point Auth at it:
    `npx kf deploy --project-ref <ref> --studio-url https://<studio-url> --skip-db --skip-functions`.
+   Visitors can't use the Ask page unless you also set `KF_ASK_ANONYMOUS=true`, which lets anyone spend your model's
+   budget.
 5. **Check it.** Sign out, choose **Try the demo**, search, raise a flag, and copy the MCP command from the inbox.
    In Claude Code, `/mcp` → **Authenticate** opens Studio's sign-in page; **Try the demo** there continues to the
    consent screen. Try this once on your deployment: the repository's tests cover the database rules, not Supabase's

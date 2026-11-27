@@ -10,7 +10,7 @@ import { readSettings } from "@/server/settings.server";
 import { getSupabase, getUser } from "@/server/supabase.server";
 import type { Supa } from "@/lib/supabase/client";
 import { askInstructions, runAsk } from "./agent.server";
-import { askLimiter, askModel, mcpMeta } from "./config.server";
+import { askAllowsAnonymous, askLimiter, askModel, mcpMeta } from "./config.server";
 import { McpClient, askTools } from "./mcp.server";
 import { TraceClient, turnEvents } from "./trace.server";
 
@@ -34,6 +34,7 @@ export async function handleAsk(request: Request): Promise<Response> {
 
   const user = await getUser();
   if (!user) return json({ error: "Your session expired. Sign in again." }, 401);
+  if (user.isAnonymous && !askAllowsAnonymous()) return json({ error: "Ask is not available to demo visitors. Connect your own agent with the MCP command on the inbox." }, 403);
   const supabase = getSupabase();
   const { data: ws } = await supabase.from("workspaces").select("id").eq("slug", workspace).maybeSingle();
   const { data: sp } = ws

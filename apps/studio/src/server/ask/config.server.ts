@@ -21,6 +21,14 @@ export function askModel(): AskModel {
   }
 }
 
+/**
+ * Anonymous sessions (public demo visitors) may not use Ask unless KF_ASK_ANONYMOUS=true: every visitor is a new
+ * user, so the per-person limit would not cap what the deployment spends on the model.
+ */
+export function askAllowsAnonymous(): boolean {
+  return env("KF_ASK_ANONYMOUS") === "true";
+}
+
 let limiter: AskRateLimiter | null = null;
 
 export function askLimiter(): AskRateLimiter {

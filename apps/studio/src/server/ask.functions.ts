@@ -3,13 +3,13 @@ import { ASK_FLAG_KINDS, ASK_LIMITS, isUuid, normalizePath } from "@/lib/ask";
 import type { AskFlagKind } from "@/lib/ask";
 import { FUNCTIONS_URL, SUPABASE_PUBLISHABLE_KEY } from "@/lib/env";
 import { errorMessage } from "@/lib/format";
-import { askModel, askPerMinute } from "@/server/ask/config.server";
+import { askAllowsAnonymous, askModel, askPerMinute } from "@/server/ask/config.server";
 import { McpClient } from "@/server/ask/mcp.server";
 import { readSettings } from "@/server/settings.server";
 import { spaceParams } from "@/server/shell.functions";
 import type { SpaceParams } from "@/server/shell.functions";
 import { getSpaceContext } from "@/server/space.server";
-import { getSupabase } from "@/server/supabase.server";
+import { getSupabase, getUser } from "@/server/supabase.server";
 
 /** What the Ask page needs before the first question: is a model configured, and are conversations recorded. */
 export const loadAsk = createServerFn({ method: "GET" })
@@ -17,7 +17,9 @@ export const loadAsk = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const ctx = await getSpaceContext(data.workspace, data.space);
     const model = askModel();
+    const user = await getUser();
     return {
+      demoVisitor: Boolean(user?.isAnonymous) && !askAllowsAnonymous(),
       model: model.ok ? model.config.model : null,
       modelProblem: model.ok ? null : { reason: model.reason, message: model.message },
       recordTraces: readSettings(ctx.space.settings).ask.record_traces,

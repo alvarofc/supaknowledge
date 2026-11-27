@@ -15,14 +15,21 @@ export const Route = createFileRoute("/_authed/w/$workspace/$space/ask")({
 
 function AskPage() {
   const ctx = useSpace();
-  const { model, modelProblem, recordTraces } = Route.useLoaderData();
+  const { model, modelProblem, recordTraces, demoVisitor } = Route.useLoaderData();
   const isAdmin = atLeast(ctx.role, "admin");
 
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader title="Ask" description="An agent answers with the same MCP tools your agents use, and sees only what you can see." />
 
-      {model ? (
+      {demoVisitor ? (
+        <Callout tone="info" title="Ask is not available in the demo">
+          <p>
+            Connect your own agent with the MCP command on the <Link href={ctx.base} className="underline underline-offset-2 hover:text-fg">inbox</Link>, or run
+            Supaknowledge locally to try Ask with your model.
+          </p>
+        </Callout>
+      ) : model ? (
         <>
           <p className="mb-6 text-xs text-subtle">
             {recordTraces ? (

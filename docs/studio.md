@@ -174,6 +174,7 @@ Optional, server-only (read at runtime, not inlined; no `VITE_` prefix):
 | `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY` | Gateway keys, for `vercel/...` and `openrouter/...` model ids. |
 | `KF_LLM_FALLBACK_MODELS` | Models tried in order when the model errors. |
 | `KF_ASK_MESSAGES_PER_MINUTE` | Questions one person may ask per minute (default 10). |
+| `KF_ASK_ANONYMOUS` | `true` lets anonymous sessions (public demo visitors) use Ask. Off by default: each visitor is a new user, so the per-person limit does not cap model spend. |
 | `KF_DEMO` | `true` only on a [public demo](deploy.md#host-a-public-demo): the sign-in page offers **Try the demo**, an anonymous Supabase Auth session that joins the demo space as a reader. The database decides what demo visitors can do. |
 
 The `KF_LLM_*` variables mean the same as for the curator; see [model configuration](curator.md#model-configuration).
