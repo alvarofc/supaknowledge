@@ -4,6 +4,7 @@ import {
   ASK_LIMITS,
   askTraceExternalId,
   exposedConceptPaths,
+  flagShare,
   modelHistory,
   normalizePath,
   splitNdjson,
@@ -79,6 +80,19 @@ test("usedConcepts: unparseable output counts for nothing", () => {
 test("exposedConceptPaths adds backlinks read_concept showed (their titles reached the model)", () => {
   const paths = exposedConceptPaths([call("read_concept", { path: "data/bigquery/revenue" }, READ_OUTPUT)]);
   assert.deepEqual(paths.sort(), ["data/bigquery/revenue", "finance/board-pack", "skills/revenue-report"]);
+});
+
+test("exposedConceptPaths counts skills list_skills showed even when none is loaded", () => {
+  const listed = JSON.stringify({
+    space: "acme/revenue",
+    skills: [
+      { name: "board-pack", title: "Board pack", description: "finance only", path: "skills/board-pack" },
+      { name: "revenue-report", title: "Revenue report", description: "", path: "skills/revenue-report" },
+    ],
+  });
+  assert.deepEqual(exposedConceptPaths([call("list_skills", {}, listed)]).sort(), ["skills/board-pack", "skills/revenue-report"]);
+  // a failed call and flag_knowledge's own output expose nothing
+  assert.deepEqual(exposedConceptPaths([call("list_skills", {}, listed, true), call("flag_knowledge", {}, JSON.stringify({ path: "x/y" }))]), []);
 });
 
 test("traceAudience: unrestricted stays open, restricted narrows to a group every concept lists", () => {
@@ -382,4 +396,23 @@ test("runAsk: an MCP error result is handed to the model as an error and recorde
   assert.equal(run.calls[0].isError, true);
   assert.equal(run.calls[0].output, "search failed: boom");
   assert.ok(JSON.stringify(scripted.prompts[1]).includes("search failed: boom"));
+});
+
+test("flagShare: a restricted answer is attached only to a flag its readers could already read", () => {
+  const aud = new Map<string, string[]>([
+    ["metrics/arr", []],
+    ["finance/board-pack", ["finance"]],
+    ["finance/forecast", ["finance", "exec"]],
+  ]);
+  // nothing restricted: everything goes
+  assert.deepEqual(flagShare(["metrics/arr"], null, aud), { answer: true, concepts: ["metrics/arr"] });
+  // restricted answer flagged as "missing" (no concept) or on an open concept: answer withheld, open paths kept
+  assert.deepEqual(flagShare(["metrics/arr", "finance/board-pack"], null, aud), { answer: false, concepts: ["metrics/arr"] });
+  assert.deepEqual(flagShare(["metrics/arr", "finance/board-pack"], "metrics/arr", aud), { answer: false, concepts: ["metrics/arr"] });
+  // flag on the finance-only concept: only finance can read it, and finance can read everything used
+  assert.deepEqual(flagShare(["metrics/arr", "finance/board-pack"], "finance/board-pack", aud), { answer: true, concepts: ["metrics/arr", "finance/board-pack"] });
+  // flag readable by exec, but exec cannot read the board pack
+  assert.equal(flagShare(["finance/board-pack"], "finance/forecast", aud).answer, false);
+  // an earlier turn restricted the trace to a group the flag's readers are not all in
+  assert.equal(flagShare(["metrics/arr"], null, aud, ["finance"]).answer, false);
 });

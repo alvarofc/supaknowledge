@@ -159,12 +159,32 @@ export function usedConcepts(calls: readonly AskToolCall[]): UsedConcept[] {
   return [...byPath.values()].sort((a, b) => RANK[a.use] - RANK[b.use]);
 }
 
+/** Every string `path` field anywhere in a JSON value. */
+function jsonPaths(value: unknown, out: Set<string>, depth = 0): void {
+  if (depth > 6 || !value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const v of value) jsonPaths(v, out, depth + 1);
+    return;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === "path") {
+      const p = normalizePath(v);
+      if (p) out.add(p);
+    } else jsonPaths(v, out, depth + 1);
+  }
+}
+
 /**
- * Every concept whose content reached the model, for the trace's audience: what usedConcepts() finds plus the
- * concepts read_concept listed as backlinks ("Referenced by:" with their titles).
+ * Every concept whose content reached the model, for the trace's audience: what usedConcepts() finds, the concepts
+ * read_concept listed as backlinks ("Referenced by:" with their titles), and every concept path in any other JSON
+ * tool result. That last part covers list_skills (titles and descriptions of skills that were never loaded) and
+ * fails closed for tools added to the MCP server later.
  */
 export function exposedConceptPaths(calls: readonly AskToolCall[]): string[] {
   const paths = new Set(usedConcepts(calls).map((c) => c.path));
+  for (const c of calls) {
+    if (!c.isError && c.name !== "flag_knowledge") jsonPaths(parseJson(c.output), paths);
+  }
   for (const c of calls) {
     if (c.isError || c.name !== "read_concept") continue;
     // read_concept joins its parts with blank lines: "Referenced by:", then one "- <path> (<title>)" part each
@@ -193,6 +213,27 @@ export function traceAudience(conceptAudiences: readonly (readonly string[])[], 
   let out = [...new Set(restricted[0])];
   for (const a of restricted.slice(1)) out = out.filter((g) => a.includes(g));
   return out.length ? out.sort() : null;
+}
+
+/**
+ * Whether a flag raised from an answer may carry the question and answer. A flag is readable by everyone in the space
+ * when its concept is unrestricted, or by the concept's audience groups. The answer may be copied only when every
+ * group that can read the flag can read every restricted concept the answer used and the conversation's trace.
+ * Otherwise only the unrestricted concept paths go with the flag.
+ */
+export function flagShare(
+  concepts: readonly string[],
+  conceptPath: string | null,
+  audienceOf: ReadonlyMap<string, readonly string[]>,
+  traceAudienceNow: readonly string[] = [],
+): { answer: boolean; concepts: string[] } {
+  const all = [...concepts];
+  const open = all.filter((p) => (audienceOf.get(p) ?? []).length === 0);
+  const needed = traceAudience(all.map((p) => audienceOf.get(p) ?? []), traceAudienceNow);
+  if (needed !== null && needed.length === 0) return { answer: true, concepts: all };
+  const flagAudience = conceptPath ? (audienceOf.get(conceptPath) ?? []) : [];
+  const safe = needed !== null && flagAudience.length > 0 && flagAudience.every((g) => needed.includes(g));
+  return safe ? { answer: true, concepts: all } : { answer: false, concepts: open };
 }
 
 /** Split a fetch body into NDJSON events as it arrives (keeps a partial last line for the next chunk). */

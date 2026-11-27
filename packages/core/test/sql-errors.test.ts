@@ -93,6 +93,10 @@ test("SQL redaction keeps the statement's shape and drops every value", () => {
     redactSql("create function f() returns int language sql as $fn$ select 41 + 1 where 'a' = 'b' $fn$"),
     "create function f() returns int language sql as $fn$ select ? + ? where '?' = '?' $fn$",
   );
+  // a dollar-quoted value is a literal: its contents never survive
+  assert.equal(redactSql("select $$alice@example.com$$"), "select '?'");
+  assert.equal(redactSql("update t set token = $secret$my-secret-token$secret$ where id = $1"), "update t set token = '?' where id = $1");
+  assert.equal(redactSql("do $$ begin perform 'x'; end $$"), "do $$ begin perform '?'; end $$");
   assert.equal(redactSql("select 1e10, x::numeric(10,2) from t"), "select ?, x::numeric(?,?) from t");
   assert.ok(redactSql("select 1 " + "x ".repeat(5000), 100).length <= 101);
 });

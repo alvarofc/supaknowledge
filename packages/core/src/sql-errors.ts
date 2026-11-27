@@ -338,6 +338,16 @@ export function redactSql(sql: string, max = 4000): string {
   return clip(redactTokens(sql).replace(/[ \t]+\n/g, "\n").trim(), max);
 }
 
+/** The last word emitted so far, skipping whitespace ("" when the last token is not a word). */
+function lastWord(out: string[]): string {
+  for (let k = out.length - 1; k >= 0; k--) {
+    const t = out[k]!;
+    if (/^\s*$/.test(t)) continue;
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(t) ? t : "";
+  }
+  return "";
+}
+
 function redactTokens(sql: string): string {
   const out: string[] = [];
   const n = sql.length;
@@ -372,7 +382,10 @@ function redactTokens(sql: string): string {
       if (tag) {
         const end = sql.indexOf(tag, i + tag.length);
         const body = sql.slice(i + tag.length, end < 0 ? n : end);
-        out.push(tag, redactTokens(body), tag);
+        // `AS $$ ... $$` (a routine body) and `DO $$ ... $$` are code: keep it and redact the literals inside it.
+        // Any other dollar-quoted string is a value, so it is redacted like a quoted string.
+        if (/^(?:as|do)$/i.test(lastWord(out))) out.push(tag, redactTokens(body), tag);
+        else out.push("'?'");
         i = end < 0 ? n : end + tag.length;
         continue;
       }

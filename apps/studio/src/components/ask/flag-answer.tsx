@@ -75,7 +75,7 @@ export function FlagAnswerDialog({
         toast.error(r.message);
         return;
       }
-      toast.success("Flag sent to the inbox.");
+      toast.success(r.withheld ? "Flag sent to the inbox with your note. The answer used restricted knowledge, so it was not attached." : "Flag sent to the inbox.");
       onFlagged();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -90,7 +90,7 @@ export function FlagAnswerDialog({
       onClose={onClose}
       dismissible={!pending}
       title="Flag this answer"
-      description="Goes to the inbox with the question, the answer and the concepts it used."
+      description="Goes to the inbox with the question, the answer and the concepts it used. An answer that used restricted knowledge is attached only when the flag is restricted to the same groups."
       footer={
         <>
           <Button onClick={onClose} disabled={pending}>

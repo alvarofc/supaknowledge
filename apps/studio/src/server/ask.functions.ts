@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { ASK_FLAG_KINDS, ASK_LIMITS, isUuid, normalizePath } from "@/lib/ask";
+import { ASK_FLAG_KINDS, ASK_LIMITS, flagShare, isUuid, normalizePath } from "@/lib/ask";
 import type { AskFlagKind } from "@/lib/ask";
 import { FUNCTIONS_URL, SUPABASE_PUBLISHABLE_KEY } from "@/lib/env";
 import { errorMessage } from "@/lib/format";
@@ -58,8 +58,8 @@ function validateFlag(d: FlagAnswerInput): FlagAnswerInput {
  */
 export const flagAnswer = createServerFn({ method: "POST" })
   .validator((d: FlagAnswerInput) => validateFlag(d))
-  .handler(async ({ data }): Promise<{ ok: true; flagId: string | null } | { ok: false; message: string }> => {
-    await getSpaceContext(data.workspace, data.space);
+  .handler(async ({ data }): Promise<{ ok: true; flagId: string | null; withheld: boolean } | { ok: false; message: string }> => {
+    const ctx = await getSpaceContext(data.workspace, data.space);
     const token = (await getSupabase().auth.getSession()).data.session?.access_token;
     if (!token) return { ok: false, message: "Your session expired. Sign in again." };
     const mcp = new McpClient({
@@ -69,13 +69,22 @@ export const flagAnswer = createServerFn({ method: "POST" })
       publishableKey: SUPABASE_PUBLISHABLE_KEY,
     });
     const concepts = data.concepts.map(normalizePath).filter((p): p is string => Boolean(p)).slice(0, 50);
+    const conceptPath = data.conceptPath ? normalizePath(data.conceptPath) : null;
+    let share: { answer: boolean; concepts: string[] };
+    try {
+      share = await answerShare(ctx.space.id, concepts, conceptPath, data.traceId);
+    } catch (e) {
+      return { ok: false, message: errorMessage(e) };
+    }
     try {
       const r = await mcp.callTool("flag_knowledge", {
         kind: data.kind,
         observation: data.note.trim(),
-        ...(data.conceptPath ? { concept_path: normalizePath(data.conceptPath) } : {}),
-        ...(data.question.trim() ? { query: clip(data.question.trim(), 1000) } : {}),
-        evidence: { source: "studio-ask", answer: clip(data.answer, 6000), concepts_used: concepts },
+        ...(conceptPath ? { concept_path: conceptPath } : {}),
+        ...(share.answer && data.question.trim() ? { query: clip(data.question.trim(), 1000) } : {}),
+        evidence: share.answer
+          ? { source: "studio-ask", answer: clip(data.answer, 6000), concepts_used: share.concepts }
+          : { source: "studio-ask", concepts_used: share.concepts, withheld: "the answer used restricted knowledge" },
         ...(data.traceId ? { trace_id: data.traceId } : {}),
       });
       if (r.isError) return { ok: false, message: r.text || "The flag was not recorded." };
@@ -86,8 +95,33 @@ export const flagAnswer = createServerFn({ method: "POST" })
       } catch {
         /* the flag was raised; its id is only informative */
       }
-      return { ok: true, flagId };
+      return { ok: true, flagId, withheld: !share.answer };
     } catch (e) {
       return { ok: false, message: errorMessage(e) };
     }
   });
+
+/**
+ * What a flag raised from an Ask answer may carry. flag_knowledge restricts a flag only to the audience of the concept
+ * it is about, so the question and answer are copied only when everyone who can read that flag can also read every
+ * restricted concept the answer used (and the conversation's trace, which covers earlier turns). Otherwise the flag
+ * keeps the person's note and the unrestricted concept paths.
+ */
+async function answerShare(
+  spaceId: string,
+  concepts: string[],
+  conceptPath: string | null,
+  traceId: string | null,
+): Promise<{ answer: boolean; concepts: string[] }> {
+  const supabase = getSupabase();
+  const paths = [...new Set([...concepts, ...(conceptPath ? [conceptPath] : [])])];
+  const [{ data: rows, error: cErr }, { data: trace, error: tErr }] = await Promise.all([
+    paths.length
+      ? supabase.from("concepts").select("path, audience").eq("space_id", spaceId).in("path", paths)
+      : Promise.resolve({ data: [] as { path: string; audience: string[] }[], error: null }),
+    traceId ? supabase.from("traces").select("audience").eq("id", traceId).maybeSingle() : Promise.resolve({ data: null, error: null }),
+  ]);
+  if (cErr || tErr) throw cErr ?? tErr;
+  const audienceOf = new Map((rows ?? []).map((r) => [r.path, r.audience ?? []]));
+  return flagShare(concepts, conceptPath, audienceOf, trace?.audience ?? []);
+}
