@@ -491,6 +491,8 @@ Deno.serve(async (req) => {
   try {
     caller = await authenticate(req);
   } catch (e) {
+    // a valid session that is not allowed here (an anonymous session outside demo mode): signing in again would not help
+    if (e instanceof HttpError && e.status === 403) return json({ error: e.message }, 403);
     const msg = e instanceof HttpError ? e.message : "authentication failed";
     return unauthorized(req, msg, !!req.headers.get("authorization"));
   }

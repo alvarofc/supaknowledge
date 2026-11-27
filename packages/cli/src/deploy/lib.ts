@@ -59,7 +59,7 @@ export function parseDotenv(src: string): Map<string, string> {
 
 /** Settings `--env-file` may upload as function secrets. */
 export const FUNCTION_SECRET_RE =
-  /^(KF_LLM_|KF_CONNECTOR|KF_CONNECTORS_|KF_EMBEDS_|KF_CURATOR_|KF_LLM_MAX|AI_GATEWAY_API_KEY$|OPENROUTER_API_KEY$|GITHUB_TOKEN$|CONNECTOR_DOC_LIMIT$|CONNECTOR_TIME_BUDGET_MS$)/;
+  /^(KF_LLM_|KF_CONNECTOR|KF_CONNECTORS_|KF_EMBEDS_|KF_CURATOR_|KF_LLM_MAX|KF_DEMO$|AI_GATEWAY_API_KEY$|OPENROUTER_API_KEY$|GITHUB_TOKEN$|CONNECTOR_DOC_LIMIT$|CONNECTOR_TIME_BUDGET_MS$)/;
 
 export interface SecretSelection {
   upload: { name: string; value: string }[];

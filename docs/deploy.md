@@ -1,13 +1,15 @@
 # Deploy
 
 Supaknowledge is a Supabase project (migrations + Edge Functions) plus Studio, a TanStack Start app. This guide deploys the
-project to Supabase's cloud and Studio to Vercel, then covers self-hosted Supabase.
+project to Supabase's cloud and Studio to Cloudflare Workers or Vercel, then covers a public demo and self-hosted
+Supabase.
 
 ## Deploy with `kf deploy` (recommended)
 
 Create a project in the [Supabase dashboard](https://supabase.com/dashboard) and a personal access token at
-[supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens). Then, from a clone of this
-repository (after `npm install && npm run build:cli`):
+[supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens) (or sign in with the browser
+instead: [`kf deploy --login`](#deploy-with-kf-deploy---login)). Then, from a clone of this repository (after
+`npm install && npm run build:cli`):
 
 ```bash
 export SUPABASE_ACCESS_TOKEN=sbp_...
@@ -49,9 +51,50 @@ list merged, and settings that already match are left alone.
 `--skip-db`, `--skip-functions`, `--skip-auth` and `--skip-check` skip steps; `--access-token-stdin` reads the
 token from stdin instead of `SUPABASE_ACCESS_TOKEN`.
 
-What it does **not** do: host Studio ([step 5](#5-studio-on-vercel) stays manual; deploy Studio, then run
+What it does **not** do: host Studio ([step 5](#5-studio) stays manual; deploy Studio, then run
 `kf deploy --project-ref <ref> --studio-url <studio-url> --skip-db --skip-functions` to point Auth at it), decide
-who may sign up, or set up self-hosted Supabase. The sections below are the manual reference for each step.
+who may sign up, or set up self-hosted Supabase. It never deploys `supabase/functions/oauth-broker`, which only
+runs on the project of whoever registered the OAuth app below. The sections below are the manual reference for
+each step.
+
+## Deploy with `kf deploy --login`
+
+`--login` replaces the personal access token with Supabase's
+[OAuth for integrations](https://supabase.com/docs/guides/integrations/build-a-supabase-oauth-integration). kf opens
+the browser, you choose the organization on Supabase's consent screen, and kf receives a Management API token on a
+listener at `127.0.0.1` (authorization code flow with PKCE, S256). Without `--project-ref` it lists the
+organization's projects to pick from, or creates one:
+
+```bash
+npx kf deploy --login                                     # pick an organization and a project, or create one
+npx kf deploy --login --org acme --create-project supaknowledge --region eu-central-1 --env-file ./hosted.env
+npx kf deploy --login --project-ref <project-ref> --studio-url https://studio.example.com
+```
+
+- A project created this way gets a generated database password, printed once. kf does not store it, and the
+  Management API cannot return it later; you need it only for direct database connections.
+- kf waits until the new project is `ACTIVE_HEALTHY` (up to 10 minutes), then runs the seven steps above.
+- The access and refresh tokens are saved in `~/.config/supaknowledge/config.json` (mode 0600) under
+  `supabase_oauth` and refreshed on the next run. `kf logout --supabase` forgets them.
+- Without a terminal, pass `--project-ref`, or `--create-project` (plus `--org` when the account belongs to several
+  organizations). The browser sign-in needs a desktop session; CI jobs keep using `SUPABASE_ACCESS_TOKEN`.
+
+Supabase's token endpoint authenticates the OAuth app with its client secret (HTTP Basic auth), and a CLI cannot
+keep a secret. kf therefore works with one of two setups:
+
+| Setup | Environment for `kf` | Redirect URI registered on the OAuth app |
+|---|---|---|
+| **Token broker**: the `oauth-broker` Edge Function, run by whoever registered the OAuth app. It holds the secret, forwards the code exchange (with your PKCE verifier) and refreshes, redirects only to `127.0.0.1`, and stores nothing | `KF_SUPABASE_OAUTH_CLIENT_ID`, `KF_SUPABASE_OAUTH_BROKER_URL` | `https://<broker-project>.supabase.co/functions/v1/oauth-broker/callback` |
+| **Your own OAuth app** | `KF_SUPABASE_OAUTH_CLIENT_ID`, `KF_SUPABASE_OAUTH_CLIENT_SECRET`, optional `KF_SUPABASE_OAUTH_PORT` (default `8791`) | `http://127.0.0.1:8791/callback` |
+
+No broker URL is built into kf. Until the project publishes one in the README, register your own OAuth app (or run
+your own broker, see [releasing](releasing.md#supabase-oauth-app-and-token-broker)), or use a personal access token.
+
+Register the OAuth app in your organization's settings in the Supabase dashboard. Scopes are set on the app, not
+requested by kf (the authorize `scope` parameter is deprecated). `kf deploy` needs: **Organizations** read,
+**Projects** read and write, **Database** read and write (migrations, Vault), **Edge Functions** read and write,
+**Secrets** read and write, and **Auth** read and write. If you change the scopes later, run
+`kf logout --supabase` and sign in again: existing authorizations keep their old scopes.
 
 ## 1. Supabase project
 
@@ -198,28 +241,47 @@ See [access control](access-control.md#joining-a-workspace-invitations).
 > invitation (and its role). `supabase/config.jsonc` turns confirmations off only for the local single-developer
 > stack; don't push that setting to a shared project.
 
-## 5. Studio on Vercel
+## 5. Studio
 
-Import the repository in Vercel with **Root Directory** `apps/studio` and the build command `npm run build`. Then
-set these variables for Production and Preview. Vite inlines them at build time, so redeploy after changing them:
+Studio needs two build-time values and one recommended runtime value:
 
 | Variable | Value |
 |---|---|
-| `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | the project's publishable key (`sb_publishable_…`) |
-| `SITE_URL` | recommended: your Studio URL, e.g. `https://studio.example.com`. Server-only (read at runtime); sign-in and sign-out redirects always go there. |
-| `TRUST_PROXY` | optional: `1` only if a proxy in front of Studio overwrites `X-Forwarded-Host` / `-Proto` (otherwise those headers are ignored) |
+| `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co`. Build time: Vite inlines it, so rebuild after changing it |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | the project's publishable key (`sb_publishable_…`). Build time |
+| `SITE_URL` | recommended: your Studio URL, e.g. `https://studio.example.com`. Runtime, server-only; sign-in and sign-out redirects always go there. |
+| `TRUST_PROXY` | optional, runtime: `1` only if a proxy in front of Studio overwrites `X-Forwarded-Host` / `-Proto` (otherwise those headers are ignored) |
+| `KF_DEMO` | only for a [public demo](#host-a-public-demo), runtime: `true` shows **Try the demo** on the sign-in page |
 
 Studio never needs a secret key.
+
+### Cloudflare Workers
+
+```bash
+npm ci
+export VITE_SUPABASE_URL=https://<project-ref>.supabase.co VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+npm run build:cloudflare -w @supaknowledge/studio      # Nitro's cloudflare_module preset
+npm run deploy:cloudflare -w @supaknowledge/studio     # wrangler deploy of apps/studio/.output
+```
+
+The Worker is named `supaknowledge-studio` (`apps/studio/wrangler.jsonc`, with `nodejs_compat`). Set `SITE_URL` (and
+`KF_DEMO` for a demo) as Worker variables: under `vars` in `apps/studio/wrangler.jsonc`, or in the dashboard under
+**Workers & Pages → supaknowledge-studio → Settings → Variables and Secrets**. Workers expose them to Studio as
+`process.env`. Git-connected builds and custom domains: [Studio → Cloudflare Workers](studio.md#cloudflare-workers).
+
+### Vercel
+
+Import the repository in Vercel with **Root Directory** `apps/studio` and the build command `npm run build`. Set the
+variables above for Production and Preview, and redeploy after changing the `VITE_*` ones.
 
 **Self-hosting Studio behind a TLS proxy** (nginx, Caddy, a load balancer, Docker behind Traefik): Studio receives
 plain `http` from the proxy, so sign-in and sign-out would redirect to `http://…` unless it knows its public origin.
 Set `SITE_URL=https://studio.example.com` (simplest), or set `TRUST_PROXY=1` when the proxy overwrites
-`X-Forwarded-Proto` / `X-Forwarded-Host` on every request. Vercel and Netlify need neither. See
+`X-Forwarded-Proto` / `X-Forwarded-Host` on every request. Cloudflare Workers, Vercel and Netlify need neither. See
 [Studio → Any Node host or Docker](studio.md#any-node-host-or-docker).
 
-The build uses Nitro, which detects Vercel and writes `.vercel/output`. The same build also deploys to Netlify, or to
-any Node host with `npm run build -w @supaknowledge/studio` then `node apps/studio/.output/server/index.mjs`. Details
+The build uses Nitro, which detects Vercel and writes `.vercel/output`; `build:cloudflare` selects Nitro's
+`cloudflare_module` preset. The same build also deploys to Netlify, or to any Node host with `npm run build -w @supaknowledge/studio` then `node apps/studio/.output/server/index.mjs`. Details
 (monorepo settings, Netlify, Node/Docker, email templates): [Studio](studio.md#deploy).
 
 ## 6. Check it
@@ -258,6 +320,59 @@ in Studio).
 `npm run dev -w @supaknowledge/studio -- --mode hosted`. Sign-in works from either address. Email links and the OAuth
 consent page (MCP sign-in) follow the project's Site URL, so they reach this local Studio only if the Site URL points
 at it. That's fine on a test project; on a production project, keep the Site URL on your deployed Studio.
+
+## Host a public demo
+
+A public demo lets anyone try Studio and the MCP server on example knowledge, such as the fictional Acme bundle in
+`examples/revenue-report/knowledge`, without an account. Visitors choose **Try the demo** on Studio's sign-in page and
+get an anonymous Supabase Auth session that joins one demo space as a reader.
+
+The database enforces what a visitor can do (migration `20261127000600_demo_mode.sql`, tested in
+`supabase/tests/database/19_demo_mode.test.sql`):
+
+- read and search knowledge that has no audience restriction, load skills, and connect an MCP client (Studio shows
+  the `claude mcp add` command on the demo inbox);
+- raise flags: by default 5 per visitor per hour and 200 per day for the whole demo, observation and suggested fix up
+  to 2000 characters each;
+- nothing else. Visitors are restricted like OAuth clients: no workspaces, invitations, members, groups, sources,
+  agents or settings; no proposals, approvals, rejections, verifications or reverts. They cannot send traces, and as
+  readers they see their own flags but no proposals.
+
+Visitors are anonymous Auth users rather than one shared demo account: each visitor's flags are attributed and
+rate-limited separately, visitors never see each other's flags, and no password has to be published. Supabase Auth
+also limits anonymous sign-ins per IP address (`rate_limit.anonymous_users`).
+
+1. **Supabase project.** Use a project of its own for the demo and deploy it with `kf deploy` (above). Put
+   `KF_DEMO=true` in the `--env-file`: without it the Edge Functions answer anonymous sessions with HTTP 403.
+2. **Anonymous sign-ins.** Turn on **Allow anonymous sign-ins** under **Authentication → Sign In / Providers**. Leave
+   CAPTCHA protection off: Studio's demo button does not send a CAPTCHA token.
+3. **Demo space.** Sign up in Studio (or with `kf login`) as the operator, then load the bundle into a workspace of
+   its own. Visitors join the workspace as members, so `kf demo enable` refuses a workspace with other spaces that
+   every member can read.
+
+   ```bash
+   npx kf init --workspace acme-demo --space revenue
+   npx kf groups create finance && npx kf groups add finance me   # the bundle has one finance-only concept
+   npx kf import examples/revenue-report/knowledge --apply
+   npx kf demo enable                       # --flags-per-hour 5 --flags-per-day 200 by default
+   ```
+
+   `kf demo enable` also turns auto-apply off in the space, so knowledge only changes when you change it. Unless you
+   want visitor flags to become curator proposals (which use model tokens, and which only you see), leave
+   `KF_LLM_MODEL` unset on the demo project or turn off **Settings → Curator → Run the curator for this space**.
+4. **Studio** on Cloudflare Workers ([step 5](#cloudflare-workers)) with the demo project's `VITE_*` values and the
+   Worker variables `KF_DEMO=true` and `SITE_URL`. Then point Auth at it:
+   `npx kf deploy --project-ref <ref> --studio-url https://<studio-url> --skip-db --skip-functions`.
+5. **Check it.** Sign out, choose **Try the demo**, search, raise a flag, and copy the MCP command from the inbox.
+   In Claude Code, `/mcp` → **Authenticate** opens Studio's sign-in page; **Try the demo** there continues to the
+   consent screen. Try this once on your deployment: the repository's tests cover the database rules, not Supabase's
+   OAuth server with anonymous sessions.
+
+Every night at 03:43 UTC the cron job `kf-demo-reset` deletes visitor flags, traces and usage, the proposals created
+since the demo was enabled that were not applied, visitor memberships and the anonymous visitor users. Sessions open
+at that moment end; visitors choose **Try the demo** again. After you change the bundle, re-import it with
+`npx kf demo reset --bundle examples/revenue-report/knowledge`. `npx kf demo status` shows the limits, the number of
+visitors and the last reset; `npx kf demo disable` resets the demo and closes it.
 
 ## Updating
 

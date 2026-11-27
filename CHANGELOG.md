@@ -8,7 +8,9 @@ contain breaking changes.
 
 ## [Unreleased]
 
-First public release, planned as **0.1.0**. Highlights:
+## [0.1.0] - YYYY-MM-DD
+
+First public release. Highlights:
 
 ### Added
 
@@ -19,7 +21,7 @@ First public release, planned as **0.1.0**. Highlights:
   tiers, staleness, an audit log, and hybrid search (pgvector + full-text) with gte-small embeddings computed in
   the Edge Runtime (no API key).
 - **Access control in the database.** Humans, OAuth-connected MCP clients and headless agents are all Supabase
-  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 778 pgTAP tests.
+  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 879 pgTAP tests.
 - **Remote MCP server** (`mcp` Edge Function) with OAuth 2.1 through Supabase Auth, and agent API keys
   (`skn_...`) for headless agents.
 - **Trace ingest** (JSON and OTLP) and correction mining from agent traces.
@@ -43,6 +45,19 @@ First public release, planned as **0.1.0**. Highlights:
   trace capture for Mastra agents) and `supaknowledge` for Python.
 - **Curator models** through Mastra's model router: your own OpenAI-compatible endpoint, the Vercel AI Gateway
   or OpenRouter, with fallbacks and a fast model for bulk work.
+- **`kf deploy --login`** signs in with Supabase's OAuth for integrations (authorization code with PKCE, a
+  `127.0.0.1` callback) instead of a personal access token, lets you pick an organization and project or create one
+  (`--create-project`, `--org`, `--region`), and saves the tokens like other kf credentials (`kf logout --supabase`
+  forgets them). The OAuth app's client secret stays in a token broker Edge Function (`oauth-broker`), or in your
+  environment with your own OAuth app. `kf deploy` never deploys the broker.
+- **Public read-only demo** (`KF_DEMO`): Studio's sign-in page offers **Try the demo**, an anonymous Supabase Auth
+  session that joins one demo space as a reader. The database restricts visitors like OAuth clients (no
+  administration, review, knowledge writes or traces), rate-limits their flags per visitor and per day, and the cron
+  job `kf-demo-reset` clears what they left every night. `kf demo enable|status|reset|disable` manage it; Studio shows
+  the demo's MCP command on the inbox. The Edge Functions refuse anonymous sessions unless `KF_DEMO=true`. See
+  [deploy](docs/deploy.md#host-a-public-demo).
+- **Studio on Cloudflare Workers**: `apps/studio/wrangler.jsonc`, `npm run build:cloudflare` and
+  `npm run deploy:cloudflare`.
 - **Example**: `examples/revenue-report`, the end-to-end demo story (`npm run demo`, `npm run demo:offline`).
 - **Evals**: `examples/evals` runs the same agent on a fixed task set before and after a curator run and reports
   task success, tool errors and flags per task (`npm run eval:offline`, scripted and deterministic, runs in CI;
@@ -184,4 +199,5 @@ Fixes from the second (verification) review round:
 - Docs: `supaknowledge-title` is exported for skills whose title differs from their first heading, so titles
   round-trip.
 
-[Unreleased]: https://github.com/alvarofc/supaknowledge/commits/main
+[Unreleased]: https://github.com/alvarofc/supaknowledge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/alvarofc/supaknowledge/releases/tag/v0.1.0

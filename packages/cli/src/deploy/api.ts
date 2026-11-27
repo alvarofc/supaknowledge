@@ -34,6 +34,91 @@ export interface ApiKey {
 
 export type AuthConfig = Record<string, unknown>;
 
+/** One Management API call; the error message names the method, path and API message, never the token. */
+export async function apiRequest<T>(fetch: FetchFn, token: string, base: string, method: string, path: string, body?: unknown): Promise<T> {
+  const url = `${base}${path}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (e) {
+    throw new ApiError(`${method} ${path}: ${(e as Error).message}`, 0);
+  }
+  const text = await res.text();
+  let data: unknown = undefined;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
+  if (!res.ok) {
+    const msg =
+      (data && typeof data === "object" && ((data as { message?: unknown }).message ?? (data as { error?: unknown }).error)) || (typeof data === "string" ? data.slice(0, 300) : "");
+    throw new ApiError(`${method} ${path} failed (HTTP ${res.status})${msg ? `: ${String(msg)}` : ""}`, res.status);
+  }
+  return data as T;
+}
+
+export interface Organization {
+  slug: string;
+  name?: string;
+}
+
+export interface ProjectSummary extends Project {
+  organization_slug?: string;
+}
+
+/** Account-level calls `kf deploy --login` needs: organizations, projects, creating a project. */
+export class AccountApi {
+  private readonly fetch: FetchFn;
+  private readonly token: string;
+  private readonly base: string;
+
+  constructor(fetch: FetchFn, token: string, base = MANAGEMENT_API) {
+    this.fetch = fetch;
+    this.token = token;
+    this.base = base.replace(/\/+$/, "");
+  }
+
+  private async list<T>(path: string): Promise<T[]> {
+    const rows = await apiRequest<unknown>(this.fetch, this.token, this.base, "GET", path);
+    if (!Array.isArray(rows)) throw new ApiError(`GET ${path}: unexpected response (expected an array)`, 0);
+    return rows as T[];
+  }
+
+  organizations(): Promise<Organization[]> {
+    return this.list<Organization>("/organizations");
+  }
+
+  projects(): Promise<ProjectSummary[]> {
+    return this.list<ProjectSummary>("/projects");
+  }
+
+  project(ref: string): Promise<ProjectSummary> {
+    return apiRequest<ProjectSummary>(this.fetch, this.token, this.base, "GET", `/projects/${ref}`);
+  }
+
+  /** POST /v1/projects. `region` is sent only when given (the API marks it deprecated). */
+  createProject(p: { name: string; organizationSlug: string; dbPass: string; region?: string }): Promise<ProjectSummary> {
+    return apiRequest<ProjectSummary>(this.fetch, this.token, this.base, "POST", "/projects", {
+      name: p.name,
+      organization_slug: p.organizationSlug,
+      db_pass: p.dbPass,
+      ...(p.region ? { region: p.region } : {}),
+    });
+  }
+}
+
 export class ManagementApi {
   private readonly fetch: FetchFn;
   private readonly token: string;
@@ -47,38 +132,8 @@ export class ManagementApi {
     this.base = base.replace(/\/+$/, "");
   }
 
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const url = `${this.base}/projects/${this.ref}${path}`;
-    let res: Response;
-    try {
-      res = await this.fetch(url, {
-        method,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: "application/json",
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(120_000),
-      });
-    } catch (e) {
-      throw new ApiError(`${method} ${path}: ${(e as Error).message}`, 0);
-    }
-    const text = await res.text();
-    let data: unknown = undefined;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = text;
-      }
-    }
-    if (!res.ok) {
-      const msg =
-        (data && typeof data === "object" && ((data as { message?: unknown }).message ?? (data as { error?: unknown }).error)) || (typeof data === "string" ? data.slice(0, 300) : "");
-      throw new ApiError(`${method} ${path} failed (HTTP ${res.status})${msg ? `: ${String(msg)}` : ""}`, res.status);
-    }
-    return data as T;
+  request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return apiRequest<T>(this.fetch, this.token, `${this.base}/projects/${this.ref}`, method, path, body);
   }
 
   project(): Promise<Project> {

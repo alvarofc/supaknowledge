@@ -174,6 +174,7 @@ Optional, server-only (read at runtime, not inlined; no `VITE_` prefix):
 | `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY` | Gateway keys, for `vercel/...` and `openrouter/...` model ids. |
 | `KF_LLM_FALLBACK_MODELS` | Models tried in order when the model errors. |
 | `KF_ASK_MESSAGES_PER_MINUTE` | Questions one person may ask per minute (default 10). |
+| `KF_DEMO` | `true` only on a [public demo](deploy.md#host-a-public-demo): the sign-in page offers **Try the demo**, an anonymous Supabase Auth session that joins the demo space as a reader. The database decides what demo visitors can do. |
 
 The `KF_LLM_*` variables mean the same as for the curator; see [model configuration](curator.md#model-configuration).
 Set them on the Studio server: they are separate from the Edge Function secrets, so Ask and the curator can use the
@@ -261,6 +262,34 @@ Wherever you deploy, configure Supabase Auth for Studio's URL. In the Supabase d
    `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email&next=/`. The default PKCE links go to
    `/auth/callback`, which only works in the browser that started the sign-in.
 
+### Cloudflare Workers
+
+`apps/studio/wrangler.jsonc` names the Worker (`supaknowledge-studio`) and turns on `nodejs_compat`. Nitro's
+`cloudflare_module` preset merges it into `apps/studio/.output/server/wrangler.json`, with the static assets in
+`.output/public`.
+
+```bash
+npm ci
+export VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+export VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+npm run build:cloudflare -w @supaknowledge/studio     # NITRO_PRESET=cloudflare_module vite build
+npm run deploy:cloudflare -w @supaknowledge/studio    # wrangler deploy --config .output/server/wrangler.json
+```
+
+- `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` are **build-time** values: Vite inlines them, so set them
+  in the shell (or the CI job) that runs `build:cloudflare`, and rebuild after changing them.
+- `SITE_URL`, `TRUST_PROXY` and `KF_DEMO` are **runtime** values: set them as Worker variables, under `vars` in
+  `apps/studio/wrangler.jsonc` or in the dashboard (**Workers & Pages → supaknowledge-studio → Settings → Variables
+  and Secrets**). With `nodejs_compat` and a compatibility date from 2025-04-01 on, Workers expose them as
+  `process.env`, which is where Studio reads them.
+- `wrangler deploy` signs in through the browser, or reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI.
+- With Git-connected builds (Workers Builds), keep the root directory at the repository root (Studio needs the
+  workspace package `@supaknowledge/core`), use `npm run build:cloudflare -w @supaknowledge/studio` as the build
+  command and `npm run deploy:cloudflare -w @supaknowledge/studio` as the deploy command, and add the two `VITE_*`
+  values as build variables.
+- Add the Worker's URL (`https://supaknowledge-studio.<account>.workers.dev` or your custom domain) to the Supabase
+  Auth Site URL and redirect URLs, as above.
+
 ### Vercel
 
 1. **Import the repository** in Vercel and set **Root Directory** to `apps/studio`. Vercel detects the npm workspaces and
@@ -334,7 +363,7 @@ Roles shape the navigation:
 Both pages read one `SECURITY INVOKER` RPC each (migration `20261127000500_graph_recap`), called from a server
 function with the person's session. Every table inside is read through RLS, so concepts outside the person's
 groups, flags they cannot read, proposals they cannot fully see and evidence outside their audience are neither
-drawn nor counted. pgTAP coverage: `supabase/tests/database/16_graph_recap.test.sql`.
+drawn nor counted. pgTAP coverage: `supabase/tests/database/18_graph_recap.test.sql`.
 
 **`knowledge_graph(p_space, p_limit default 1000)`** returns the non-deprecated concepts (up to 2000, by path,
 with `truncated` when there are more), each with its kind, trust tier, `stale` and number of open flags; the

@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CheckCheck, Flag, GitPullRequestArrow, History, Inbox as InboxIcon } from "lucide-react";
+import { ConnectSnippets } from "@/components/agents/connect-snippets";
 import { FlagItem } from "@/components/inbox/flag-list";
 import { InvitationsBanner } from "@/components/invitations/invitations-banner";
 import { ProposalItem } from "@/components/inbox/proposal-list";
 import { LiveRefresh } from "@/components/kf/live-refresh";
 import { ViewerAvatars, namedViewers, usePeople, useProposalsPresence } from "@/components/kf/presence";
 import { LinkButton } from "@/components/ui/button";
-import { Card, EmptyState, PageHeader } from "@/components/ui/card";
+import { Card, CardHeader, EmptyState, PageHeader } from "@/components/ui/card";
 import { LinkTabs } from "@/components/ui/tabs";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
@@ -57,6 +58,17 @@ function InboxPage() {
         actions={<LiveRefresh spaceId={ctx.space.id} tables={["proposals", "flags"]} />}
       />
       <InvitationsBanner invitations={invitations} className="mb-4" />
+      {ctx.user.isAnonymous ? (
+        <Card className="mb-6">
+          <CardHeader
+            title="Connect your agent to this demo"
+            description="Your MCP client signs in through Studio: choose Try the demo on the sign-in page, then approve the client."
+          />
+          <div className="px-4 py-4">
+            <ConnectSnippets wsSlug={ctx.workspace.slug} spaceSlug={ctx.space.slug} />
+          </div>
+        </Card>
+      ) : null}
       {/* on wide screens the product sidebar carries these tabs */}
       <LinkTabs tabs={tabs} active={tab} className="mb-4 lg:hidden" />
       <div>

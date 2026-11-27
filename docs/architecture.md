@@ -55,7 +55,7 @@ users, writing skill files to Storage). See [access control](access-control.md).
 
 ## Data model
 
-Twenty-seven migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups, `20261127000300` Realtime):
+Thirty-one migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups, `20261127000100`–`…600` features added for 0.1):
 
 | Migration | Contents |
 |---|---|
@@ -85,7 +85,11 @@ Twenty-seven migrations in `supabase/migrations` (`20261124000001`–`…10` the
 | `…24_pr1_followups` | `search_sources(p_source)` (per-source search filtered before the limit), concept paths reject empty and `.` segments |
 | `…25_pr5_followups` | Proposal path validation (`private.valid_concept_path`) rejects empty and `.` segments like `concepts.path` |
 | `…26_settings_cas` | `update_space_settings()`: compare-and-swap saves of space settings (RLS and settings validation still apply) |
+| `20261127000100_schema_connector` | The `schema` connector kind, one live drift flag per concept and identifier, `kf_record_schema_drift()` (service role) |
 | `20261127000300_realtime_review` | Realtime Authorization (RLS on `realtime.messages`) for the private topics `proposal:<id>` (review presence) and `curator:<space>` (curator progress); `kf_curator_progress()` (service role → `realtime.send()`) |
+| `20261127000400_ask_settings` | `ask.record_traces` in the space settings validator |
+| `20261127000500_graph_recap` | `knowledge_graph()` and `knowledge_recap()` (security invoker) for the Graph and Recap pages |
+| `20261127000600_demo_mode` | Public demo: `join_demo()`, anonymous visitors as restricted readers, flag rate limits, nightly reset cron `kf-demo-reset` |
 
 ### One write path
 

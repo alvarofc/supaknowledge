@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "build:cloudflare": "NITRO_PRESET=cloudflare_module vite build",
+    "deploy:cloudflare": "npx --yes wrangler@4.166.0 deploy --config .output/server/wrangler.json",
     "start": "node .output/server/index.mjs",
     "preview": "vite preview --port 3000 --host 127.0.0.1",
     "lint": "eslint .",
