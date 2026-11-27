@@ -23,7 +23,7 @@ const SEPARATORS = new Set(["_", ".", "/", ":", "-"]);
 
 /**
  * Split a tool name as MCP clients present it into server and tool, when the tool is one of `tools`:
- * `mcp__supabase__execute_sql` (Claude Code), `supabase_execute_sql` (Mastra's MCP client), `supabase.execute_sql`,
+ * `mcp__supabase__execute_sql` (Claude Code), `supabase_execute_sql`, `supabase.execute_sql`,
  * `supabase/execute_sql` and a bare `execute_sql` all give `{ tool: "execute_sql" }`.
  */
 export function splitToolName(name: unknown, tools: readonly string[]): McpToolName | null {
@@ -219,7 +219,10 @@ function collect(v: unknown, out: Collected, depth = 0): void {
   }
   if (typeof v !== "object") return;
   const o = v as Record<string, unknown>;
-  if (typeof o.code === "string" && SQLSTATE.test(o.code) && !out.code) out.code = o.code;
+  for (const k of ["code", "sqlstate", "sqlState"]) {
+    const v = o[k];
+    if (typeof v === "string" && SQLSTATE.test(v) && !out.code) out.code = v;
+  }
   if (typeof o.hint === "string" && !out.hint) out.hint = o.hint;
   const detail = typeof o.details === "string" ? o.details : typeof o.detail === "string" ? o.detail : undefined;
   if (detail && !out.detail) out.detail = detail;

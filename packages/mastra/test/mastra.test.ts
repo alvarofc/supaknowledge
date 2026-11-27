@@ -289,7 +289,7 @@ describe("review fixes", () => {
 });
 
 describe("MCP tools in traced runs", () => {
-  it("an MCP result with isError (Mastra's MCP client returns it as a normal result) is recorded as an error", async () => {
+  it("an MCP result with isError, returned as a normal tool result, is recorded as an error", async () => {
     const { TraceRecorder } = await import("@supaknowledge/sdk");
     const { recordStep } = await import("../src/index.ts");
     const events: any[] = [];

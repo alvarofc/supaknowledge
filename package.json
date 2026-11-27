@@ -38,7 +38,9 @@
     "functions:serve": "supabase functions serve --env-file supabase/.env",
     "studio": "npm run dev -w @supaknowledge/studio",
     "demo": "npm run demo -w @supaknowledge/example-revenue-report --",
-    "demo:offline": "npm run offline -w @supaknowledge/example-revenue-report --"
+    "demo:offline": "npm run offline -w @supaknowledge/example-revenue-report --",
+    "eval": "npm run eval -w @supaknowledge/example-evals --",
+    "eval:offline": "npm run offline -w @supaknowledge/example-evals --"
   },
   "devDependencies": {
     "supabase": "^3.4.0",

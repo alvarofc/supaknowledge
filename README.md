@@ -139,6 +139,10 @@ no stack or key needed. With `KF_LLM_MODEL` (and your endpoint or gateway key) i
 agent is a real [Mastra](https://mastra.ai) agent using `@supaknowledge/mastra`. See
 [examples/revenue-report](examples/revenue-report).
 
+To check that the loop helps, `npm run eval:offline` runs the same agent on a fixed task set before and after a
+curator run and reports task success, tool errors and flags per task; `npm run eval` does it against your stack and
+model. See [evals](docs/evals.md).
+
 More: [getting started](docs/getting-started.md).
 
 ## Repository
@@ -155,14 +159,17 @@ More: [getting started](docs/getting-started.md).
 | `packages/mastra` | `@supaknowledge/mastra`: Supaknowledge tools, instructions and trace capture for Mastra agents |
 | `apps/studio` | Studio, the review UI (TanStack Start) |
 | `examples/revenue-report` | The end-to-end demo |
+| `examples/evals` | Evals: the same agent on a fixed task set before and after curator runs |
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md): local setup, first space, first agent, first curator run
 - [Architecture](docs/architecture.md): data model, queues, cron, the function map
 - [Access control](docs/access-control.md): principals, roles, audiences, the escalation guard, tests
-- [MCP](docs/mcp.md): tools, and connecting Claude Code, Cursor, Claude Desktop and others
+- [MCP](docs/mcp.md): tools, connecting Claude Code, Cursor, Claude Desktop and others, and using it next to the
+  Supabase MCP server
 - [Curator](docs/curator.md): pipeline, prompts, settings and policy, provenance, costs
+- [Evals](docs/evals.md): task success, tool errors and flags before and after curator runs
 - [OKF and Agent Skills](docs/okf.md): file formats and round-trip rules
 - [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>` does the Supabase side), Studio on Vercel, self-hosting
 - [CLI](docs/cli.md) · [SDKs](docs/sdk.md) · [Connectors](docs/connectors.md) · [Studio](docs/studio.md)
@@ -171,11 +178,12 @@ More: [getting started](docs/getting-started.md).
 ## Status
 
 Alpha (0.1). Most of the [build plan](docs/DESIGN.md#10-build-plan) is implemented and tested: the loop end to end,
-trace ingest and correction mining, Studio with the review inbox, policies and auto-apply, six source connectors,
-staleness sweeps, multiple spaces and the health dashboard. Packages are not published to npm or PyPI yet; see [CHANGELOG.md](CHANGELOG.md).
+trace ingest and correction mining (including Postgres errors from the Supabase MCP server's `execute_sql`), Studio
+with the review inbox, policies and auto-apply, six source connectors, staleness sweeps, multiple spaces, the health
+dashboard and evals of the same agent before and after curator runs. Packages are not published to npm or PyPI yet; see [CHANGELOG.md](CHANGELOG.md).
 
-Not built yet: evals that show the factory works (the same agent before and after curator runs), automatic git
-sync of OKF bundles (today: `kf export` / `kf pull` / `kf import`), OKF Attested Computations for data-access
+Not built yet: evals over many curator runs (flag rate per concept over time; today one run between two phases on a
+fixed task set), automatic git sync of OKF bundles (today: `kf export` / `kf pull` / `kf import`), OKF Attested Computations for data-access
 knowledge, LangSmith / Langfuse trace importers, per-op review, and embedding providers other than gte-small.
 Open questions are tracked in [DESIGN.md §11](docs/DESIGN.md#11-open-questions).
 

@@ -205,3 +205,22 @@ test("the heuristic score and the model-mined lessons are unchanged by SQL flags
   assert.equal(sqlErrorFlags(t).length, 1, "but it still becomes a flag");
   assert.deepEqual(lessonsToFlags(t, { lessons: [] }), []);
 });
+
+test("verbatim errors from the local stack's Postgres (psql, VERBOSITY verbose)", () => {
+  const cases: [string, string, string, Record<string, string>][] = [
+    ['ERROR:  42703: column "revenue_usd" does not exist', "42703", "undefined_column", { column: "revenue_usd" }],
+    ["ERROR:  42703: column kf_eval_t.revenue_usd does not exist", "42703", "undefined_column", { column: "kf_eval_t.revenue_usd" }],
+    ['ERROR:  42703: column "nope" of relation "kf_eval_t" does not exist', "42703", "undefined_column", { column: "nope", relation: "kf_eval_t" }],
+    ['ERROR:  42P01: relation "public.subscriptions_nope" does not exist', "42P01", "undefined_table", { relation: "public.subscriptions_nope" }],
+    ['ERROR:  22P02: invalid input value for enum kf_status: "active"', "22P02", "invalid_enum_value", { type: "kf_status", value: "active" }],
+    ["ERROR:  42883: function arr_at(timestamp with time zone) does not exist\nHINT:  No function matches the given name and argument types. You might need to add explicit type casts.", "42883", "undefined_function", { function: "arr_at(timestamp with time zone)" }],
+    ["ERROR:  42501: permission denied for table users\nHINT:  Grant the required privileges to the current role with: GRANT SELECT ON auth.users TO anon;", "42501", "insufficient_privilege", { relation: "users" }],
+  ];
+  for (const [text, code, condition, identifiers] of cases) {
+    const e = parsePgError(text)!;
+    assert.deepEqual([e.code, e.condition, e.identifiers], [code, condition, identifiers], text);
+  }
+  const dup = parsePgError('ERROR:  23505: duplicate key value violates unique constraint "kf_eval_u_email_key"\nDETAIL:  Key (email)=(bob@example.com) already exists.')!;
+  assert.deepEqual([dup.code, dup.condition, dup.knowledge, dup.detail], ["23505", "other", false, "Key (email)=(?) already exists."]);
+  assert.equal(parsePgError({ error: "deadlock detected", sqlstate: "40P01" })!.code, "40P01", "the stored shape keeps its SQLSTATE");
+});

@@ -118,7 +118,7 @@ export function recordInput(trace: TraceRecorder, input: unknown): void {
   }
 }
 
-/** An MCP CallToolResult that reports a tool error: Mastra's MCP client returns it as a normal result. */
+/** An MCP CallToolResult that reports a tool error; a client that returns it as a normal result still marks a failure. */
 function mcpError(value: unknown): boolean {
   return !!value && typeof value === "object" && !Array.isArray(value) && (value as { isError?: unknown }).isError === true;
 }

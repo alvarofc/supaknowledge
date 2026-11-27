@@ -5,6 +5,11 @@
   "description": "End-to-end Supaknowledge demo of the knowledge-factory story: an agent hits a renamed column, flags it, a human corrects a report, the curator proposes fixes.",
   "license": "Apache-2.0",
   "type": "module",
+  "exports": {
+    "./lib": "./src/lib.ts",
+    "./memory-store": "./src/memory-store.ts",
+    "./agent": "./src/agent.ts"
+  },
   "engines": {
     "node": ">=22.18"
   },

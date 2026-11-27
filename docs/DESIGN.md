@@ -320,6 +320,7 @@ apps/
                        OAuth consent
 examples/
   revenue-report/      the LangChain post's story end to end (live demo + offline demo + OKF bundle)
+  evals/               the same agent before and after curator runs on a fixed task set (offline + live)
 scripts/               sync-shared, check-shared, check-functions, link-cli
 docs/
 .github/workflows/     CI: typecheck, unit tests, Studio lint + build, shared-code drift, deno check + tests, Python, pgTAP
@@ -332,7 +333,7 @@ There is no default provider: operators point the curator at their own OpenAI-co
 
 ## 10. Build plan
 
-Status as of 2026-11-24: ✅ done, ◐ partly done, ☐ not started.
+Status as of 2026-11-27: ✅ done, ◐ partly done, ☐ not started.
 
 **Phase 0: the loop, end to end (MVP)**
 1. ✅ Migrations: concepts, revisions, links, chunks, flags, proposals; RLS; hybrid search function.
@@ -347,7 +348,8 @@ Status as of 2026-11-24: ✅ done, ◐ partly done, ☐ not started.
 
 **Phase 1: learning from work**
 - ✅ Trace ingest (JSON + OTLP GenAI conventions; SDK `TraceRecorder` in TypeScript and Python).
-- ✅ Correction-moment detection (heuristic + fast model → synthetic flags).
+- ✅ Correction-moment detection (heuristic + fast model → synthetic flags), and Postgres errors of failed SQL tool
+  calls (the Supabase MCP server's `execute_sql`, any SQL tool) → synthetic flags without a model.
 - ✅ Studio inbox with Realtime, proposal review with diffs and citations.
 - ✅ Policies and auto-apply (per space, never for escalations).
 - ☐ LangSmith / Langfuse trace importers.
@@ -363,7 +365,9 @@ Status as of 2026-11-24: ✅ done, ◐ partly done, ☐ not started.
 - ✅ Multiple spaces per workspace, groups and audiences, OAuth 2.1 for MCP clients, headless agent keys.
 - ✅ Health dashboard (`knowledge_health`, Studio Health).
 - ☐ OKF Attested Computations for data-access knowledge (only recognised as a `type` today).
-- ☐ Evals: does knowledge X reduce failure Y?
+- ◐ Evals: does knowledge X reduce failure Y? `examples/evals` runs the same agent on a fixed task set before and
+  after a curator run and reports task success, tool errors and flags per task, offline (scripted, in CI) and live
+  ([evals](evals.md)). Not yet: tracking across many runs, task sets built from real traces.
 
 ## 11. Open questions
 
@@ -373,8 +377,10 @@ runs as queue-driven Edge Functions with an engine that also runs in Node.
 1. **Granularity of review.** Today a reviewer approves or rejects a whole proposal. Per-op (or per-claim)
    approval would let the curator batch related changes without forcing all-or-nothing reviews, at the cost of
    partial revisions and more complex conflicts.
-2. **Evals.** How do we *show* the factory works? Run the example agent before and after curator runs on a fixed
-   task set, and track flag rate per concept over time.
+2. **Evals.** The harness in `examples/evals` runs the example agent before and after one curator run on a fixed
+   task set ([evals](evals.md)). Still open: tracking flag rate per concept over many runs, building task sets from
+   real traces (a failed trace plus its correction is a task with a check), and checks beyond string matching for
+   open-ended answers.
 3. **Long curator jobs.** Tasks fit the Edge Function wall-clock limit (about 110 s each). Very large backfills
    (thousands of traces or documents) may be better served by the same engine in a long-running Node worker;
    there is no packaged worker yet.
