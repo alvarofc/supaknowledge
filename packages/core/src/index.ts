@@ -7,3 +7,4 @@ export * from "./okf.ts";
 export * from "./settings.ts";
 export * from "./llm.ts";
 export * from "./schema.ts";
+export * from "./sql-errors.ts";

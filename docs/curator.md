@@ -7,7 +7,8 @@ policy may apply on its own or that people review in Studio or with `kf`.
 | Where | What |
 |---|---|
 | `packages/core/src/curator/engine.ts` | The state machine: `runTask()`, `gather`, `triage`, `sweep`, `draft`, `buildProposal()` |
-| `packages/core/src/curator/corrections.ts` | Correction mining from traces (heuristic score + extraction) |
+| `packages/core/src/curator/corrections.ts` | Correction mining from traces (heuristic score + extraction) and SQL-error flags |
+| `packages/core/src/sql-errors.ts` | Supabase MCP tool names, Postgres error parsing, SQL redaction (also used by trace ingest) |
 | `packages/core/src/curator/prompts.ts` | Every system prompt |
 | `packages/core/src/curator/schemas.ts` | The structured-output schemas (zod) for each model call |
 | `packages/core/src/curator/store.ts`, `supabase-store.ts` | The storage interface and its Supabase implementation (service role) |
@@ -53,10 +54,17 @@ sweep  ────────────────────────�
 ```
 
 **1. Gather: mine traces.** Up to 50 uncurated traces per task (a run continues in new tasks until all, capped by
-`max_traces_per_run`, are scanned). A cheap heuristic scores each trace: outcome `corrected` (+3) or `failure`
+`max_traces_per_run`, are scanned). First, without a model, every failed SQL call (the Supabase MCP server's
+`execute_sql` or `apply_migration`, or any tool whose input is SQL) whose Postgres error knowledge could have
+prevented (undefined column, table, schema, function or type, a missing privilege, row level security, an unknown
+enum label) becomes a **synthetic flag** with the redacted failing SQL, the error, Postgres's hint, the redacted SQL
+of a later successful call and the concept the agent read before the error, if it names the identifier (see
+[Use with the Supabase MCP server](mcp.md#use-with-the-supabase-mcp-server)); runs count them in `stats.sql_errors`.
+Then a cheap heuristic scores each trace: outcome `corrected` (+3) or `failure`
 (+2), a `feedback` event (+3), a user message after an assistant turn with correction cues such as "actually",
 "from now on", "should use", "renamed" (+2), a tool that failed and then succeeded (+2). Traces scoring 2 or more go
-to the fast model, which extracts **durable lessons** (one-off preferences are dropped). Each lesson becomes a
+to the fast model, which extracts **durable lessons** (one-off preferences are dropped; SQL errors already flagged
+are listed for it, so it does not repeat them). Each lesson becomes a
 **synthetic flag** linked to the trace, carrying the trace's audience. Traces are then marked curated.
 
 **2. Triage.** Open flags attached to a concept are grouped per concept (`incorrect` / `outdated` raise the
@@ -284,6 +292,9 @@ conventions, risk levels) and `REVIEW_SYSTEM` (the second reviewer). `curator.in
 "house rules". Change the prompts in `packages/core`, run `npm run sync:shared`, and check the scripted story in
 `packages/core/test/curator.test.ts` and `examples/revenue-report` still passes.
 
+To see whether knowledge changes help the agents that use it, run the [evals](evals.md): the same agent on a fixed
+task set before and after a curator run.
+
 `packages/core/test/curator-safety.test.ts` replays the access scenarios from the security reviews (triage and
 rejection leaks, dismissal reasons, research scope) with a scripted model. `packages/core/test/curator-eval.test.ts`
 runs the main leak scenario against a real model; it is skipped unless you opt in:
@@ -405,7 +416,7 @@ prompt prefixes can reuse it between the draft, the repair round and the self-re
 
 Every run records what it spent in `curator_runs.stats` (shown in Studio under Activity and Health, and by
 `kf runs`): `model_calls`, `input_tokens`, `output_tokens` and `cached_input_tokens` (as reported by the provider),
-next to `proposals`, `auto_applied`, `repaired` and the other counters. Multiply by your provider's prices to get the
+next to `proposals`, `auto_applied`, `repaired`, `sql_errors` and the other counters. Multiply by your provider's prices to get the
 run's cost.
 
 To spend less: use a cheaper `fast_model`, lower `max_research_steps` (data-access fixes rarely need more than 3 or

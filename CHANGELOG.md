@@ -44,6 +44,14 @@ First public release, planned as **0.1.0**. Highlights:
 - **Curator models** through Mastra's model router: your own OpenAI-compatible endpoint, the Vercel AI Gateway
   or OpenRouter, with fallbacks and a fast model for bulk work.
 - **Example**: `examples/revenue-report`, the end-to-end demo story (`npm run demo`, `npm run demo:offline`).
+- **Evals**: `examples/evals` runs the same agent on a fixed task set before and after a curator run and reports
+  task success, tool errors and flags per task (`npm run eval:offline`, scripted and deterministic, runs in CI;
+  `npm run eval` against the local stack). See [evals](docs/evals.md).
+- **Supabase MCP server support.** Trace ingest recognises its `execute_sql` and `apply_migration` calls and stores
+  them with redacted SQL and without row data; the curator turns failed SQL calls with a Postgres error knowledge
+  could have prevented (undefined column or table, permissions, RLS, enum values) into flags without a model call.
+  `trace.mcpTool()` (TypeScript) and `trace.mcp_tool()` (Python) record such calls in one line. See
+  [MCP](docs/mcp.md#use-with-the-supabase-mcp-server).
 
 ### Security
 

@@ -145,3 +145,31 @@ test("a model-proposed stale_after in the past is rejected, never applied", asyn
   assert.equal(draft.ops[0]!.after.stale_after, undefined, "the existing future review date is kept");
   assert.match(problems.join("\n"), /not a future date/);
 });
+
+test("a failed Supabase MCP execute_sql becomes a synthetic flag on the concept the agent followed, without a model call", async () => {
+  const store = new MemoryStore();
+  store.concepts.push(concept({ path: "data/orders", kind: "data_access", type: "Postgres Table", title: "Orders", body: "# Orders\n\nRevenue is `public.orders.revenue_usd`.\n" }));
+  store.traces.push({
+    id: "trace-sql", space_id: "s", principal_id: "agent", name: "orders", outcome: "success", audience: [], metadata: {}, started_at: "",
+    events: [
+      { seq: 1, role: "tool", tool_name: "mcp__supaknowledge__read_concept", tool_input: { path: "data/orders" }, tool_output: "Revenue is `public.orders.revenue_usd`." },
+      { seq: 2, role: "tool", tool_name: "mcp__supabase__execute_sql", tool_input: { query: "select sum(revenue_usd) from orders" }, tool_output: { error: 'column "revenue_usd" does not exist', sqlstate: "42703" }, is_error: true },
+    ],
+  });
+  const prompts: string[] = [];
+  const llm = new ScriptedLLM((req) => {
+    prompts.push(req.system.slice(0, 40));
+    if (req.system.startsWith(DRAFT_SYSTEM.slice(0, 40))) return { decision: "no_change", title: "n", rationale: "r", risk: "low", ops: [], citations: [], resolves_flags: [], dismiss_flags: [] };
+    return { ok: true, issues: [], risk: "low" };
+  });
+  const t = store.createRun("s");
+  for (let i = 0; i < 10 && store.queue.length; i++) await runTask({ store, llm }, store.queue.shift()!);
+  const flag = store.flags.find((f) => f.synthetic)!;
+  assert.equal(flag.kind, "incorrect");
+  assert.equal(flag.concept_path, "data/orders");
+  assert.equal(flag.evidence.sqlstate, "42703");
+  assert.equal(store.runs.get(t.run_id)!.stats.sql_errors, 1);
+  assert.equal(store.runs.get(t.run_id)!.stats.traces_mined, 0, "no correction-mining call for this trace");
+  assert.ok(!prompts.includes(CORRECTIONS_SYSTEM.slice(0, 40)));
+  assert.ok(prompts.includes(DRAFT_SYSTEM.slice(0, 40)), "the flag was drafted against its concept");
+});

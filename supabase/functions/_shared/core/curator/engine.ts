@@ -17,7 +17,7 @@ import { type GenerateRequest, type GenerateResult, type LLM, LLMBudgetError, LL
 import { lintConcept } from "../okf.ts";
 import { decideAutoApply, type SpaceSettings } from "../settings.ts";
 import type { Audience, Citation, CitationKind, Concept, ConceptDraft, Flag, ProposalDraft, ProposalOp, SourceDocument, Trace } from "../types.ts";
-import { extractLessons, lessonsToFlags, renderTrace, scoreTrace } from "./corrections.ts";
+import { extractLessons, lessonsToFlags, renderTrace, scoreTrace, sqlErrorFlags } from "./corrections.ts";
 import { stableHash } from "./hash.ts";
 import { CLUSTER_SYSTEM, DRAFT_SYSTEM, REVIEW_SYSTEM, UNTRUSTED_DATA_RULE, untrusted, withHouseRules } from "./prompts.ts";
 import { ClusterSchema, DraftSchema, ReviewSchema, type DraftOutput, type ReviewOutput } from "./schemas.ts";
@@ -256,12 +256,17 @@ async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   ctx.emit({ type: "evidence", counts: { traces: traces.length } });
   let mined = 0;
   let lessons = 0;
+  let sqlErrors = 0;
   let done = 0;
   for (const trace of traces) {
     if (ctx.remainingMs() < RESERVE_MS + MIN_CALL_MS + 5_000) break;
+    // failed SQL calls with a Postgres error knowledge could have prevented become flags without a model call
+    const sqlFlags = sqlErrorFlags(trace);
+    if (sqlFlags.length) await store.createSyntheticFlags(sqlFlags);
+    sqlErrors += sqlFlags.length;
     const { score } = scoreTrace(trace);
     if (score >= 2) {
-      const out = await extractLessons(llm.for("mine"), trace, { instructions: settings.curator.instructions });
+      const out = await extractLessons(llm.for("mine"), trace, { instructions: settings.curator.instructions, alreadyFlagged: sqlFlags });
       const flags = lessonsToFlags(trace, out);
       // idempotent (dedupe key per trace + lesson), then the trace is marked right away: a failure on the
       // next trace never re-mines this one
@@ -272,7 +277,7 @@ async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     await store.markTracesCurated([trace.id]);
     done++;
   }
-  if (traces.length) await store.addRunStats(run.id, { traces_scanned: done, traces_mined: mined, lessons });
+  if (traces.length) await store.addRunStats(run.id, { traces_scanned: done, traces_mined: mined, lessons, ...(sqlErrors ? { sql_errors: sqlErrors } : {}) });
   if (traces.length) ctx.emit({ type: "lessons", traces_scanned: done, traces_mined: mined, lessons });
   const scanned = scannedBefore + done;
 

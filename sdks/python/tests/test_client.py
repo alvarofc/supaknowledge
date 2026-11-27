@@ -655,3 +655,43 @@ def test_max_retries_zero_turns_retries_off():
     rec = Recorder(throttled(is_tool("search_knowledge"), 1, mcp(lambda n, a: [])))
     with pytest.raises(SupaknowledgeError):
         client(rec, max_retries=0).search("arr")
+
+
+def test_trace_mcp_tool_records_supabase_calls_without_rows():
+    events: list[dict] = []
+
+    class T:
+        def create(self, body: dict) -> dict:
+            events.extend(body["events"])
+            return {"trace_id": "t"}
+
+        def update(self, trace_id: str, body: dict) -> None:
+            events.extend(body.get("events", []))
+
+        def flag(self, **kw: Any) -> dict:
+            return {}
+
+    class Part:
+        type = "text"
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class CallToolResult:  # shaped like the MCP SDK's object
+        def __init__(self, text: str, is_error: bool) -> None:
+            self.content = [Part(text)]
+            self.isError = is_error
+
+    t = TraceRecorder(T())
+    t.mcp_tool("supabase", "execute_sql", {"query": "select revenue_usd from orders"}, CallToolResult('ERROR:  42703: column "revenue_usd" does not exist', True))
+    t.mcp_tool("supabase", "execute_sql", {"query": "select email from users"}, {"content": [{"type": "text", "text": '[{"email":"bob@example.com"}]'}]})
+    t.mcp_tool("supabase", "list_tables", {}, {"content": [{"type": "text", "text": "orders"}]})
+    t.mcp_tool("supabase", "apply_migration", {"name": "x", "query": "create table t()"}, error=RuntimeError("network down"))
+    t.end()
+    assert [(e["tool_name"], e["is_error"], e["tool_output"]) for e in events] == [
+        ("mcp__supabase__execute_sql", True, 'ERROR:  42703: column "revenue_usd" does not exist'),
+        ("mcp__supabase__execute_sql", False, {"omitted": "row data"}),
+        ("mcp__supabase__list_tables", False, "orders"),
+        ("mcp__supabase__apply_migration", True, "network down"),
+    ]
+    assert "bob@example.com" not in str(events)
