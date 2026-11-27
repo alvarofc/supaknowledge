@@ -8,6 +8,7 @@ import {
   Inbox,
   LogOut,
   Menu,
+  MessageSquare,
   Plug,
   Plus,
   Search,
@@ -268,6 +269,7 @@ function useSections({ base, role, inboxCount }: ShellProps): Section[] {
   const all: (Section & { show: boolean })[] = [
     { id: "inbox", href: base, label: "Inbox", icon: <Inbox />, show: true, active: inboxActive, count: inboxCount, groups: inboxGroups },
     { id: "knowledge", href: kb, label: "Knowledge", icon: <BookOpen />, show: true, active: knowledgeActive, groups: knowledgeGroups },
+    { id: "ask", href: `${base}/ask`, label: "Ask", icon: <MessageSquare />, show: true, active: under(`${base}/ask`) },
     { id: "sources", href: `${base}/sources`, label: "Sources", icon: <Plug />, show: isEditor, active: under(`${base}/sources`) },
     { id: "agents", href: `${base}/agents`, label: "Agents", icon: <Bot />, show: true, active: under(`${base}/agents`) },
     { id: "activity", href: act, label: "Activity", icon: <Activity />, show: isEditor, active: activityActive, groups: activityGroups },

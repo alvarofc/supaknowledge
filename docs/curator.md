@@ -221,6 +221,7 @@ update public.spaces set settings = '{
 | `embeddings.provider` | `gte-small` | Only option today |
 | `retention.trace_days` | `null` (keep) | Delete traces older than this many days (1–36500), daily by cron `kf-cleanup` |
 | `retention.usage_days` | `null` (keep) | Delete concept usage rows older than this many days (1–36500) |
+| `ask.record_traces` | `true` | Send conversations from Studio's Ask page to the curator as traces; `false` records no traces from Ask ([Studio](studio.md#ask)) |
 
 The schema is `SpaceSettingsSchema` in `packages/core/src/settings.ts`. Studio's **Settings → Curator & policy**
 has a field for every key above. The database validates the same keys, types and bounds whenever

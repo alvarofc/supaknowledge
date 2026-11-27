@@ -15,6 +15,7 @@ import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
 import { Route as AuthedOnboardingRouteImport } from './routes/_authed/onboarding'
 import { Route as GuestLoginRouteImport } from './routes/_guest/login'
 import { Route as GuestSignupRouteImport } from './routes/_guest/signup'
+import { Route as ApiAskRouteImport } from './routes/api/ask'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as AuthConfirmRouteImport } from './routes/auth/confirm'
 import { Route as AuthSignoutRouteImport } from './routes/auth/signout'
@@ -23,6 +24,7 @@ import { Route as AuthedWWorkspaceIndexRouteImport } from './routes/_authed/w/$w
 import { Route as AuthedWWorkspaceSpaceRouteRouteImport } from './routes/_authed/w/$workspace/$space/route'
 import { Route as AuthedWWorkspaceSpaceIndexRouteImport } from './routes/_authed/w/$workspace/$space/index'
 import { Route as AuthedWWorkspaceSpaceAgentsRouteImport } from './routes/_authed/w/$workspace/$space/agents'
+import { Route as AuthedWWorkspaceSpaceAskRouteImport } from './routes/_authed/w/$workspace/$space/ask'
 import { Route as AuthedWWorkspaceSpaceHealthRouteImport } from './routes/_authed/w/$workspace/$space/health'
 import { Route as AuthedWWorkspaceSpaceSettingsRouteImport } from './routes/_authed/w/$workspace/$space/settings'
 import { Route as AuthedWWorkspaceSpaceSuggestRouteImport } from './routes/_authed/w/$workspace/$space/suggest'
@@ -62,6 +64,11 @@ const GuestSignupRoute = GuestSignupRouteImport.update({
   id: '/signup',
   path: '/signup',
   getParentRoute: () => GuestRoute,
+} as any)
+const ApiAskRoute = ApiAskRouteImport.update({
+  id: '/api/ask',
+  path: '/api/ask',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
   id: '/auth/callback',
@@ -104,6 +111,12 @@ const AuthedWWorkspaceSpaceAgentsRoute =
   AuthedWWorkspaceSpaceAgentsRouteImport.update({
     id: '/agents',
     path: '/agents',
+    getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
+  } as any)
+const AuthedWWorkspaceSpaceAskRoute =
+  AuthedWWorkspaceSpaceAskRouteImport.update({
+    id: '/ask',
+    path: '/ask',
     getParentRoute: () => AuthedWWorkspaceSpaceRouteRoute,
   } as any)
 const AuthedWWorkspaceSpaceHealthRoute =
@@ -178,6 +191,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof AuthedOnboardingRoute
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
+  '/api/ask': typeof ApiAskRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/auth/confirm': typeof AuthConfirmRoute
   '/auth/signout': typeof AuthSignoutRoute
@@ -185,6 +199,7 @@ export interface FileRoutesByFullPath {
   '/w/$workspace/$space': typeof AuthedWWorkspaceSpaceRouteRouteWithChildren
   '/w/$workspace/': typeof AuthedWWorkspaceIndexRoute
   '/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/w/$workspace/$space/ask': typeof AuthedWWorkspaceSpaceAskRoute
   '/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
   '/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
@@ -203,12 +218,14 @@ export interface FileRoutesByTo {
   '/onboarding': typeof AuthedOnboardingRoute
   '/login': typeof GuestLoginRoute
   '/signup': typeof GuestSignupRoute
+  '/api/ask': typeof ApiAskRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/auth/confirm': typeof AuthConfirmRoute
   '/auth/signout': typeof AuthSignoutRoute
   '/oauth/consent': typeof AuthedOauthConsentRoute
   '/w/$workspace': typeof AuthedWWorkspaceIndexRoute
   '/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/w/$workspace/$space/ask': typeof AuthedWWorkspaceSpaceAskRoute
   '/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
   '/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
@@ -229,6 +246,7 @@ export interface FileRoutesById {
   '/_authed/onboarding': typeof AuthedOnboardingRoute
   '/_guest/login': typeof GuestLoginRoute
   '/_guest/signup': typeof GuestSignupRoute
+  '/api/ask': typeof ApiAskRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/auth/confirm': typeof AuthConfirmRoute
   '/auth/signout': typeof AuthSignoutRoute
@@ -237,6 +255,7 @@ export interface FileRoutesById {
   '/_authed/w/$workspace/$space': typeof AuthedWWorkspaceSpaceRouteRouteWithChildren
   '/_authed/w/$workspace/': typeof AuthedWWorkspaceIndexRoute
   '/_authed/w/$workspace/$space/agents': typeof AuthedWWorkspaceSpaceAgentsRoute
+  '/_authed/w/$workspace/$space/ask': typeof AuthedWWorkspaceSpaceAskRoute
   '/_authed/w/$workspace/$space/health': typeof AuthedWWorkspaceSpaceHealthRoute
   '/_authed/w/$workspace/$space/settings': typeof AuthedWWorkspaceSpaceSettingsRoute
   '/_authed/w/$workspace/$space/suggest': typeof AuthedWWorkspaceSpaceSuggestRoute
@@ -257,6 +276,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/login'
     | '/signup'
+    | '/api/ask'
     | '/auth/callback'
     | '/auth/confirm'
     | '/auth/signout'
@@ -264,6 +284,7 @@ export interface FileRouteTypes {
     | '/w/$workspace/$space'
     | '/w/$workspace/'
     | '/w/$workspace/$space/agents'
+    | '/w/$workspace/$space/ask'
     | '/w/$workspace/$space/health'
     | '/w/$workspace/$space/settings'
     | '/w/$workspace/$space/suggest'
@@ -282,12 +303,14 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/login'
     | '/signup'
+    | '/api/ask'
     | '/auth/callback'
     | '/auth/confirm'
     | '/auth/signout'
     | '/oauth/consent'
     | '/w/$workspace'
     | '/w/$workspace/$space/agents'
+    | '/w/$workspace/$space/ask'
     | '/w/$workspace/$space/health'
     | '/w/$workspace/$space/settings'
     | '/w/$workspace/$space/suggest'
@@ -307,6 +330,7 @@ export interface FileRouteTypes {
     | '/_authed/onboarding'
     | '/_guest/login'
     | '/_guest/signup'
+    | '/api/ask'
     | '/auth/callback'
     | '/auth/confirm'
     | '/auth/signout'
@@ -315,6 +339,7 @@ export interface FileRouteTypes {
     | '/_authed/w/$workspace/$space'
     | '/_authed/w/$workspace/'
     | '/_authed/w/$workspace/$space/agents'
+    | '/_authed/w/$workspace/$space/ask'
     | '/_authed/w/$workspace/$space/health'
     | '/_authed/w/$workspace/$space/settings'
     | '/_authed/w/$workspace/$space/suggest'
@@ -332,6 +357,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
   GuestRoute: typeof GuestRouteWithChildren
+  ApiAskRoute: typeof ApiAskRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   AuthConfirmRoute: typeof AuthConfirmRoute
   AuthSignoutRoute: typeof AuthSignoutRoute
@@ -380,6 +406,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/signup'
       preLoaderRoute: typeof GuestSignupRouteImport
       parentRoute: typeof GuestRoute
+    }
+    '/api/ask': {
+      id: '/api/ask'
+      path: '/api/ask'
+      fullPath: '/api/ask'
+      preLoaderRoute: typeof ApiAskRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/auth/callback': {
       id: '/auth/callback'
@@ -435,6 +468,13 @@ declare module '@tanstack/react-router' {
       path: '/agents'
       fullPath: '/w/$workspace/$space/agents'
       preLoaderRoute: typeof AuthedWWorkspaceSpaceAgentsRouteImport
+      parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
+    }
+    '/_authed/w/$workspace/$space/ask': {
+      id: '/_authed/w/$workspace/$space/ask'
+      path: '/ask'
+      fullPath: '/w/$workspace/$space/ask'
+      preLoaderRoute: typeof AuthedWWorkspaceSpaceAskRouteImport
       parentRoute: typeof AuthedWWorkspaceSpaceRouteRoute
     }
     '/_authed/w/$workspace/$space/health': {
@@ -519,6 +559,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthedWWorkspaceSpaceRouteRouteChildren {
   AuthedWWorkspaceSpaceAgentsRoute: typeof AuthedWWorkspaceSpaceAgentsRoute
+  AuthedWWorkspaceSpaceAskRoute: typeof AuthedWWorkspaceSpaceAskRoute
   AuthedWWorkspaceSpaceHealthRoute: typeof AuthedWWorkspaceSpaceHealthRoute
   AuthedWWorkspaceSpaceSettingsRoute: typeof AuthedWWorkspaceSpaceSettingsRoute
   AuthedWWorkspaceSpaceSuggestRoute: typeof AuthedWWorkspaceSpaceSuggestRoute
@@ -536,6 +577,7 @@ interface AuthedWWorkspaceSpaceRouteRouteChildren {
 const AuthedWWorkspaceSpaceRouteRouteChildren: AuthedWWorkspaceSpaceRouteRouteChildren =
   {
     AuthedWWorkspaceSpaceAgentsRoute: AuthedWWorkspaceSpaceAgentsRoute,
+    AuthedWWorkspaceSpaceAskRoute: AuthedWWorkspaceSpaceAskRoute,
     AuthedWWorkspaceSpaceHealthRoute: AuthedWWorkspaceSpaceHealthRoute,
     AuthedWWorkspaceSpaceSettingsRoute: AuthedWWorkspaceSpaceSettingsRoute,
     AuthedWWorkspaceSpaceSuggestRoute: AuthedWWorkspaceSpaceSuggestRoute,
@@ -596,6 +638,7 @@ const GuestRouteWithChildren = GuestRoute._addFileChildren(GuestRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
   GuestRoute: GuestRouteWithChildren,
+  ApiAskRoute: ApiAskRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   AuthConfirmRoute: AuthConfirmRoute,
   AuthSignoutRoute: AuthSignoutRoute,

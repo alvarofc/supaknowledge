@@ -367,6 +367,15 @@ export function CuratorSettingsForm({ spaceId, initial, canEdit }: { spaceId: st
           </p>
         </Section>
 
+        <Section title="Ask" description="The Ask page answers questions with the same MCP tools agents use.">
+          <Checkbox
+            label="Send Ask conversations to the curator as traces"
+            description="Corrections people type in Ask are then mined like any agent trace. Off: Ask records no traces."
+            checked={s.ask.record_traces}
+            onChange={(e) => setS((x) => ({ ...x, ask: { ...x.ask, record_traces: e.target.checked } }))}
+          />
+        </Section>
+
         <Section title="Retention" description="How long agent activity is kept. A daily cleanup job deletes older rows; blank keeps them forever.">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
