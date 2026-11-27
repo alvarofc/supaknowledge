@@ -460,6 +460,7 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   };
 
   // deterministic grouping first: flags already attached to a concept
+  const driftDocs = new Set<string>();
   for (const f of flags) {
     if (f.concept_id && f.concept_path) {
       const c = clusterFor(normalizeConceptPath(f.concept_path));
@@ -469,6 +470,7 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
       // document it is about, so the draft can cite it
       const driftDoc = schemaDriftDocument(f);
       if (driftDoc && !c.document_ids.includes(driftDoc)) c.document_ids.push(driftDoc);
+      if (driftDoc) driftDocs.add(driftDoc);
     } else {
       loose.push({ id: `f:${f.id}`, conceptPath: f.concept_path, audience: f.audience ?? [], text: `[flag ${f.kind}${f.synthetic ? ", from trace correction" : ""}] ${f.concept_path ? `about "${f.concept_path}": ` : ""}${f.observation}${f.suggested_fix ? ` | suggested: ${f.suggested_fix}` : ""}${f.query ? ` | was looking for: ${f.query}` : ""}` });
     }
@@ -478,8 +480,9 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   for (const d of docs) {
     const paths = citing.get(d.id) ?? [];
     if (paths.length) {
-      for (const p of paths) clusterFor(p).document_ids.push(d.id);
-    } else {
+      for (const p of paths) if (!clusterFor(p).document_ids.includes(d.id)) clusterFor(p).document_ids.push(d.id);
+    } else if (!driftDocs.has(d.id)) {
+      // (a schema document a drift flag already brought into its concept's cluster is not a loose signal)
       loose.push({ id: `d:${d.id}`, conceptPath: null, audience: d.audience ?? [], text: `[document changed] "${d.title ?? d.external_id}" ${d.url ?? ""}\n${d.content.slice(0, 600)}` });
     }
   }
