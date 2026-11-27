@@ -25,7 +25,17 @@ export type FlagRow = Pick<
   | "audience"
   | "resolution"
   | "proposal_id"
->;
+> & {
+  /** evidence.schema_drift.key: opened by a schema source when the database changed */
+  schema_drift?: string | null;
+};
+
+/** Who raised a flag that is not mined from a trace. */
+export function flagAuthor(flag: { created_by: string | null; schema_drift?: string | null }, profiles: ProfileMap): string {
+  if (flag.schema_drift) return "a schema change";
+  if (!flag.created_by) return "a deleted user";
+  return profiles[flag.created_by]?.display_name ?? "someone in this workspace";
+}
 
 export function conceptHref(base: string, path: string) {
   return `${base}/knowledge/${path.split("/").map(encodeURIComponent).join("/")}`;
@@ -114,7 +124,7 @@ export function FlagItem({
             </Badge>
           ) : (
             <span className="inline-flex items-center gap-1.5">
-              from {author?.display_name ?? (flag.created_by ? "someone in this workspace" : "a deleted user")}
+              from {flagAuthor(flag, profiles)}
               {author?.kind === "agent" ? <AgentBadge /> : null}
             </span>
           )}

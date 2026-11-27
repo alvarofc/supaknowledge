@@ -139,6 +139,34 @@ export const CONNECTORS: ConnectorDef[] = [
     token: null,
   },
   {
+    kind: "schema",
+    label: "Database schema",
+    description: "Tables, columns and RLS policies of a Supabase project's database.",
+    fields: [
+      {
+        key: "project_ref",
+        label: "Project ref",
+        kind: "text",
+        placeholder: "abcdefghijklmnopqrst",
+        required: true,
+        hint: "The project your agents query, from its URL: https://<ref>.supabase.co.",
+        pattern: /^([a-z]{20}|https:\/\/[a-z]{20}\.supabase\.co\/?)$/,
+        patternMessage: "Use the 20-letter project ref or the project URL",
+      },
+      {
+        key: "schemas",
+        label: "Schemas",
+        kind: "list",
+        placeholder: "public",
+        hint: "One per line. Empty = public.",
+        pattern: /^[A-Za-z_][A-Za-z0-9_$]*$/,
+        patternMessage: "Use plain schema names, e.g. public",
+        commaSeparated: true,
+      },
+    ],
+    token: { label: "Access token", placeholder: "sbp_…", hint: "A Supabase access token of an account that can open the project. It only runs a read-only schema query." },
+  },
+  {
     kind: "upload",
     label: "Uploads",
     description: "Documents you upload by hand: exports, transcripts, notes.",
@@ -257,6 +285,8 @@ export function configSummary(kind: ConnectorKind, config: Json): string {
     }
     case "gdrive":
       return `${count("folder_ids")} folder(s)`;
+    case "schema":
+      return typeof obj.project_ref === "string" ? `Project ${obj.project_ref}` : "Not configured";
     case "web":
       return [count("urls") && `${count("urls")} URL(s)`, typeof obj.sitemap === "string" && "sitemap"].filter(Boolean).join(" + ") || "Not configured";
     default:

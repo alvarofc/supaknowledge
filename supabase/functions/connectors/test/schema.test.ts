@@ -32,10 +32,11 @@ function api(snapshot: unknown, status = 200) {
 
 Deno.test("schema: config takes a ref or a project URL and plain schema names", () => {
   assertEquals(schema.parseConfig({ project_ref: REF }), { project_ref: REF, schemas: ["public"] });
+  assertEquals(schema.parseConfig({ project_ref: REF, schemas: [] }).schemas, ["public"], "the Studio form stores an empty list");
   assertEquals(schema.parseConfig({ project_ref: `https://${REF}.supabase.co`, schemas: ["public", "billing", "public"] }).schemas, ["billing", "public"]);
   assertEquals(normaliseProjectRef(`https://supabase.com/dashboard/project/${REF}/editor`), REF);
   assertEquals(normaliseProjectRef("https://evil.example/abcdefghijklmnopqrst"), null);
-  for (const bad of [{}, { project_ref: "short" }, { project_ref: REF, schemas: ["public; drop"] }, { project_ref: REF, schemas: [] }]) {
+  for (const bad of [{}, { project_ref: "short" }, { project_ref: REF, schemas: ["public; drop"] }]) {
     let threw = false;
     try {
       schema.parseConfig(bad);

@@ -38,7 +38,8 @@ export const schema: Connector<SchemaConfig> = {
     if (typeof o.project_ref !== "string" || !o.project_ref.trim()) throw new ConfigError("config.project_ref is required (the 20-letter project ref)");
     const ref = normaliseProjectRef(o.project_ref);
     if (!ref) throw new ConfigError("config.project_ref must be a Supabase project ref (20 lowercase letters) or the project URL");
-    const schemas = o.schemas === undefined || o.schemas === null ? ["public"] : stringList(o, "schemas", { required: true });
+    const listed = stringList(o, "schemas");
+    const schemas = listed.length ? listed : ["public"];
     const bad = schemas.find((s) => !SCHEMA_NAME_RE.test(s));
     if (bad !== undefined) throw new ConfigError(`config.schemas: "${bad}" is not a plain schema name`);
     if (schemas.length > 20) throw new ConfigError("config.schemas: at most 20 schemas");
