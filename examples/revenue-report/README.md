@@ -80,7 +80,13 @@ npm run offline -w @supaknowledge/example-revenue-report           # or: npm run
 trace and a finance-only question about ARR, and runs the real curator engine (`runTask` from
 `@supaknowledge/core/curator`) with `ScriptedLLM` answering in place of a model. It prints every task and a diff of each proposal:
 the table fix is auto-applied, the skill change waits for review, and an ARR clarification that cites
-finance-only evidence is flagged as an **escalation**. `npm test -w @supaknowledge/example-revenue-report` runs it as a test, together with the real-agent path against the
+finance-only evidence is flagged as an **escalation**.
+
+A second part replays the rename as a [schema source](../../docs/connectors.md#database-schema-schema) would see
+it, before any agent runs: two snapshots of a Postgres copy of `finance.revenue_daily` (`revenue_usd`, then
+`revenue_usd_net`) give a drift flag on `data/bigquery/revenue` ("probably renamed to `revenue_usd_net`"), and the
+curator drafts the fix citing the schema document and the flag. A rename is a guess, so that proposal waits for
+review. `npm test -w @supaknowledge/example-revenue-report` runs it as a test, together with the real-agent path against the
 mock endpoint (`test/agent.test.ts`).
 
 ## The knowledge

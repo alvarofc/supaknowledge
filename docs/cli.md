@@ -135,7 +135,7 @@ kf mcp-config --client cursor --agent-key          # uses ${env:SUPAKNOWLEDGE_AP
 
 | Command | What it does |
 |---|---|
-| `kf sources add <notion\|slack\|github\|gdrive\|web\|upload> --name <name> [--config <json>] [--audience group,...] [--interval "1 hour"]` | Adds a source (space admin). `--audience` restricts who can see its documents. |
+| `kf sources add <notion\|slack\|github\|gdrive\|web\|upload\|schema> --name <name> [--config <json>] [--audience group,...] [--interval "1 hour"]` | Adds a source (space admin). `--audience` restricts who can see its documents. For `schema`, `--project-ref <ref>` and `--schemas a,b` fill the config. |
 | `kf sources secret <source>` | Reads the connector token from piped stdin (or prompts when stdin is a terminal) and stores it in Vault (`set_source_secret`). The token never reaches the API again. |
 | `kf sources sync <source>` | Queues a full sync now (`request_source_sync`). |
 | `kf sources list` / `kf sources remove <source>` | Sources with status and last sync; delete one. |

@@ -30,6 +30,7 @@ running run per space. Runs start from:
 | `flag_threshold` | A trigger on `flags`: `curator.flag_threshold` open flags on one concept, or that many `missing` flags in the space (default 3; 0 disables) |
 | `cron` | 02:00 UTC, for every space with open flags, uncurated traces or documents changed since the last run |
 | `staleness` | 03:00 UTC, for every space with stable concepts past `stale_after` |
+| `schema_drift` | A `schema` source opened drift flags ([schema drift](connectors.md#schema-drift)) |
 
 A run is split into **tasks** (`curator_tasks`), one per `kf_curator` queue message, so each fits in one Edge
 Function invocation (the worker gives each task a 110 s budget). The `kf-curator` cron job hands messages to the
@@ -59,7 +60,8 @@ to the fast model, which extracts **durable lessons** (one-off preferences are d
 **synthetic flag** linked to the trace, carrying the trace's audience. Traces are then marked curated.
 
 **2. Triage.** Open flags attached to a concept are grouped per concept (`incorrect` / `outdated` raise the
-priority). Changed documents cited by a concept (through its OKF `sources`) go to that concept. The remaining
+priority). A schema drift flag also brings the schema document it cites (`evidence.schema_drift.document_id`;
+only flags the database opened, which have no author, count). Changed documents cited by a concept (through its OKF `sources`) go to that concept. The remaining
 "loose" signals (flags without a concept, other changed documents) go to the model, together with candidate
 concepts found by search, which groups them into clusters, points each at concepts and writes a topic and a
 research query; signals it marks as noise are dismissed with a reason. The model works in **one pass per

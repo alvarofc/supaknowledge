@@ -9,7 +9,18 @@
 // auto-apply policy and the escalation guard.
 import { fileURLToPath } from "node:url";
 import { createTwoFilesPatch } from "diff";
-import { importBundle, ScriptedLLM, type Concept, type GenerateRequest } from "@supaknowledge/core";
+import {
+  describeChange,
+  diffSchemas,
+  driftFlags,
+  importBundle,
+  parseSchemaSnapshot,
+  renderSchemaDocuments,
+  ScriptedLLM,
+  type Concept,
+  type GenerateRequest,
+  type SchemaSnapshot,
+} from "@supaknowledge/core";
 import { CLUSTER_SYSTEM, CORRECTIONS_SYSTEM, DRAFT_SYSTEM, REVIEW_SYSTEM, runTask } from "@supaknowledge/core/curator";
 import { MemoryStore, type StoredProposal } from "./memory-store.ts";
 import { c, FINANCE_ONLY_PATH, readBundle, REVENUE_TABLE_PATH, runWarehouseQuery, say, STORY, WarehouseError } from "./lib.ts";
@@ -138,6 +149,24 @@ export interface OfflineResult {
   store: MemoryStore;
   runStatus: string;
   proposals: StoredProposal[];
+  /** part two: the same rename caught by a schema source before any agent runs */
+  drift: { store: MemoryStore; runStatus: string; proposals: StoredProposal[] };
+}
+
+const SPACE_POLICY = {
+  // the space policy: low-risk data_access fixes backed by real agent work apply themselves
+  auto_apply: { enabled: true, kinds: ["data_access"], max_risk: "low", require_observed_evidence: true },
+};
+
+function loadKnowledge(store: MemoryStore, print: boolean) {
+  const parsed = importBundle(readBundle(), { toId: (slug) => (slug === "finance" ? FINANCE_GROUP : undefined), toSlug: (id) => (id === FINANCE_GROUP ? "finance" : undefined) });
+  for (const ic of parsed.concepts) {
+    store.concepts.push({
+      ...ic.draft, id: `concept:${ic.draft.path}`, space_id: SPACE, revision: 1, generated_by: "import:okf",
+      generated_at: new Date().toISOString(), created_at: "", updated_at: "",
+    } satisfies Concept);
+    if (print) say.info(`${ic.draft.path.padEnd(32)} ${ic.draft.kind.padEnd(12)} ${ic.draft.type}${ic.draft.audience.length ? c.yellow("  (audience: finance)") : ""}`);
+  }
 }
 
 export async function runOfflineDemo(opts: { quiet?: boolean } = {}): Promise<OfflineResult> {
@@ -155,18 +184,8 @@ async function story(): Promise<OfflineResult> {
 
   // ------------------------------------------------------------------------------------------------------
   say.step("Load the Acme Analytics knowledge bundle (OKF concepts + an Agent Skill)");
-  const store = new MemoryStore({
-    // the space policy: low-risk data_access fixes backed by real agent work apply themselves
-    auto_apply: { enabled: true, kinds: ["data_access"], max_risk: "low", require_observed_evidence: true },
-  });
-  const parsed = importBundle(readBundle(), { toId: (slug) => (slug === "finance" ? FINANCE_GROUP : undefined), toSlug: (id) => (id === FINANCE_GROUP ? "finance" : undefined) });
-  for (const ic of parsed.concepts) {
-    store.concepts.push({
-      ...ic.draft, id: `concept:${ic.draft.path}`, space_id: SPACE, revision: 1, generated_by: "import:okf",
-      generated_at: new Date().toISOString(), created_at: "", updated_at: "",
-    } satisfies Concept);
-    say.info(`${ic.draft.path.padEnd(32)} ${ic.draft.kind.padEnd(12)} ${ic.draft.type}${ic.draft.audience.length ? c.yellow("  (audience: finance)") : ""}`);
-  }
+  const store = new MemoryStore(SPACE_POLICY);
+  loadKnowledge(store, true);
   const before = new Map(store.concepts.map((x) => [x.path, x.body]));
 
   // ------------------------------------------------------------------------------------------------------
@@ -266,10 +285,127 @@ async function story(): Promise<OfflineResult> {
   const rerun = runWarehouseQuery(query);
   say.ok(`the documented query runs: ${rerun.rows.length} rows`);
   say.ok(`skill step 1: ${/1\. (.*)/.exec(skill.body)?.[1]?.replace(/\[\^.*$/, "")}`);
+
+  const drift = await driftStory();
   console.log(`\n${c.dim("Run the same story against a real stack with your model as the curator: npm run demo -w @supaknowledge/example-revenue-report")}`);
 
+  return { store, runStatus: run.status, proposals: store.proposals, drift };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Part two: the same rename, caught by a `schema` source before any agent runs
+// ---------------------------------------------------------------------------------------------------------
+
+/** finance.revenue_daily as the schema connector's catalog query would return it from a Postgres copy. */
+function revenueSchema(revenueColumn: string): SchemaSnapshot {
+  const col = (name: string, type: string, comment: string | null = null, nullable = true) => ({ name, type, nullable, default: null, comment });
+  return parseSchemaSnapshot({
+    tables: [{
+      schema: "finance", name: "revenue_daily", kind: "table", comment: "Daily recognized revenue per invoice line.", rls_enabled: true,
+      columns: [
+        col("invoice_date", "date", "Day the revenue was recognized (UTC).", false),
+        col("account_id", "text"),
+        col("region", "text"),
+        col("product_line", "text"),
+        col(revenueColumn, "numeric(14,2)", "Recognized revenue in USD, net of discounts and credits."),
+        col("is_recurring", "boolean"),
+      ],
+      primary_key: [], foreign_keys: [],
+      policies: [{ name: "finance reads", command: "select", permissive: true, roles: ["authenticated"], using: "((auth.jwt() ->> 'team'::text) = 'finance'::text)", check: null }],
+      definition: null,
+    }],
+    functions: [],
+  });
+}
+
+function scriptedDriftCurator(store: MemoryStore, docId: string) {
+  const prefix = (s: string) => s.slice(0, 60);
+  return new ScriptedLLM((req: GenerateRequest<unknown>) => {
+    const input = Array.isArray(req.input) ? req.input.join("\n") : req.input;
+    if (req.system.startsWith(prefix(DRAFT_SYSTEM)) && input.includes(`### concept:${REVENUE_TABLE_PATH}\n`)) {
+      const flagId = /### flag:(\S+)/.exec(input)?.[1];
+      const body = store.concepts.find((x) => x.path === REVENUE_TABLE_PATH)!.body;
+      const next = body
+        .replace(
+          /\| `revenue_usd` \|[^\n]*\n/,
+          "| `revenue_usd_net` | NUMERIC | Recognized revenue in USD, net of discounts and credits. Renamed from `revenue_usd`.[^data-catalog][^schema-revenue-daily] |\n",
+        )
+        .replaceAll("sum(revenue_usd)", "sum(revenue_usd_net)")
+        .trimEnd() + "\n[^schema-revenue-daily]: Schema of `finance.revenue_daily`: `revenue_usd` is gone and `revenue_usd_net` has the same type and comment.\n";
+      return {
+        decision: "propose", title: "Revenue table: revenue_usd was renamed to revenue_usd_net", risk: "medium",
+        rationale: "The schema source saw revenue_usd dropped and revenue_usd_net added with the same type and comment. A rename is a guess, so a person confirms the meaning.",
+        ops: [{
+          op: "update", path: REVENUE_TABLE_PATH, new_path: null, kind: null, type: null, title: null, description: null, body: next, tags: null,
+          superseded_by: null, stale_after: null, citation_labels: ["schema-revenue-daily", "schema-drift"], rationale: "Column renamed in the database",
+        }],
+        citations: [
+          { label: "schema-revenue-daily", ref: `doc:${docId}`, quote: "`revenue_usd_net` | numeric(14,2)" },
+          ...(flagId ? [{ label: "schema-drift", ref: `flag:${flagId}`, quote: "probably renamed to revenue_usd_net" }] : []),
+        ],
+        resolves_flags: flagId ? [flagId] : [], dismiss_flags: [],
+      };
+    }
+    if (req.system.startsWith(prefix(DRAFT_SYSTEM))) {
+      return { decision: "no_change", title: "Nothing to change", rationale: "No evidence for a change.", risk: "low", ops: [], citations: [], resolves_flags: [], dismiss_flags: [] };
+    }
+    if (req.system.startsWith(prefix(REVIEW_SYSTEM))) return { ok: true, issues: [], risk: "low" };
+    throw new Error(`unexpected prompt: ${req.system.slice(0, 80)}`);
+  });
+}
+
+async function driftStory(): Promise<OfflineResult["drift"]> {
+  say.step("Rewind: the same rename, caught by a schema source before any agent runs");
+  const store = new MemoryStore(SPACE_POLICY);
+  loadKnowledge(store, false);
+  say.info(`a ${c.bold("schema")} source reads a Postgres copy of finance.revenue_daily (one read-only catalog query per sync)`);
+
+  const before = revenueSchema("revenue_usd");
+  const after = revenueSchema("revenue_usd_net");
+  const doc = renderSchemaDocuments(after).find((d) => d.externalId === "table:finance.revenue_daily")!;
+  const docId = "doc-schema-finance-revenue-daily";
+  store.docs.push({
+    id: docId, source_id: "source-app-db", space_id: SPACE, external_id: doc.externalId, title: doc.title, url: null, content: doc.content,
+    audience: [], author: null, changed_at: new Date().toISOString(), source_kind: "schema",
+  });
+
+  const changes = diffSchemas(before, after);
+  for (const ch of changes) say.actor("schema source", describeChange(ch));
+  const flags = driftFlags(changes, store.concepts.map((x) => ({ id: x.id, path: x.path, body: x.body, kind: x.kind })));
+  for (const f of flags) {
+    // what kf_record_schema_drift() writes: no author, the concept's audience, the schema document as evidence
+    const concept = store.concepts.find((x) => x.id === f.concept_id)!;
+    store.flags.push({
+      id: store.id("flag"), space_id: SPACE, created_by: null, trace_id: null, kind: f.kind, concept_id: f.concept_id, concept_path: f.concept_path,
+      query: null, observation: f.observation, suggested_fix: f.suggested_fix, audience: concept.audience, status: "open", synthetic: false,
+      evidence: { schema_drift: { key: f.key, document: f.document, document_id: f.document === doc.externalId ? docId : null, change: f.change } },
+      created_at: new Date().toISOString(),
+    });
+    say.actor("schema source", `flags ${c.bold(f.concept_path)}: ${f.observation}`);
+  }
+
+  const llm = scriptedDriftCurator(store, docId);
+  const first = store.createRun(SPACE);
+  while (store.queue.length) {
+    const task = store.queue.shift()!;
+    const out = await runTask({ store, llm }, task);
+    const label = task.step === "draft" ? `draft: ${(task.input as { topic?: string }).topic}` : task.step;
+    say.info(`${c.bold(label.padEnd(44))} ${c.dim(JSON.stringify(out))}`);
+  }
+  const run = store.runs.get(first.run_id)!;
+  say.ok(`run ${run.status}`);
+  // nothing is applied in this part, so the store still holds the imported bodies
+  const original = new Map(store.concepts.map((x) => [x.path, x.body]));
+  for (const p of store.proposals) {
+    console.log(`\n    ${c.bold(p.title)}`);
+    say.info(`risk ${p.risk} · ${p.status === "applied" ? c.green("applied") : c.yellow("pending review")}`);
+    say.info(`citations: ${p.citations.map((x) => `[^${x.label}] ${x.ref_kind}`).join(", ")}`);
+    for (const o of p.ops) printDiff(o.path, original.get(o.path) ?? "", o.after.body ?? original.get(o.path) ?? "");
+  }
+  say.ok("the fix waits for review before any agent has queried the old column");
   return { store, runStatus: run.status, proposals: store.proposals };
 }
+
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   runOfflineDemo().catch((e) => {

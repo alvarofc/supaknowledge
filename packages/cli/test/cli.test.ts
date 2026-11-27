@@ -127,6 +127,23 @@ describe("commands with a mocked backend", () => {
     assert.equal(h.calls.length, 0);
   });
 
+  it("sources add schema builds the config from --project-ref and --schemas", async () => {
+    const h = harness();
+    h.routes.push(spaceRoute);
+    h.routes.push((c) => (c.method === "POST" && c.url.includes("/rest/v1/sources") ? json({ id: "ffffffff-0000-4000-8000-000000000009", name: "app-db" }, 201) : undefined));
+    const r = await h.run("sources", "add", "schema", "--name", "app-db", "--project-ref", "abcdefghijklmnopqrst", "--schemas", "public, billing");
+    assert.equal(r.code, 0, r.stderr);
+    const insert = h.calls.find((c) => c.method === "POST" && c.url.includes("/rest/v1/sources"))!;
+    assert.equal(insert.body.connector, "schema");
+    assert.deepEqual(insert.body.config, { project_ref: "abcdefghijklmnopqrst", schemas: ["public", "billing"] });
+    assert.match(r.stdout, /SUPABASE_ACCESS_TOKEN" \| kf sources secret app-db/);
+
+    const missing = await h.run("sources", "add", "schema", "--name", "x");
+    assert.equal(missing.code, 2);
+    const wrong = await h.run("sources", "add", "web", "--name", "x", "--project-ref", "abcdefghijklmnopqrst");
+    assert.equal(wrong.code, 2);
+  });
+
   it("sources secret reads the token from stdin", async () => {
     const h = harness();
     const sid = "ffffffff-0000-4000-8000-000000000003";

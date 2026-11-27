@@ -411,6 +411,19 @@ async function triagePass(ctx: TaskContext, audience: Audience, signals: Signal[
  * signals together, each distinct restricted audience on its own (see triagePass). Changed documents are read a
  * page at a time; later pages, and passes that do not fit this task, continue in further triage tasks of the run.
  */
+/**
+ * The schema document a schema drift flag cites (`evidence.schema_drift.document_id`). Only flags the system
+ * opened count: kf_record_schema_drift() writes them with no author and no trace, while every flag a person
+ * or agent raises has an author, so a caller cannot pull an arbitrary document into a draft this way.
+ */
+export function schemaDriftDocument(f: Flag): string | null {
+  if (f.created_by !== null || f.trace_id !== null || f.synthetic) return null;
+  const drift = f.evidence?.schema_drift;
+  if (!drift || typeof drift !== "object" || Array.isArray(drift)) return null;
+  const id = (drift as Record<string, unknown>).document_id;
+  return typeof id === "string" && id.length > 0 && id.length <= 100 ? id : null;
+}
+
 async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<string, unknown>> {
   const { store, run, settings } = ctx;
   const spaceId = run.space_id;
@@ -447,11 +460,17 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   };
 
   // deterministic grouping first: flags already attached to a concept
+  const driftDocs = new Set<string>();
   for (const f of flags) {
     if (f.concept_id && f.concept_path) {
       const c = clusterFor(normalizeConceptPath(f.concept_path));
       c.flag_ids.push(f.id);
       if (f.kind === "incorrect" || f.kind === "outdated") c.priority = "high";
+      // a schema drift flag (opened by the database for a schema source, never by a user) brings the schema
+      // document it is about, so the draft can cite it
+      const driftDoc = schemaDriftDocument(f);
+      if (driftDoc && !c.document_ids.includes(driftDoc)) c.document_ids.push(driftDoc);
+      if (driftDoc) driftDocs.add(driftDoc);
     } else {
       loose.push({ id: `f:${f.id}`, conceptPath: f.concept_path, audience: f.audience ?? [], text: `[flag ${f.kind}${f.synthetic ? ", from trace correction" : ""}] ${f.concept_path ? `about "${f.concept_path}": ` : ""}${f.observation}${f.suggested_fix ? ` | suggested: ${f.suggested_fix}` : ""}${f.query ? ` | was looking for: ${f.query}` : ""}` });
     }
@@ -461,8 +480,9 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   for (const d of docs) {
     const paths = citing.get(d.id) ?? [];
     if (paths.length) {
-      for (const p of paths) clusterFor(p).document_ids.push(d.id);
-    } else {
+      for (const p of paths) if (!clusterFor(p).document_ids.includes(d.id)) clusterFor(p).document_ids.push(d.id);
+    } else if (!driftDocs.has(d.id)) {
+      // (a schema document a drift flag already brought into its concept's cluster is not a loose signal)
       loose.push({ id: `d:${d.id}`, conceptPath: null, audience: d.audience ?? [], text: `[document changed] "${d.title ?? d.external_id}" ${d.url ?? ""}\n${d.content.slice(0, 600)}` });
     }
   }

@@ -32,7 +32,7 @@ export const loadConcept = createServerFn({ method: "GET" })
       supabase.from("concept_files").select("id, path, content_type, size_bytes").eq("concept_id", concept.id).order("path"),
       supabase
         .from("flags")
-        .select("id, kind, observation, suggested_fix, created_by, synthetic, trace_id, created_at")
+        .select("id, kind, observation, suggested_fix, created_by, synthetic, trace_id, created_at, schema_drift:evidence->schema_drift->>key")
         .eq("concept_id", concept.id)
         .eq("status", "open")
         .order("created_at", { ascending: false }),

@@ -209,7 +209,7 @@ function ConceptPage() {
                               <Bot className="size-3" /> mined from a trace
                             </span>
                           ) : (
-                            <>from {f.created_by ? (profiles[f.created_by]?.display_name ?? "a user") : "unknown"}</>
+                            <>from {f.schema_drift ? "a schema change" : f.created_by ? (profiles[f.created_by]?.display_name ?? "a user") : "unknown"}</>
                           )}{" "}
                           · <Timestamp iso={f.created_at} />
                         </span>

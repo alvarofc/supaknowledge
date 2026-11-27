@@ -65,3 +65,14 @@ test("URL and glob lists split on newlines only (commas are part of the value); 
   const slack = draftToConfig("slack", { channels: "C1, C2\nC3" });
   assert.deepEqual(slack.config.channels, ["C1", "C2", "C3"]);
 });
+
+test("schema sources: project ref required, schemas optional plain names", () => {
+  const empty = draftToConfig("schema", configToDraft("schema", {}));
+  assert.equal(empty.errors.project_ref, "Project ref is required");
+  const ok = draftToConfig("schema", { project_ref: "abcdefghijklmnopqrst", schemas: "public, billing" });
+  assert.deepEqual(ok.errors, {});
+  assert.deepEqual(ok.config, { project_ref: "abcdefghijklmnopqrst", schemas: ["public", "billing"] });
+  assert.ok(draftToConfig("schema", { project_ref: "abcdefghijklmnopqrst", schemas: "public; drop" }).errors.schemas);
+  assert.ok(draftToConfig("schema", { project_ref: "https://evil.example/" }).errors.project_ref);
+  assert.equal(configSummary("schema", ok.config), "Project abcdefghijklmnopqrst");
+});
