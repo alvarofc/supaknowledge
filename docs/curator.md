@@ -7,7 +7,8 @@ policy may apply on its own or that people review in Studio or with `kf`.
 | Where | What |
 |---|---|
 | `packages/core/src/curator/engine.ts` | The state machine: `runTask()`, `gather`, `triage`, `sweep`, `draft`, `buildProposal()` |
-| `packages/core/src/curator/corrections.ts` | Correction mining from traces (heuristic score + extraction) |
+| `packages/core/src/curator/corrections.ts` | Correction mining from traces (heuristic score + extraction) and SQL-error flags |
+| `packages/core/src/sql-errors.ts` | Supabase MCP tool names, Postgres error parsing, SQL redaction (also used by trace ingest) |
 | `packages/core/src/curator/prompts.ts` | Every system prompt |
 | `packages/core/src/curator/schemas.ts` | The structured-output schemas (zod) for each model call |
 | `packages/core/src/curator/store.ts`, `supabase-store.ts` | The storage interface and its Supabase implementation (service role) |
@@ -30,6 +31,7 @@ running run per space. Runs start from:
 | `flag_threshold` | A trigger on `flags`: `curator.flag_threshold` open flags on one concept, or that many `missing` flags in the space (default 3; 0 disables) |
 | `cron` | 02:00 UTC, for every space with open flags, uncurated traces or documents changed since the last run |
 | `staleness` | 03:00 UTC, for every space with stable concepts past `stale_after` |
+| `schema_drift` | A `schema` source opened drift flags ([schema drift](connectors.md#schema-drift)) |
 
 A run is split into **tasks** (`curator_tasks`), one per `kf_curator` queue message, so each fits in one Edge
 Function invocation (the worker gives each task a 110 s budget). The `kf-curator` cron job hands messages to the
@@ -52,14 +54,22 @@ sweep  ────────────────────────�
 ```
 
 **1. Gather: mine traces.** Up to 50 uncurated traces per task (a run continues in new tasks until all, capped by
-`max_traces_per_run`, are scanned). A cheap heuristic scores each trace: outcome `corrected` (+3) or `failure`
+`max_traces_per_run`, are scanned). First, without a model, every failed SQL call (the Supabase MCP server's
+`execute_sql` or `apply_migration`, or any tool whose input is SQL) whose Postgres error knowledge could have
+prevented (undefined column, table, schema, function or type, a missing privilege, row level security, an unknown
+enum label) becomes a **synthetic flag** with the redacted failing SQL, the error, Postgres's hint, the redacted SQL
+of a later successful call and the concept the agent read before the error, if it names the identifier (see
+[Use with the Supabase MCP server](mcp.md#use-with-the-supabase-mcp-server)); runs count them in `stats.sql_errors`.
+Then a cheap heuristic scores each trace: outcome `corrected` (+3) or `failure`
 (+2), a `feedback` event (+3), a user message after an assistant turn with correction cues such as "actually",
 "from now on", "should use", "renamed" (+2), a tool that failed and then succeeded (+2). Traces scoring 2 or more go
-to the fast model, which extracts **durable lessons** (one-off preferences are dropped). Each lesson becomes a
+to the fast model, which extracts **durable lessons** (one-off preferences are dropped; SQL errors already flagged
+are listed for it, so it does not repeat them). Each lesson becomes a
 **synthetic flag** linked to the trace, carrying the trace's audience. Traces are then marked curated.
 
 **2. Triage.** Open flags attached to a concept are grouped per concept (`incorrect` / `outdated` raise the
-priority). Changed documents cited by a concept (through its OKF `sources`) go to that concept. The remaining
+priority). A schema drift flag also brings the schema document it cites (`evidence.schema_drift.document_id`;
+only flags the database opened, which have no author, count). Changed documents cited by a concept (through its OKF `sources`) go to that concept. The remaining
 "loose" signals (flags without a concept, other changed documents) go to the model, together with candidate
 concepts found by search, which groups them into clusters, points each at concepts and writes a topic and a
 research query; signals it marks as noise are dismissed with a reason. The model works in **one pass per
@@ -112,6 +122,34 @@ re-validate it: either move `stale_after` forward (low risk) or fix it.
 
 Applying a proposal resolves its flags. Rejecting one (`kf reject <id> --note …`) puts its flags back to `open`,
 and the note becomes context for the next draft.
+
+## Live progress
+
+While a task runs, the engine reports what it does through an optional callback, `CuratorDeps.progress`
+(`packages/core/src/curator/progress.ts`). Without one nothing is emitted, so Node, tests and the offline demo are
+unchanged; a sink that throws or rejects is ignored.
+
+| Event | When |
+|---|---|
+| `task_started`, `task_finished`, `task_failed` (`final`: no retry follows) | Every task |
+| `evidence` | Counts of what the task works from: new traces (gather), open flags and changed documents (triage), flags, traces, documents, source excerpts, target and related concepts, rejections (draft) |
+| `model_call_started`, `model_call_finished` | Each model call, with its purpose (`mine`, `triage`, `draft`, `repair`, `review`), duration and tokens |
+| `lessons`, `clusters`, `stale` | Gather, triage and sweep results, as counts |
+| `draft_ops`, `self_review`, `no_change`, `draft_invalid` | The checked changeset (ops by kind, citations, problems) and the self-review verdict (issues, blockers) |
+| `proposal_created`, `proposal_applied` | The proposal id, and when the space policy applied it |
+
+Everyone who may watch a space's curator (editors and up) receives the events, which is wider than the audience of
+the evidence a task reads. So events carry ids of curator rows, counts and timings only: never evidence text,
+titles, concept paths, cluster topics, model output or error messages (`packages/core/test/progress.test.ts` checks
+this against a run over finance-only evidence). Studio reads a proposal's title through RLS.
+
+The `curator` Edge Function sends them with `rpcProgressSink()`: in order, batched while a call is in flight, through
+`kf_curator_progress(space, events)` (service role only), which calls `realtime.send()` on the private topic
+`curator:<space id>` with the event name `progress`. `realtime.send()` stores each message in `realtime.messages`,
+so Realtime delivers it to subscribers its RLS policies allow and can replay it to a viewer who joins later; a REST
+broadcast would need the secret key in another place and could not be checked by pgTAP. A task waits at most 2 s
+for its last events before its queue message is acked. Studio shows them on Activity (see
+[Studio](studio.md#how-it-talks-to-supabase)).
 
 ## Provenance
 
@@ -221,6 +259,7 @@ update public.spaces set settings = '{
 | `embeddings.provider` | `gte-small` | Only option today |
 | `retention.trace_days` | `null` (keep) | Delete traces older than this many days (1–36500), daily by cron `kf-cleanup` |
 | `retention.usage_days` | `null` (keep) | Delete concept usage rows older than this many days (1–36500) |
+| `ask.record_traces` | `true` | Send conversations from Studio's Ask page to the curator as traces; `false` records no traces from Ask ([Studio](studio.md#ask)) |
 
 The schema is `SpaceSettingsSchema` in `packages/core/src/settings.ts`. Studio's **Settings → Curator & policy**
 has a field for every key above. The database validates the same keys, types and bounds whenever
@@ -252,6 +291,9 @@ All prompts are in `packages/core/src/curator/prompts.ts`: a shared description 
 conventions, risk levels) and `REVIEW_SYSTEM` (the second reviewer). `curator.instructions` is appended to them as
 "house rules". Change the prompts in `packages/core`, run `npm run sync:shared`, and check the scripted story in
 `packages/core/test/curator.test.ts` and `examples/revenue-report` still passes.
+
+To see whether knowledge changes help the agents that use it, run the [evals](evals.md): the same agent on a fixed
+task set before and after a curator run.
 
 `packages/core/test/curator-safety.test.ts` replays the access scenarios from the security reviews (triage and
 rejection leaks, dismissal reasons, research scope) with a scripted model. `packages/core/test/curator-eval.test.ts`
@@ -374,7 +416,7 @@ prompt prefixes can reuse it between the draft, the repair round and the self-re
 
 Every run records what it spent in `curator_runs.stats` (shown in Studio under Activity and Health, and by
 `kf runs`): `model_calls`, `input_tokens`, `output_tokens` and `cached_input_tokens` (as reported by the provider),
-next to `proposals`, `auto_applied`, `repaired` and the other counters. Multiply by your provider's prices to get the
+next to `proposals`, `auto_applied`, `repaired`, `sql_errors` and the other counters. Multiply by your provider's prices to get the
 run's cost.
 
 To spend less: use a cheaper `fast_model`, lower `max_research_steps` (data-access fixes rarely need more than 3 or

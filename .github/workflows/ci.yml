@@ -27,8 +27,10 @@ jobs:
         run: node scripts/check-release.mjs
       - name: Typecheck every workspace
         run: npm run typecheck
-      - name: Unit tests (core, cli, sdk, mastra, Studio, example)
+      - name: Unit tests (core, cli, sdk, mastra, Studio, examples)
         run: npm test
+      - name: Offline eval (scripted agent and curator model; checks the harness, not a model)
+        run: npm run eval:offline
       - name: Build the SDK, the Mastra integration and the CLI
         run: npm run build -w @supaknowledge/sdk -w @supaknowledge/mastra -w @supaknowledge/cli
       - name: Lint and build Studio (TanStack Start)

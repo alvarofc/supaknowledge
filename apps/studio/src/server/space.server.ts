@@ -12,7 +12,7 @@ export type Space = Pick<
 export type Group = Pick<Database["public"]["Tables"]["groups"]["Row"], "id" | "slug" | "name" | "description">;
 
 export interface SpaceContext {
-  user: { id: string; email: string | null };
+  user: { id: string; email: string | null; isAnonymous: boolean };
   workspace: Workspace;
   space: Space;
   /** effective space role from rpc my_space_role (null = no access) */
@@ -70,7 +70,7 @@ export function getSpaceContext(wsSlug: string, spaceSlug: string): Promise<Spac
     ]);
 
     return {
-      user: { id: user.id, email: user.email },
+      user: { id: user.id, email: user.email, isAnonymous: user.isAnonymous },
       workspace,
       space,
       role: (roleRes.data) ?? null,

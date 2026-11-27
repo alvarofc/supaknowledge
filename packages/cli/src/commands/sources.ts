@@ -3,7 +3,7 @@ import { CliError, must, UUID_RE, type Ctx } from "../context.ts";
 import type { Runner } from "../program.ts";
 import { ago, statusColor, table, truncate } from "../render.ts";
 
-const CONNECTORS = ["notion", "slack", "github", "gdrive", "web", "upload"];
+const CONNECTORS = ["notion", "slack", "github", "gdrive", "web", "upload", "schema"];
 // secret_id is not readable through the API (column grant), so never select *
 const COLS = "id, space_id, connector, name, config, audience, sync_interval, status, last_synced_at, last_error, created_at";
 
@@ -31,7 +31,7 @@ async function sourceId(ctx: Ctx, ref: string): Promise<string> {
 }
 
 export function registerSources(program: Command, run: Runner): void {
-  const sources = program.command("sources").description("raw evidence the curator learns from: Notion, Slack, GitHub, Drive, web, uploads");
+  const sources = program.command("sources").description("raw evidence the curator learns from: Notion, Slack, GitHub, Drive, web, uploads, database schemas");
 
   sources
     .command("add")
@@ -41,9 +41,17 @@ export function registerSources(program: Command, run: Runner): void {
     .option("--config <json>", "connector config, e.g. '{\"repo\":\"acme/handbook\",\"paths\":[\"docs/\"]}'", "{}")
     .option("--audience <groups>", "comma-separated group slugs that may see this source's documents (default: everyone in the space)")
     .option("--interval <interval>", "sync interval (Postgres interval)", "1 hour")
-    .addHelpText("after", "\nThen store its token: echo $TOKEN | kf sources secret <name>\nand start a sync:    kf sources sync <name>")
+    .option("--project-ref <ref>", "schema: the Supabase project whose database schema to read (ref or project URL)")
+    .option("--schemas <names>", "schema: comma-separated Postgres schemas (default: public)")
+    .addHelpText(
+      "after",
+      "\nThen store its token: echo $TOKEN | kf sources secret <name>\nand start a sync:    kf sources sync <name>" +
+        "\n\nA database schema (drift flags data-access concepts that use dropped or renamed columns):" +
+        "\n  kf sources add schema --name app-db --project-ref <ref> --schemas public,billing" +
+        "\n  echo \"$SUPABASE_ACCESS_TOKEN\" | kf sources secret app-db",
+    )
     .action(
-      run(async (ctx: Ctx, connector: string, opts: { name: string; config: string; audience?: string; interval: string }) => {
+      run(async (ctx: Ctx, connector: string, opts: { name: string; config: string; audience?: string; interval: string; projectRef?: string; schemas?: string }) => {
         if (!CONNECTORS.includes(connector)) throw new CliError(`connector must be one of ${CONNECTORS.join(", ")}`, { exitCode: 2 });
         let config: unknown;
         try {
@@ -52,6 +60,17 @@ export function registerSources(program: Command, run: Runner): void {
           throw new CliError(`--config is not valid JSON: ${(e as Error).message}`, { exitCode: 2 });
         }
         if (!config || typeof config !== "object" || Array.isArray(config)) throw new CliError("--config must be a JSON object", { exitCode: 2 });
+        if ((opts.projectRef || opts.schemas) && connector !== "schema") {
+          throw new CliError("--project-ref and --schemas only apply to schema sources", { exitCode: 2 });
+        }
+        if (connector === "schema") {
+          const cfg = config as Record<string, unknown>;
+          if (opts.projectRef) cfg.project_ref = opts.projectRef.trim();
+          if (opts.schemas) cfg.schemas = opts.schemas.split(",").map((s) => s.trim()).filter(Boolean);
+          if (typeof cfg.project_ref !== "string" || !cfg.project_ref) {
+            throw new CliError("a schema source needs the project to read", { exitCode: 2, hint: "kf sources add schema --name app-db --project-ref <ref>" });
+          }
+        }
         const sp = await ctx.space();
         const db = await ctx.db();
         const audience = await groupIds(ctx, opts.audience);
@@ -68,7 +87,8 @@ export function registerSources(program: Command, run: Runner): void {
           });
         }
         const row = (await must(Promise.resolve(res))) as { id: string; name: string };
-        ctx.out(row, () => `${ctx.c.green("added")} ${connector} source ${row.name} ${ctx.c.dim(row.id)}\nnext: echo "$TOKEN" | kf sources secret ${row.name}`);
+        const token = connector === "schema" ? "$SUPABASE_ACCESS_TOKEN" : "$TOKEN";
+        ctx.out(row, () => `${ctx.c.green("added")} ${connector} source ${row.name} ${ctx.c.dim(row.id)}\nnext: echo "${token}" | kf sources secret ${row.name}`);
       }),
     );
 

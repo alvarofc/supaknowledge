@@ -1,7 +1,7 @@
 # Source connectors
 
 Connectors pull raw evidence (Notion pages, Slack conversations, GitHub docs and issues, Drive files, web pages,
-uploads) into `public.source_documents`. Every write is chunked and embedded automatically (`kf_embed` queue), and
+uploads, database schemas) into `public.source_documents`. Every write is chunked and embedded automatically (`kf_embed` queue), and
 the curator reads changed documents on its next run.
 
 ```
@@ -163,6 +163,75 @@ credentials, and after 5 failed attempts otherwise; fix it and call `request_sou
   Refused URLs discovered through sitemaps or links are dropped and the run carries on.
 - External id: the URL.
 
+### Database schema (`schema`)
+
+The schema of your application's database on Supabase: the database your agents query, not the one Supaknowledge
+runs on. Data-access concepts can cite it, and when the schema changes, the concepts that still use the old names
+are flagged before an agent fails on them ([schema drift](#schema-drift)).
+
+| Config | Type | Default |
+|---|---|---|
+| `project_ref` | the 20-letter project ref, or the project URL `https://<ref>.supabase.co` | required |
+| `schemas` | string[] of plain schema names | `["public"]` |
+
+```bash
+kf sources add schema --name app-db --project-ref abcdefghijklmnopqrst --schemas public,billing
+echo "$SUPABASE_ACCESS_TOKEN" | kf sources secret app-db
+kf sources sync app-db
+```
+
+- **Token:** a Supabase access token (`sbp_…`, Account → Access tokens) of an account that can open the project.
+  Personal access tokens are not scoped to one project, so create one for a member who only belongs to the
+  organization of that project, and store it only here (Vault).
+- **How it reads:** one catalog query per sync through the Management API,
+  `POST https://api.supabase.com/v1/projects/{ref}/database/query` with `read_only: true`. It reads `pg_catalog`
+  only, never table rows. Objects that belong to extensions are left out.
+- **Why the Management API and not a connection string:** the request is plain HTTPS to one fixed host, so it goes
+  through the [outbound guard](#outbound-requests-ssrf-guard) like every other connector, and the token can only
+  reach `api.supabase.com`. A Postgres connection string would mean a raw TCP connection to a host the admin
+  chooses, which the guard cannot check, and a database password in Vault. Self-hosted Supabase without the
+  Management API is not supported yet.
+- **Documents:** `schema:<schema>` lists the schema's tables and views (kind, column count, RLS state, comment) and
+  its function signatures (arguments, return type, language, security definer or invoker). `table:<schema>.<name>`
+  holds one table or view: its comment, columns with type, nullability, default and comment, primary key, foreign
+  keys, RLS state and policies (command, roles, `using`, `with check`), and the definition of a view. Everything
+  is sorted, so an unchanged schema produces unchanged documents and no new embeddings. Dropped tables lose their
+  document.
+- Every sync reads the whole schema, and only documents whose markdown changed count against the per-run cap. The
+  snapshot is kept in `sources.cursor.snapshot` to compare with the next sync.
+
+#### Schema drift
+
+After a sync, the new snapshot is compared with the previous one (`packages/core/src/schema.ts`):
+
+| Change | Flagged when a data-access concept mentions |
+|---|---|
+| Column dropped or retyped | the table (`orders` or `public.orders`) and the column |
+| Column probably renamed: the table lost one column and gained exactly one of the same type | the table and the old column; the flag says "probably renamed to `<new>`" |
+| Table or view dropped; probably renamed when exactly one new table in the schema has the same columns | the table |
+| RLS enabled or disabled, a policy added, removed or changed | the table |
+| Function dropped, or its arguments changed | the function |
+
+Additions alone flag nothing. Identifiers match as whole words, case-insensitively, with double quotes ignored.
+Only stable and draft `data_access` concepts are checked.
+
+Each match opens one `outdated` flag on the concept through `kf_record_schema_drift()` (service role only), with
+the observation, a suggested fix and `evidence.schema_drift` (`key`, the structured `change`, and the schema
+document it cites). The database:
+
+- opens at most one live (open or in-proposal) drift flag per concept and identifier, so syncing again, or a
+  second sync of the same change, adds nothing. Once the flag is resolved or dismissed, a new change flags again;
+- gives the flag the narrower of the concept and source audiences, and opens none when both are restricted to
+  groups that do not overlap, so a flag never shows schema names to people outside the source audience;
+- starts a curator run (trigger `schema_drift`) unless `curator.enabled` is off.
+
+The curator handles these flags like any other (see [the curator](curator.md#pipeline)): triage puts the cited
+schema document into the concept's draft, so the proposal cites it.
+
+Nothing is flagged on the first sync, when `project_ref` changes, or for schemas added to or removed from
+`schemas`. A run that stops at the cap keeps the previous snapshot until a later run completes, and the flags are
+recorded before the new snapshot is stored, so a failed run compares against the same baseline when it retries.
+
 ### Upload (`upload`)
 
 No sync. Documents come from Studio or the CLI through the authenticated route on the same function:
@@ -204,7 +273,7 @@ array of strings):
 | github | private or internal repo | `{"github_repo": "acme/handbook"}`, `{"github_team": "acme/finance"}` (teams with repo access) |
 | gdrive | not shared with "anyone" / the whole domain | `{"gdrive_folder": "<folder id or any ancestor up to the configured root>"}` (the most specific mapped folder wins), `{"google_group": "sales@acme.com"}`, `{"gdrive_drive": "<shared drive id>"}` (only when no folder matched) |
 | notion | never (the API has no permissions) | `{"notion_database": "<id>"}`, `{"notion_page": "<root page id>"}` |
-| web, upload | never | – |
+| web, upload, schema | never | – |
 
 ```sql
 update public.groups set external_ref = '{"slack_channel": "C0FINANCE"}' where slug = 'finance';
@@ -299,5 +368,7 @@ inside a run; longer waits fail the job, which retries after the queue visibilit
 - GitHub: reopened issues keep their closed-state document; discussions are limited to 30 comments each.
 - Drive: Sheets export only the first sheet; files moved out of the synced folders are detected through the
   changes feed (or a full sync).
+- Schema: renames are a heuristic. Two columns renamed in one table with the same type, or a rename that also
+  changes the type, are reported as drops.
 - Two runs of the same source can overlap (e.g. "Sync now" during a long backfill). Writes are idempotent upserts,
   so this only duplicates work.

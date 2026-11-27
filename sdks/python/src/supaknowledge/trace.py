@@ -42,6 +42,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_SQL_RESULT_TOOLS = {"execute_sql"}
+
+
+def _get(obj: Any, key: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _mcp_text(result: Any) -> Any:
+    """The text parts of an MCP CallToolResult (dict or MCP SDK object), else the result itself."""
+    content = _get(result, "content")
+    if isinstance(content, list):
+        texts = [t for t in (_get(p, "text") for p in content if _get(p, "type") == "text") if isinstance(t, str)]
+        if texts:
+            return "\n".join(texts)
+    if result is not None and not isinstance(result, (dict, list, str, int, float, bool)):
+        dump = getattr(result, "model_dump", None)
+        if callable(dump):
+            return dump()
+        return str(result)
+    return result
+
+
 def _retryable(e: BaseException) -> bool:
     if not isinstance(e, SupaknowledgeError):
         return True
@@ -92,6 +116,36 @@ class TraceRecorder:
 
     def tool(self, name: str, input: Any = None, output: Any = None, is_error: bool = False, metadata: dict[str, Any] | None = None) -> "TraceRecorder":
         return self.event({"role": "tool", "tool_name": name, "tool_input": input, "tool_output": output, "is_error": is_error, "metadata": metadata})
+
+    def mcp_tool(
+        self,
+        server: str,
+        name: str,
+        input: Any = None,
+        result: Any = None,
+        *,
+        error: BaseException | str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "TraceRecorder":
+        """Record a call to another MCP server's tool from its CallToolResult, in one line.
+
+        ``trace.mcp_tool("supabase", "execute_sql", args, result)``: the event is named ``mcp__<server>__<name>``,
+        ``isError`` in the result (or ``error``) marks it failed, and a successful ``execute_sql`` result is replaced
+        by ``{"omitted": "row data"}`` so rows never leave your process. ``result`` may be the MCP SDK's
+        ``CallToolResult`` or a dict. The traces function redacts literals in the SQL and parses the Postgres error.
+        """
+        try:
+            is_error = error is not None or bool(_get(result, "isError"))
+            if error is not None:
+                output: Any = str(error)
+            elif is_error or name not in _SQL_RESULT_TOOLS:
+                output = _mcp_text(result)
+            else:
+                output = {"omitted": "row data"}
+            return self.tool(f"mcp__{server}__{name}", input=input, output=output, is_error=is_error, metadata=metadata)
+        except Exception as err:  # never raise into the host app
+            self._report(err)
+            return self
 
     def feedback(self, content: str, metadata: dict[str, Any] | None = None) -> "TraceRecorder":
         """Human feedback or a correction. The curator mines these for knowledge fixes."""

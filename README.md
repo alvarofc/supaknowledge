@@ -78,12 +78,15 @@ query it). What Supaknowledge adds to the post:
 | Embeddings (no API key) | Edge Runtime `Supabase.ai` gte-small, kept in sync by triggers → Queues → cron | `embed` function |
 | Agent interface | Remote MCP server on an Edge Function | `mcp` function |
 | Sign-in for people and MCP clients | Auth, including the OAuth 2.1 server | Studio `/oauth/consent` |
+| Public demo without an account | Auth anonymous sign-ins + RLS (visitors read, search and flag) | `join_demo()`, `kf demo` |
+| Deploy from the CLI | Management API, OAuth for integrations | `kf deploy [--login]` |
 | Headless agents | Auth users with `app_metadata.kind = 'agent'` and an API key | `agents` function |
 | Trace ingest (JSON, OTLP) | Edge Function | `traces` function |
 | Curator | Queues (pgmq) + Cron + Edge Function, any model through Mastra (your OpenAI-compatible endpoint, Vercel AI Gateway, OpenRouter) | `curator` function, `packages/core/src/curator` |
 | Source connectors | Edge Function + Storage + Vault (tokens) + Queues + Cron | `connectors` function |
 | Skill files, raw source files | Storage, with RLS that follows the rows they belong to | buckets `concept-files`, `sources` |
 | Live review inbox | Realtime (`postgres_changes`, RLS applied) | Studio |
+| Who is reviewing what, the curator at work | Realtime Presence and Broadcast on private channels (Realtime Authorization) | Studio, `curator` function |
 | Import / export | OKF + Agent Skills | `bundle` function, `kf` CLI |
 
 Details: [architecture](docs/architecture.md).
@@ -139,6 +142,10 @@ no stack or key needed. With `KF_LLM_MODEL` (and your endpoint or gateway key) i
 agent is a real [Mastra](https://mastra.ai) agent using `@supaknowledge/mastra`. See
 [examples/revenue-report](examples/revenue-report).
 
+To check that the loop helps, `npm run eval:offline` runs the same agent on a fixed task set before and after a
+curator run and reports task success, tool errors and flags per task; `npm run eval` does it against your stack and
+model. See [evals](docs/evals.md).
+
 More: [getting started](docs/getting-started.md).
 
 ## Repository
@@ -147,35 +154,42 @@ More: [getting started](docs/getting-started.md).
 | Path | What |
 |---|---|
 | `supabase/migrations` | Schema, RLS, RPCs, queues, cron jobs, Storage buckets, Realtime |
-| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance` |
-| `supabase/tests/database` | 739 pgTAP tests of the access model |
+| `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance`, and `oauth-broker` (only for whoever runs the Supabase OAuth app of `kf deploy --login`) |
+| `supabase/tests/database` | 879 pgTAP tests of the access model |
 | `packages/core` | `@supaknowledge/core` (internal, not published): OKF + Agent Skills formats, chunking, access rules, policy, the curator engine |
 | `packages/cli` | `@supaknowledge/cli`: the `supaknowledge` command, alias `kf` |
 | `packages/sdk`, `sdks/python` | `@supaknowledge/sdk` (TypeScript) and `supaknowledge` (Python): search, flag, traces, OpenAI-compatible / JSON Schema tool helpers |
 | `packages/mastra` | `@supaknowledge/mastra`: Supaknowledge tools, instructions and trace capture for Mastra agents |
 | `apps/studio` | Studio, the review UI (TanStack Start) |
 | `examples/revenue-report` | The end-to-end demo |
+| `examples/evals` | Evals: the same agent on a fixed task set before and after curator runs |
 
 ## Documentation
 
 - [Getting started](docs/getting-started.md): local setup, first space, first agent, first curator run
 - [Architecture](docs/architecture.md): data model, queues, cron, the function map
 - [Access control](docs/access-control.md): principals, roles, audiences, the escalation guard, tests
-- [MCP](docs/mcp.md): tools, and connecting Claude Code, Cursor, Claude Desktop and others
+- [MCP](docs/mcp.md): tools, connecting Claude Code, Cursor, Claude Desktop and others, and using it next to the
+  Supabase MCP server
 - [Curator](docs/curator.md): pipeline, prompts, settings and policy, provenance, costs
+- [Evals](docs/evals.md): task success, tool errors and flags before and after curator runs
 - [OKF and Agent Skills](docs/okf.md): file formats and round-trip rules
-- [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>` does the Supabase side), Studio on Vercel, self-hosting
+- [Deploy](docs/deploy.md): Supabase cloud (`npx kf deploy --project-ref <ref>`, or `npx kf deploy --login` to sign in
+  with Supabase and pick or create the project), Studio on Cloudflare Workers or Vercel, a public read-only demo,
+  self-hosting
 - [CLI](docs/cli.md) · [SDKs](docs/sdk.md) · [Connectors](docs/connectors.md) · [Studio](docs/studio.md)
 - [Design](docs/DESIGN.md): the decisions behind all of this
+- [Releasing](docs/releasing.md) · [Supaknowledge on Supabase](docs/partners.md) (summary for Supabase's integrations listing)
 
 ## Status
 
 Alpha (0.1). Most of the [build plan](docs/DESIGN.md#10-build-plan) is implemented and tested: the loop end to end,
-trace ingest and correction mining, Studio with the review inbox, policies and auto-apply, six source connectors,
-staleness sweeps, multiple spaces and the health dashboard. Packages are not published to npm or PyPI yet; see [CHANGELOG.md](CHANGELOG.md).
+trace ingest and correction mining (including Postgres errors from the Supabase MCP server's `execute_sql`), Studio
+with the review inbox, policies and auto-apply, six source connectors, staleness sweeps, multiple spaces, the health
+dashboard and evals of the same agent before and after curator runs. Packages are not published to npm or PyPI yet; see [CHANGELOG.md](CHANGELOG.md).
 
-Not built yet: evals that show the factory works (the same agent before and after curator runs), automatic git
-sync of OKF bundles (today: `kf export` / `kf pull` / `kf import`), OKF Attested Computations for data-access
+Not built yet: evals over many curator runs (flag rate per concept over time; today one run between two phases on a
+fixed task set), automatic git sync of OKF bundles (today: `kf export` / `kf pull` / `kf import`), OKF Attested Computations for data-access
 knowledge, LangSmith / Langfuse trace importers, per-op review, and embedding providers other than gte-small.
 Open questions are tracked in [DESIGN.md §11](docs/DESIGN.md#11-open-questions).
 

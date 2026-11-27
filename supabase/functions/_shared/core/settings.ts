@@ -75,12 +75,18 @@ const RetentionSettingsSchema = z.object({
   usage_days: z.number().int().min(1).max(36500).nullable().default(null),
 });
 
+const AskSettingsSchema = z.object({
+  /** send Studio "Ask" conversations to the curator as traces (false = Ask records no traces) */
+  record_traces: z.boolean().default(true),
+});
+
 export const SpaceSettingsSchema = z.object({
   curator: CuratorSettingsSchema.prefault({}),
   auto_apply: AutoApplySettingsSchema.prefault({}),
   staleness: StalenessSettingsSchema.prefault({}),
   embeddings: EmbeddingsSettingsSchema.prefault({}),
   retention: RetentionSettingsSchema.prefault({}),
+  ask: AskSettingsSchema.prefault({}),
 });
 
 export type SpaceSettings = z.infer<typeof SpaceSettingsSchema>;
@@ -91,6 +97,7 @@ const SECTIONS = {
   staleness: StalenessSettingsSchema,
   embeddings: EmbeddingsSettingsSchema,
   retention: RetentionSettingsSchema,
+  ask: AskSettingsSchema,
 } as const;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

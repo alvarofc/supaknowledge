@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CheckCheck, Flag, GitPullRequestArrow, History, Inbox as InboxIcon } from "lucide-react";
+import { ConnectSnippets } from "@/components/agents/connect-snippets";
 import { FlagItem } from "@/components/inbox/flag-list";
 import { InvitationsBanner } from "@/components/invitations/invitations-banner";
 import { ProposalItem } from "@/components/inbox/proposal-list";
 import { LiveRefresh } from "@/components/kf/live-refresh";
+import { ViewerAvatars, namedViewers, usePeople, useProposalsPresence } from "@/components/kf/presence";
 import { LinkButton } from "@/components/ui/button";
-import { Card, EmptyState, PageHeader } from "@/components/ui/card";
+import { Card, CardHeader, EmptyState, PageHeader } from "@/components/ui/card";
 import { LinkTabs } from "@/components/ui/tabs";
 import { title } from "@/lib/meta";
 import { atLeast } from "@/lib/roles";
@@ -32,6 +34,9 @@ function InboxPage() {
 
   const requested = (sp.tab ?? "") as Tab;
   const tab: Tab = isEditor ? (["proposals", "flags", "history"].includes(requested) ? requested : "proposals") : "flags";
+  // who else has a pending proposal open (Realtime Presence; only people who can see a proposal can join its channel)
+  const presence = useProposalsPresence(isEditor && tab === "proposals" ? pending.map((p) => p.id) : [], ctx.user.id);
+  const people = usePeople(Object.values(presence).flatMap((v) => v.map((x) => x.userId)), profiles);
 
   const tabs = isEditor
     ? [
@@ -53,6 +58,17 @@ function InboxPage() {
         actions={<LiveRefresh spaceId={ctx.space.id} tables={["proposals", "flags"]} />}
       />
       <InvitationsBanner invitations={invitations} className="mb-4" />
+      {ctx.user.isAnonymous ? (
+        <Card className="mb-6">
+          <CardHeader
+            title="Connect your agent to this demo"
+            description="Your MCP client signs in through Studio: choose Try the demo on the sign-in page, then approve the client."
+          />
+          <div className="px-4 py-4">
+            <ConnectSnippets wsSlug={ctx.workspace.slug} spaceSlug={ctx.space.slug} />
+          </div>
+        </Card>
+      ) : null}
       {/* on wide screens the product sidebar carries these tabs */}
       <LinkTabs tabs={tabs} active={tab} className="mb-4 lg:hidden" />
       <div>
@@ -61,7 +77,13 @@ function InboxPage() {
             <Card>
               <ul className="divide-y divide-line">
                 {pending.map((p) => (
-                  <ProposalItem key={p.id} p={p} base={ctx.base} profiles={profiles} />
+                  <ProposalItem
+                    key={p.id}
+                    p={p}
+                    base={ctx.base}
+                    profiles={profiles}
+                    presence={<ViewerAvatars viewers={namedViewers(presence[p.id] ?? [], people)} />}
+                  />
                 ))}
               </ul>
             </Card>

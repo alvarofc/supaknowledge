@@ -6,6 +6,7 @@ dist/
 .tanstack/
 .vercel/
 .netlify/
+.wrangler/
 .turbo/
 *.tsbuildinfo
 .env

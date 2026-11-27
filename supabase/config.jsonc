@@ -505,7 +505,9 @@
       // HTTP proxy for every connector request (it must refuse non-public destinations itself; see docs/connectors.md).
       "KF_CONNECTORS_EGRESS_PROXY": "env(KF_CONNECTORS_EGRESS_PROXY)",
       // New chunks embedded per embed request (gte-small on the worker CPU; default 4).
-      "KF_EMBEDS_PER_REQUEST": "env(KF_EMBEDS_PER_REQUEST)"
+      "KF_EMBEDS_PER_REQUEST": "env(KF_EMBEDS_PER_REQUEST)",
+      // Public demo mode: "true" lets anonymous (demo visitor) sessions call the functions. See docs/deploy.md.
+      "KF_DEMO": "env(KF_DEMO)"
     }
   },
 
@@ -520,7 +522,10 @@
     "traces": { "verify_jwt": false },
     "agents": { "verify_jwt": false },
     "bundle": { "verify_jwt": false },
-    "maintenance": { "verify_jwt": false }
+    "maintenance": { "verify_jwt": false },
+    // Token broker for `kf deploy --login` (Supabase OAuth for integrations). Only deployed by whoever registered
+    // the OAuth app; `kf deploy` skips it. See docs/releasing.md.
+    "oauth-broker": { "verify_jwt": false }
   },
 
   "analytics": {

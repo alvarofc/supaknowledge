@@ -4,11 +4,15 @@
 //   POST  /traces                 simple JSON shape (idempotent on external_id: appends events)
 //   PATCH /traces/:id             set outcome / ended_at / name / metadata / audience, append events
 //   POST  /traces/otlp?space=...  OTLP/HTTP JSON (ExportTraceServiceRequest) with GenAI semantic conventions
+//
+// Tool events of the Supabase MCP server's SQL tools (execute_sql, apply_migration) are sanitised before they are
+// stored: literals in the SQL are redacted, successful results are replaced by their row count, and failures keep
+// only the parsed Postgres error (sanitizeEvents in errors.ts).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { authenticate, type Caller } from "../_shared/auth.ts";
 import { handler, HttpError, json, readJson } from "../_shared/http.ts";
 import { dbError, isUuid, must, resolveGroups, resolveSpace, type SpaceInfo, subpath } from "../_lib/api.ts";
-import { mustWrite, traceDbError } from "./errors.ts";
+import { mustWrite, sanitizeEvents, traceDbError } from "./errors.ts";
 import {
   attrs,
   audienceParam,
@@ -87,8 +91,10 @@ function validateTrace(b: TraceIn, partial: boolean) {
 // ---------------------------------------------------------------------------------------------------------
 // writes (all through caller.db)
 // ---------------------------------------------------------------------------------------------------------
-async function appendEvents(caller: Caller, traceId: string, spaceId: string, events: EventIn[]): Promise<number> {
-  if (!events.length) return 0;
+async function appendEvents(caller: Caller, traceId: string, spaceId: string, input: EventIn[]): Promise<number> {
+  if (!input.length) return 0;
+  // Supabase MCP SQL calls: redacted SQL, no row data, the Postgres error parsed (see errors.ts)
+  const events = sanitizeEvents(input);
   for (let attempt = 0; attempt < 3; attempt++) {
     const last = must(
       await caller.db.from("trace_events").select("seq").eq("trace_id", traceId).order("seq", { ascending: false }).limit(1),

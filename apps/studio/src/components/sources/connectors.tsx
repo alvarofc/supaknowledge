@@ -1,4 +1,4 @@
-import { BookText, FileUp, FolderGit2, FolderOpen, Globe, MessageSquare } from "lucide-react";
+import { BookText, Database as DatabaseIcon, FileUp, FolderGit2, FolderOpen, Globe, MessageSquare } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Database } from "@/lib/database.types";
 import type { ConnectorKind } from "./connector-config";
@@ -31,6 +31,7 @@ export function ConnectorIcon({ kind, className = "size-4" }: { kind: ConnectorK
     gdrive: <FolderOpen className={className} aria-hidden="true" />,
     web: <Globe className={className} aria-hidden="true" />,
     upload: <FileUp className={className} aria-hidden="true" />,
+    schema: <DatabaseIcon className={className} aria-hidden="true" />,
   };
   return <>{icons[kind]}</>;
 }

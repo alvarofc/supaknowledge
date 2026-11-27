@@ -19,8 +19,10 @@ import { MAX_READS, processBatch, type QueueBatch, type QueueJob } from "../_sha
 import type { GroupRef } from "./lib/acl.ts";
 import { type DocumentRow, type DocumentStore, type ExistingDoc, runSync, type SourceRow } from "./lib/engine.ts";
 import { guardedFetch } from "./lib/net-guard.ts";
+import { detectSchemaDrift } from "./lib/schema-drift.ts";
 import { connectors } from "./lib/registry.ts";
-import { AuthError, ConfigError, type Connector, type Cursor, type RawExport, type SyncedDocument } from "./lib/types.ts";
+import { AuthError, ConfigError, type Connector, type Cursor, type Logger, type RawExport, type SyncedDocument } from "./lib/types.ts";
+import type { DriftConcept, DriftFlag } from "../_shared/core/schema.ts";
 import { assertUploadCaller, prepareUpload, UPLOAD_MAX_BYTES, UploadError, type UploadInput } from "./lib/upload.ts";
 
 interface IngestJob {
@@ -42,7 +44,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // ---------------------------------------------------------------------------------------------------------
 class SupabaseStore implements DocumentStore {
   lastUpsertId: string | null = null;
-  constructor(private client: SupabaseClient, private source: { id: string; space_id: string }, private only?: string[]) {}
+  /** deferCursor: the caller writes the final cursor itself (schema sources keep the old snapshot until drift is recorded) */
+  constructor(private client: SupabaseClient, private source: { id: string; space_id: string }, private only?: string[], private deferCursor = false) {}
 
   async existing(): Promise<Map<string, ExistingDoc>> {
     const map = new Map<string, ExistingDoc>();
@@ -110,6 +113,7 @@ class SupabaseStore implements DocumentStore {
   }
 
   async saveCursor(cursor: Cursor): Promise<void> {
+    if (this.deferCursor) return;
     const { error } = await this.client.from("sources").update({ cursor }).eq("id", this.source.id);
     if (error) throw new Error(`save cursor: ${error.message}`);
   }
@@ -126,6 +130,47 @@ async function loadGroups(spaceId: string): Promise<GroupRef[]> {
 async function isPaused(id: string): Promise<boolean> {
   const { data } = await db.from("sources").select("status").eq("id", id).maybeSingle();
   return data?.status === "paused";
+}
+
+/**
+ * After a schema source synced: record drift flags, then return the cursor to store. The previous snapshot is
+ * replaced only once a run completed and its drift was recorded, so a failed or partial run compares against
+ * the same baseline when it is retried (kf_record_schema_drift() dedupes the flags).
+ */
+async function afterSchemaSync(source: SourceRow, result: { cursor: Cursor; more: boolean }, log: Logger): Promise<Cursor> {
+  if (result.more) return source.cursor ?? {};
+  await detectSchemaDrift(source.cursor, result.cursor, {
+    concepts: async () => {
+      const out: DriftConcept[] = [];
+      const page = 1000;
+      for (let from = 0; ; from += page) {
+        const { data, error } = await db
+          .from("concepts")
+          .select("id, path, body, kind")
+          .eq("space_id", source.space_id)
+          .eq("kind", "data_access")
+          .neq("status", "deprecated")
+          .order("path")
+          .range(from, from + page - 1);
+        if (error) throw new Error(`load concepts: ${error.message}`);
+        out.push(...((data ?? []) as DriftConcept[]));
+        if (!data || data.length < page) break;
+      }
+      return out;
+    },
+    record: async (flags: DriftFlag[]) => {
+      const { data, error } = await db.rpc("kf_record_schema_drift", {
+        p_source: source.id,
+        p_flags: flags.map((f) => ({
+          concept_id: f.concept_id, key: f.key, kind: f.kind, observation: f.observation, suggested_fix: f.suggested_fix,
+          document: f.document, change: f.change,
+        })),
+      });
+      if (error) throw new Error(`record schema drift: ${error.message}`);
+      return Number(data ?? 0);
+    },
+  }, log);
+  return result.cursor;
 }
 
 function errorText(e: unknown): string {
@@ -159,7 +204,8 @@ async function syncSource(msg: IngestJob, job: QueueJob<IngestJob>): Promise<voi
     const { data: token, error: tErr } = await db.rpc("kf_get_source_secret", { p_source: source.id });
     if (tErr) throw new Error(`read secret: ${tErr.message}`);
     const groups = await loadGroups(source.space_id);
-    const store = new SupabaseStore(db, source);
+    const isSchema = source.connector === "schema";
+    const store = new SupabaseStore(db, source, undefined, isSchema);
     const result = await runSync({
       source: source as SourceRow,
       connector,
@@ -172,9 +218,10 @@ async function syncSource(msg: IngestJob, job: QueueJob<IngestJob>): Promise<voi
       limit: DOC_LIMIT,
       deadline: started + TIME_BUDGET_MS,
     });
+    const cursor = isSchema ? await afterSchemaSync(source as SourceRow, result, log) : result.cursor;
     const { error: uErr } = await db
       .from("sources")
-      .update({ cursor: result.cursor, last_synced_at: new Date().toISOString(), last_error: null })
+      .update({ cursor, last_synced_at: new Date().toISOString(), last_error: null })
       .eq("id", source.id);
     if (uErr) throw new Error(`update source: ${uErr.message}`);
     // clear an earlier 'error' state, but never un-pause a source an admin paused while this run was going

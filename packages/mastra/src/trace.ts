@@ -118,12 +118,17 @@ export function recordInput(trace: TraceRecorder, input: unknown): void {
   }
 }
 
+/** An MCP CallToolResult that reports a tool error; a client that returns it as a normal result still marks a failure. */
+function mcpError(value: unknown): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && (value as { isError?: unknown }).isError === true;
+}
+
 function toolOutput(output: unknown): { value: unknown; isError: boolean } {
   if (output && typeof output === "object" && "type" in output && "value" in output) {
     const o = output as { type: unknown; value: unknown };
-    return { value: o.value, isError: typeof o.type === "string" && o.type.startsWith("error") };
+    return { value: o.value, isError: (typeof o.type === "string" && o.type.startsWith("error")) || mcpError(o.value) };
   }
-  return { value: output, isError: false };
+  return { value: output, isError: mcpError(output) };
 }
 
 /** Record one Mastra step (assistant text, tool calls with results or errors). */
@@ -157,7 +162,7 @@ export function recordStep(trace: TraceRecorder, step: StepLike): void {
       const id = String(p.toolCallId);
       const call = calls.get(id);
       calls.delete(id);
-      trace.tool({ name: String(p.toolName ?? call?.name), input: p.args ?? call?.input, output: p.result, isError: p.isError === true, metadata: { tool_call_id: id } });
+      trace.tool({ name: String(p.toolName ?? call?.name), input: p.args ?? call?.input, output: p.result, isError: p.isError === true || mcpError(p.result), metadata: { tool_call_id: id } });
     }
   }
   // calls without a result: suspended for approval, or the run stopped before executing them

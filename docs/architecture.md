@@ -55,7 +55,7 @@ users, writing skill files to Storage). See [access control](access-control.md).
 
 ## Data model
 
-Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups):
+Thirty-one migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups, `20261127000100`–`…600` features added for 0.1):
 
 | Migration | Contents |
 |---|---|
@@ -85,6 +85,11 @@ Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the b
 | `…24_pr1_followups` | `search_sources(p_source)` (per-source search filtered before the limit), concept paths reject empty and `.` segments |
 | `…25_pr5_followups` | Proposal path validation (`private.valid_concept_path`) rejects empty and `.` segments like `concepts.path` |
 | `…26_settings_cas` | `update_space_settings()`: compare-and-swap saves of space settings (RLS and settings validation still apply) |
+| `20261127000100_schema_connector` | The `schema` connector kind, one live drift flag per concept and identifier, `kf_record_schema_drift()` (service role) |
+| `20261127000300_realtime_review` | Realtime Authorization (RLS on `realtime.messages`) for the private topics `proposal:<id>` (review presence) and `curator:<space>` (curator progress); `kf_curator_progress()` (service role → `realtime.send()`) |
+| `20261127000400_ask_settings` | `ask.record_traces` in the space settings validator |
+| `20261127000500_graph_recap` | `knowledge_graph()` and `knowledge_recap()` (security invoker) for the Graph and Recap pages |
+| `20261127000600_demo_mode` | Public demo: `join_demo()`, anonymous visitors as restricted readers, flag rate limits, nightly reset cron `kf-demo-reset` |
 
 ### One write path
 
@@ -163,7 +168,7 @@ keys are not JWTs, and internal calls use the shared secret.
 | Function | Routes | Caller | What it does |
 |---|---|---|---|
 | `mcp` | `POST /mcp?space=<ws>/<space>`, `POST /mcp/<ws>/<space>`, `GET /mcp/.well-known/oauth-protected-resource` | user JWT, OAuth token, agent key | Streamable HTTP MCP server (stateless). Tools in [mcp.md](mcp.md). Returns 401 with `WWW-Authenticate: Bearer resource_metadata=…` so MCP clients start OAuth |
-| `traces` | `POST /traces`, `PATCH /traces/<id>`, `POST /traces/otlp?space=` (also `/otlp/v1/traces`, `/v1/traces`) | user JWT, OAuth token, agent key | Trace ingest, idempotent on `external_id`; OTLP/HTTP JSON with GenAI semantic conventions. Writes with the caller's RLS client |
+| `traces` | `POST /traces`, `PATCH /traces/<id>`, `POST /traces/otlp?space=` (also `/otlp/v1/traces`, `/v1/traces`) | user JWT, OAuth token, agent key | Trace ingest, idempotent on `external_id`; OTLP/HTTP JSON with GenAI semantic conventions. Supabase MCP `execute_sql` / `apply_migration` events are stored with redacted SQL, no row data and the parsed Postgres error ([details](mcp.md#use-with-the-supabase-mcp-server)). Writes with the caller's RLS client |
 | `agents` | `GET /agents[?workspace_id=]`, `GET /agents/<id>`, `POST /agents`, `POST /agents/<id>/rotate`, `/revoke`, `/restore`, `DELETE /agents/<id>` | human JWT (workspace owner or admin; not an OAuth token) | Headless agents: Auth user + `agents` row + workspace membership + space grants; key rotation, revoke (`revoked_at` + Auth ban) / restore; rotate, revoke and delete delete every session of the agent (`kf_revoke_user_sessions()`). The only way to delete an agent. The list includes each agent's `revoked` state |
 | `bundle` | `GET /bundle/export?space=&public=`, `POST /bundle/import`, `POST /bundle/lint`, `POST /bundle/sync-files` | user JWT; OAuth token or agent key for export and lint (they cannot create proposals, so not import). `sync-files` needs a space reviewer or admin (user session or agent key; 403 otherwise) and never accepts OAuth-client tokens | OKF + Agent Skills import (one proposal through `create_proposal()`, optional apply), export, lint; copies skill files into Storage after a proposal is applied, then strips their inline content from the proposal (paths, size and sha256 stay) |
 | `curator` | `POST /curator` (queue), `POST /curator/run` | internal secret; user JWT (reviewer+) for `/run` | Runs one curator task per message with `@supaknowledge/core`'s engine; the model comes from the `KF_LLM_*` secrets. See [curator.md](curator.md#model-configuration) |
@@ -195,6 +200,11 @@ Deleting a space, source or concept, or soft-deleting a document, queues its Sto
 
 `flags`, `proposals`, `curator_runs` and `concepts` are in the `supabase_realtime` publication. Studio subscribes
 to `postgres_changes` filtered by space; Realtime applies RLS, so nobody hears about rows they cannot read.
+
+Two private channels use Realtime Authorization (RLS policies on `realtime.messages`): **Presence** on
+`proposal:<id>`, joined only by people who can see the proposal, shows who is viewing or reviewing it; **Broadcast**
+on `curator:<space id>`, received by editors and up, carries the curator's progress events, which the `curator`
+function sends through `kf_curator_progress()` → `realtime.send()`. See [access control](access-control.md#realtime-channels).
 
 ## Packages
 

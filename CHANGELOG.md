@@ -8,7 +8,9 @@ contain breaking changes.
 
 ## [Unreleased]
 
-First public release, planned as **0.1.0**. Highlights:
+## [0.1.0] - YYYY-MM-DD
+
+First public release. Highlights:
 
 ### Added
 
@@ -19,13 +21,18 @@ First public release, planned as **0.1.0**. Highlights:
   tiers, staleness, an audit log, and hybrid search (pgvector + full-text) with gte-small embeddings computed in
   the Edge Runtime (no API key).
 - **Access control in the database.** Humans, OAuth-connected MCP clients and headless agents are all Supabase
-  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 739 pgTAP tests.
+  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 879 pgTAP tests.
 - **Remote MCP server** (`mcp` Edge Function) with OAuth 2.1 through Supabase Auth, and agent API keys
   (`skn_...`) for headless agents.
 - **Trace ingest** (JSON and OTLP) and correction mining from agent traces.
 - **Source connectors** for Notion, Slack, GitHub, Google Drive, web pages and uploads, with tokens in Vault.
 - **Studio** (TanStack Start): review inbox with live updates, knowledge browser and editor, sources, agents,
   activity, health dashboard and settings.
+- **Realtime review presence and a live curator view.** Studio shows who else has a proposal open and who is
+  reviewing it (Presence on private channels, Realtime Authorization keyed on proposal visibility, never agents),
+  and Activity shows the curator's current run step by step (Broadcast from the `curator` function through
+  `realtime.send()`; ids and counts only). The engine reports progress through an optional, no-op-by-default
+  `progress` callback.
 - **CLI** `@supaknowledge/cli` (`supaknowledge`, alias `kf`): login, init, import / export / lint / pull of
   [OKF](docs/okf.md) bundles and [Agent Skills](https://agentskills.io), proposal review, agents, sources,
   members and MCP client config.
@@ -38,7 +45,28 @@ First public release, planned as **0.1.0**. Highlights:
   trace capture for Mastra agents) and `supaknowledge` for Python.
 - **Curator models** through Mastra's model router: your own OpenAI-compatible endpoint, the Vercel AI Gateway
   or OpenRouter, with fallbacks and a fast model for bulk work.
+- **`kf deploy --login`** signs in with Supabase's OAuth for integrations (authorization code with PKCE, a
+  `127.0.0.1` callback) instead of a personal access token, lets you pick an organization and project or create one
+  (`--create-project`, `--org`, `--region`), and saves the tokens like other kf credentials (`kf logout --supabase`
+  forgets them). The OAuth app's client secret stays in a token broker Edge Function (`oauth-broker`), or in your
+  environment with your own OAuth app. `kf deploy` never deploys the broker.
+- **Public read-only demo** (`KF_DEMO`): Studio's sign-in page offers **Try the demo**, an anonymous Supabase Auth
+  session that joins one demo space as a reader. The database restricts visitors like OAuth clients (no
+  administration, review, knowledge writes or traces), rate-limits their flags per visitor and per day, and the cron
+  job `kf-demo-reset` clears what they left every night. `kf demo enable|status|reset|disable` manage it; Studio shows
+  the demo's MCP command on the inbox. The Edge Functions refuse anonymous sessions unless `KF_DEMO=true`. See
+  [deploy](docs/deploy.md#host-a-public-demo).
+- **Studio on Cloudflare Workers**: `apps/studio/wrangler.jsonc`, `npm run build:cloudflare` and
+  `npm run deploy:cloudflare`.
 - **Example**: `examples/revenue-report`, the end-to-end demo story (`npm run demo`, `npm run demo:offline`).
+- **Evals**: `examples/evals` runs the same agent on a fixed task set before and after a curator run and reports
+  task success, tool errors and flags per task (`npm run eval:offline`, scripted and deterministic, runs in CI;
+  `npm run eval` against the local stack). See [evals](docs/evals.md).
+- **Supabase MCP server support.** Trace ingest recognises its `execute_sql` and `apply_migration` calls and stores
+  them with redacted SQL and without row data; the curator turns failed SQL calls with a Postgres error knowledge
+  could have prevented (undefined column or table, permissions, RLS, enum values) into flags without a model call.
+  `trace.mcpTool()` (TypeScript) and `trace.mcp_tool()` (Python) record such calls in one line. See
+  [MCP](docs/mcp.md#use-with-the-supabase-mcp-server).
 
 ### Security
 
@@ -171,4 +199,5 @@ Fixes from the second (verification) review round:
 - Docs: `supaknowledge-title` is exported for skills whose title differs from their first heading, so titles
   round-trip.
 
-[Unreleased]: https://github.com/alvarofc/supaknowledge/commits/main
+[Unreleased]: https://github.com/alvarofc/supaknowledge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/alvarofc/supaknowledge/releases/tag/v0.1.0

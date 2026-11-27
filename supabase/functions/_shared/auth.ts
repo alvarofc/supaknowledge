@@ -7,6 +7,9 @@
 //                               for a short-lived session (cached per worker) so RLS applies.
 //                               Revoke an agent with POST /agents/:id/revoke (revoked_at + Auth ban + sessions deleted).
 //   3. x-kf-internal: <secret> - cron / queue invocations (see util.invoke_edge_function).
+//
+// Anonymous Supabase Auth sessions (JWT claim is_anonymous) are demo visitors. They are refused unless the
+// deployment runs in demo mode (KF_DEMO=true); the database restricts them either way (migration 20261127000600).
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@supabase/supabase-js";
 import { AGENT_KEY_RE, agentEmail, FailureLimiter, keyPrefix, LruCache, sha256Hex, SingleFlight } from "./agent-keys.ts";
@@ -21,8 +24,22 @@ export interface Caller {
   accessToken: string;
   /** OAuth client that obtained the token, when it came from the OAuth 2.1 server (null otherwise) */
   clientId: string | null;
+  /** an anonymous (demo visitor) session; only accepted in demo mode */
+  anonymous: boolean;
   /** RLS-scoped client acting as the caller */
   db: SupabaseClient;
+}
+
+/** KF_DEMO: "true", "1" or "on" (anything else, including an unresolved "env(KF_DEMO)", is off). */
+export function demoMode(value: string | undefined = Deno.env.get("KF_DEMO")): boolean {
+  return /^(1|true|on)$/i.test((value ?? "").trim());
+}
+
+/** Refuse anonymous sessions outside demo mode. */
+export function checkAnonymous(claims: Record<string, unknown>, demo: boolean): boolean {
+  const anonymous = claims.is_anonymous === true;
+  if (anonymous && !demo) throw new HttpError(403, "anonymous sessions are only accepted in demo mode (KF_DEMO)");
+  return anonymous;
 }
 
 function bearer(req: Request): string | null {
@@ -184,7 +201,7 @@ export async function authenticate(req: Request): Promise<Caller> {
 
   if (token.startsWith("skn_")) {
     const s = await exchangeAgentKey(token);
-    return { userId: s.userId, kind: "agent", accessToken: s.accessToken, clientId: null, db: userClient(s.accessToken) };
+    return { userId: s.userId, kind: "agent", accessToken: s.accessToken, clientId: null, anonymous: false, db: userClient(s.accessToken) };
   }
 
   const db = userClient(token);
@@ -192,6 +209,7 @@ export async function authenticate(req: Request): Promise<Caller> {
   if (error || !data?.claims?.sub) throw new HttpError(401, "invalid or expired token");
   const claims = data.claims as Record<string, unknown> & { sub: string; app_metadata?: { kind?: string } };
   if (claims.role !== "authenticated") throw new HttpError(401, "a user token is required");
+  const anonymous = checkAnonymous(claims, demoMode());
   const kind = claims.app_metadata?.kind === "agent" ? "agent" : "human";
   if (kind === "agent") {
     // A JWT an agent minted itself (e.g. via /auth/v1/token with its key) is valid until it expires; at least
@@ -204,6 +222,7 @@ export async function authenticate(req: Request): Promise<Caller> {
     kind,
     accessToken: token,
     clientId: typeof claims.client_id === "string" && claims.client_id ? claims.client_id : null,
+    anonymous,
     db,
   };
 }

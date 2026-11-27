@@ -14,7 +14,7 @@ export type ProposalStatus = "pending" | "approved" | "applied" | "rejected" | "
 export type ProposalRisk = "low" | "medium" | "high";
 export type ProposalOpKind = "create" | "update" | "deprecate" | "move";
 export type CitationKind = "source_document" | "trace" | "flag" | "concept" | "url";
-export type ConnectorKind = "notion" | "slack" | "github" | "gdrive" | "web" | "upload";
+export type ConnectorKind = "notion" | "slack" | "github" | "gdrive" | "web" | "upload" | "schema";
 export type TraceRole = "system" | "user" | "assistant" | "tool" | "feedback";
 
 /** A group id list. Empty = everyone who can read the space. */

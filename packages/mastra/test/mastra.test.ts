@@ -287,3 +287,23 @@ describe("review fixes", () => {
     await run.end(null);
   });
 });
+
+describe("MCP tools in traced runs", () => {
+  it("an MCP result with isError, returned as a normal tool result, is recorded as an error", async () => {
+    const { TraceRecorder } = await import("@supaknowledge/sdk");
+    const { recordStep } = await import("../src/index.ts");
+    const events: any[] = [];
+    const trace = new TraceRecorder({ create: async (b) => (events.push(...(b.events as any[])), { trace_id: "t" }), update: async () => {}, flag: async () => ({ id: null }) }, { flushIntervalMs: 0 });
+    const failed = { content: [{ type: "text", text: 'ERROR:  42P01: relation "subscriptions" does not exist' }], isError: true };
+    recordStep(trace, {
+      content: [
+        { type: "tool-call", toolCallId: "1", toolName: "supabase_execute_sql", input: { query: "select * from subscriptions" } },
+        { type: "tool-result", toolCallId: "1", toolName: "supabase_execute_sql", output: { type: "json", value: failed } },
+        { type: "tool-call", toolCallId: "2", toolName: "supabase_list_tables", input: {} },
+        { type: "tool-result", toolCallId: "2", toolName: "supabase_list_tables", output: { content: [{ type: "text", text: "billing.subscriptions" }] } },
+      ],
+    });
+    await trace.end();
+    assert.deepEqual(events.map((e) => [e.tool_name, e.is_error]), [["supabase_execute_sql", true], ["supabase_list_tables", false]]);
+  });
+});

@@ -21,6 +21,7 @@ The TypeScript and Python clients cover the same ground:
 | Skills | `kf.listSkills()`, `kf.loadSkill(name, { traceId })` | `kf.list_skills()`, `kf.load_skill(name, trace_id=)` |
 | Report a problem | `kf.flag({ kind, observation, conceptPath, suggestedFix })` | `kf.flag(kind, observation, concept_path=, suggested_fix=)` |
 | Record a trace | `kf.trace({ name, externalId })` | `kf.trace(name=, external_id=)` |
+| Record another MCP server's call (Supabase MCP) | `trace.mcpTool({ server, name, input, result })` | `trace.mcp_tool(server, name, input, result)` |
 | Tools for any LLM loop | `kf.knowledgeTools()`, `kf.handleToolCalls()`, `kf.handleToolCall()` | `kf.knowledge_tools()`, `kf.handle_tool_calls()`, `kf.handle_tool_call()` |
 | MCP client config | `kf.mcpServerConfig({ client })` | `kf.mcp_server_config(client)` |
 
@@ -128,6 +129,13 @@ trace.assistant(answer);
 await trace.flag({ kind: "outdated", conceptPath: "data/orders", observation: "..." }); // linked to the trace
 await trace.end({ outcome: "corrected" });   // unknown | success | failure | corrected
 ```
+
+Calls to another MCP server's tools, such as the Supabase MCP server's `execute_sql`, go on the trace in one line
+from the MCP `CallToolResult`: `trace.mcpTool({ server: "supabase", name: "execute_sql", input: args, result })`.
+The event is named `mcp__supabase__execute_sql`, `isError` (or `error` when the call threw) marks it failed, and a
+successful `execute_sql` result is replaced by `{ omitted: "row data" }` before it is sent. The `traces` function
+redacts literals in the SQL and parses the Postgres error, and the curator turns errors such as
+`column "x" does not exist` into flags. See [Use with the Supabase MCP server](mcp.md#use-with-the-supabase-mcp-server).
 
 | Option | Default | |
 |---|---|---|
@@ -426,6 +434,10 @@ with kf.trace(name="weekly revenue", external_id=request_id) as trace:
     trace.set_outcome("corrected")
 # leaving the block ends the trace: outcome "success", or "failure" if the block raised (unless set)
 ```
+
+`trace.mcp_tool("supabase", "execute_sql", args, result)` records a call to another MCP server's tool from its
+result (the MCP SDK's `CallToolResult` or a dict), like `mcpTool` in TypeScript: rows of a successful `execute_sql`
+are never sent.
 
 Like the TypeScript recorder it never raises into your code (errors go to `on_error`). It flushes when
 `max_batch` events are buffered, on `flush()` and on `end()`; there is no background thread. `kf.trace(...)` also

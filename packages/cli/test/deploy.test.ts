@@ -36,7 +36,7 @@ function makeRepo(h: Harness): string {
   mkdirSync(join(dir, "supabase", "migrations"), { recursive: true });
   writeFileSync(join(dir, "supabase", "config.jsonc"), CONFIG_JSONC);
   writeFileSync(join(dir, "supabase", ".env"), "KF_INTERNAL_SECRET=local-secret\n");
-  for (const f of ["mcp", "embed", "curator", "_shared"]) {
+  for (const f of ["mcp", "embed", "curator", "_shared", "oauth-broker"]) {
     mkdirSync(join(dir, "supabase", "functions", f), { recursive: true });
     writeFileSync(join(dir, "supabase", "functions", f, "index.ts"), "// fn\n");
   }
@@ -373,6 +373,7 @@ describe("kf deploy", () => {
     assert.deepEqual(deployFns!.args.filter((a) => !a.startsWith("/")), ["functions", "deploy", `--remote=${REF}`, "--workdir", "--yes", "--agent", "no"]);
     assert.ok(deployFns!.files!.includes("supabase/functions/mcp/index.ts"));
     assert.ok(deployFns!.files!.every((f) => !/\.env|node_modules/.test(f)), deployFns!.files!.join(","));
+    assert.ok(deployFns!.files!.every((f) => !f.includes("oauth-broker")), "the OAuth broker is not deployed to Supaknowledge projects");
     assert.equal(JSON.parse(deployFns!.config!).edge_runtime.secrets, undefined);
     assert.ok(!existsSync(deployFns!.args[deployFns!.args.indexOf("--workdir") + 1]!), "temp dir removed");
 

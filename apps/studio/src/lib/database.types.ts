@@ -928,11 +928,29 @@ isOneToOne: false
 "is_stale":
 { Args: { "c": Omit<Database["public"]['Tables']["concepts"]['Row'], Database["public"]['Tables']["concepts"]['ComputedFields']> }; Returns: boolean
                            },
+"join_demo":
+{ Args: { "p_space"?: string }; Returns: Json
+                           },
 "kf_add_run_stats":
 { Args: { "p_delta": Json,"p_run": string }; Returns: Json
                            },
 "kf_allow_agent_password_change":
 { Args: { "p_agent": string }; Returns: undefined
+                           },
+"kf_curator_progress":
+{ Args: { "p_events": Json,"p_space": string }; Returns: number
+                           },
+"kf_demo_disable":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_enable":
+{ Args: { "p_flags_per_day"?: number,"p_flags_per_visitor_per_hour"?: number,"p_space": string }; Returns: Json
+                           },
+"kf_demo_reset":
+{ Args: { "p_space": string }; Returns: Json
+                           },
+"kf_demo_status":
+{ Args: { "p_space": string }; Returns: Json
                            },
 "kf_embed_requeue":
 { Args: { "p_delay"?: number,"p_message": Json,"p_msg_id": number }; Returns: boolean
@@ -964,6 +982,9 @@ isOneToOne: false
 "kf_queue_send":
 { Args: { "p_delay"?: number,"p_messages": (Json)[],"p_queue": string }; Returns: (number)[]
                            },
+"kf_record_schema_drift":
+{ Args: { "p_flags": Json,"p_source": string }; Returns: number
+                           },
 "kf_rejected_proposals":
 { Args: { "p_limit"?: number,"p_paths": (string)[],"p_space": string }; Returns: {
               "audiences": Json,"id": string,"paths": (string)[],"review_note": string,"reviewed_at": string,"title": string
@@ -983,8 +1004,14 @@ isOneToOne: false
 "kf_trace_events":
 { Args: { "p_max_per_trace"?: number,"p_trace_ids": (string)[] }; Returns: Json
                            },
+"knowledge_graph":
+{ Args: { "p_limit"?: number,"p_space": string }; Returns: Json
+                           },
 "knowledge_health":
 { Args: { "p_days"?: number,"p_space": string }; Returns: Json
+                           },
+"knowledge_recap":
+{ Args: { "p_month": string,"p_space"?: string,"p_workspace"?: string }; Returns: Json
                            },
 "list_my_invitations":
 { Args: Record<PropertyKey, never>; Returns: {
@@ -1115,7 +1142,7 @@ isOneToOne: false
       } }
           }
           Enums: {
-            "citation_kind": "source_document"|"trace"|"flag"|"concept"|"url","concept_kind": "skill"|"domain"|"data_access","concept_status": "draft"|"stable"|"deprecated","connector_kind": "notion"|"slack"|"github"|"gdrive"|"web"|"upload","flag_kind": "missing"|"incorrect"|"outdated"|"conflicting"|"unclear","flag_status": "open"|"in_proposal"|"resolved"|"dismissed","principal_kind": "human"|"agent","proposal_op_kind": "create"|"update"|"deprecate"|"move","proposal_risk": "low"|"medium"|"high","proposal_status": "pending"|"approved"|"applied"|"rejected"|"conflicted"|"superseded","review_decision": "approve"|"reject"|"comment"|"request_changes","run_status": "queued"|"running"|"succeeded"|"failed"|"cancelled","source_status": "active"|"paused"|"error","space_role": "reader"|"editor"|"reviewer"|"admin","space_visibility": "workspace"|"private","trace_outcome": "unknown"|"success"|"failure"|"corrected","trace_role": "system"|"user"|"assistant"|"tool"|"feedback","trust_tier": "unverified"|"machine_confirmed"|"human_reviewed","workspace_role": "owner"|"admin"|"member"
+            "citation_kind": "source_document"|"trace"|"flag"|"concept"|"url","concept_kind": "skill"|"domain"|"data_access","concept_status": "draft"|"stable"|"deprecated","connector_kind": "notion"|"slack"|"github"|"gdrive"|"web"|"upload"|"schema","flag_kind": "missing"|"incorrect"|"outdated"|"conflicting"|"unclear","flag_status": "open"|"in_proposal"|"resolved"|"dismissed","principal_kind": "human"|"agent","proposal_op_kind": "create"|"update"|"deprecate"|"move","proposal_risk": "low"|"medium"|"high","proposal_status": "pending"|"approved"|"applied"|"rejected"|"conflicted"|"superseded","review_decision": "approve"|"reject"|"comment"|"request_changes","run_status": "queued"|"running"|"succeeded"|"failed"|"cancelled","source_status": "active"|"paused"|"error","space_role": "reader"|"editor"|"reviewer"|"admin","space_visibility": "workspace"|"private","trace_outcome": "unknown"|"success"|"failure"|"corrected","trace_role": "system"|"user"|"assistant"|"tool"|"feedback","trust_tier": "unverified"|"machine_confirmed"|"human_reviewed","workspace_role": "owner"|"admin"|"member"
           }
           CompositeTypes: {
             [_ in never]: never
@@ -1231,7 +1258,7 @@ export type CompositeTypes<
 export const Constants = {
   "public": {
           Enums: {
-            "citation_kind": ["source_document", "trace", "flag", "concept", "url"],"concept_kind": ["skill", "domain", "data_access"],"concept_status": ["draft", "stable", "deprecated"],"connector_kind": ["notion", "slack", "github", "gdrive", "web", "upload"],"flag_kind": ["missing", "incorrect", "outdated", "conflicting", "unclear"],"flag_status": ["open", "in_proposal", "resolved", "dismissed"],"principal_kind": ["human", "agent"],"proposal_op_kind": ["create", "update", "deprecate", "move"],"proposal_risk": ["low", "medium", "high"],"proposal_status": ["pending", "approved", "applied", "rejected", "conflicted", "superseded"],"review_decision": ["approve", "reject", "comment", "request_changes"],"run_status": ["queued", "running", "succeeded", "failed", "cancelled"],"source_status": ["active", "paused", "error"],"space_role": ["reader", "editor", "reviewer", "admin"],"space_visibility": ["workspace", "private"],"trace_outcome": ["unknown", "success", "failure", "corrected"],"trace_role": ["system", "user", "assistant", "tool", "feedback"],"trust_tier": ["unverified", "machine_confirmed", "human_reviewed"],"workspace_role": ["owner", "admin", "member"]
+            "citation_kind": ["source_document", "trace", "flag", "concept", "url"],"concept_kind": ["skill", "domain", "data_access"],"concept_status": ["draft", "stable", "deprecated"],"connector_kind": ["notion", "slack", "github", "gdrive", "web", "upload", "schema"],"flag_kind": ["missing", "incorrect", "outdated", "conflicting", "unclear"],"flag_status": ["open", "in_proposal", "resolved", "dismissed"],"principal_kind": ["human", "agent"],"proposal_op_kind": ["create", "update", "deprecate", "move"],"proposal_risk": ["low", "medium", "high"],"proposal_status": ["pending", "approved", "applied", "rejected", "conflicted", "superseded"],"review_decision": ["approve", "reject", "comment", "request_changes"],"run_status": ["queued", "running", "succeeded", "failed", "cancelled"],"source_status": ["active", "paused", "error"],"space_role": ["reader", "editor", "reviewer", "admin"],"space_visibility": ["workspace", "private"],"trace_outcome": ["unknown", "success", "failure", "corrected"],"trace_role": ["system", "user", "assistant", "tool", "feedback"],"trust_tier": ["unverified", "machine_confirmed", "human_reviewed"],"workspace_role": ["owner", "admin", "member"]
           }
         }
 } as const

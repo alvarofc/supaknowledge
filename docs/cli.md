@@ -20,7 +20,7 @@ stdout). Progress and warnings go to stderr, so stdout stays clean for pipes.
 
 | Where | What |
 |---|---|
-| `~/.config/supaknowledge/config.json` | Profiles: project URL, publishable key, and the session (access + refresh token). Written with mode 0600. `kf` refreshes the session when it is about to expire. Override the folder with `SUPAKNOWLEDGE_CONFIG_DIR` (or `XDG_CONFIG_HOME`). |
+| `~/.config/supaknowledge/config.json` | Profiles: project URL, publishable key, and the session (access + refresh token). Written with mode 0600. `kf` refreshes the session when it is about to expire. `supabase_oauth` holds the Supabase Management API tokens of `kf deploy --login`. Override the folder with `SUPAKNOWLEDGE_CONFIG_DIR` (or `XDG_CONFIG_HOME`). |
 | `.supaknowledge.json` (written by `kf init`) | The default space for a directory: `{ "space": "acme/finance", "space_id": "...", "url": "..." }`. `kf` looks for it in the current directory and its parents. Safe to commit. |
 
 Precedence: command-line flags, then environment variables, then `.supaknowledge.json` / the profile.
@@ -33,6 +33,7 @@ Precedence: command-line flags, then environment variables, then `.supaknowledge
 | `SUPAKNOWLEDGE_SPACE` | Default space, `<workspace>/<space>` |
 | `SUPAKNOWLEDGE_PROFILE` | Profile name (default: the profile of the last `kf login`) |
 | `SUPAKNOWLEDGE_TRANSPORT` | `auto` (default), `mcp` or `rest`: how `search` / `flag` reach the server (see below) |
+| `KF_SUPABASE_OAUTH_CLIENT_ID`, `KF_SUPABASE_OAUTH_BROKER_URL`, `KF_SUPABASE_OAUTH_CLIENT_SECRET`, `KF_SUPABASE_OAUTH_PORT` | The Supabase OAuth app `kf deploy --login` signs in with: a client id plus a token broker URL, or your own app's client secret (and callback port, default 8791). See [Deploy](deploy.md#deploy-with-kf-deploy---login) |
 | `NO_COLOR`, `FORCE_COLOR` | Color control. Colors are also off with `--json`, `--no-color` and when stdout is not a terminal. |
 
 Global options: `--json`, `-s, --space <workspace/space|uuid>`, `-p, --profile <name>`, `--no-color`.
@@ -63,6 +64,7 @@ kf mcp-config --client claude-code     # or connect over MCP
 |---|---|
 | `kf login [--url] [--publishable-key] [--email --password \| --password-stdin] [--token <jwt\|skn_...> \| --token-stdin]` | Signs in and saves the session in the profile. An agent key is exchanged for a refreshable agent session. |
 | `kf logout` | Revokes the session (`/auth/v1/logout`) and removes it from the profile. |
+| `kf logout --supabase` | Forgets the Supabase sign-in saved by `kf deploy --login` (the profile's session stays). |
 | `kf whoami` | User or agent, workspaces with roles, and your role on the current space. |
 | `kf init --workspace <slug> --space <slug> [--name] [--workspace-name] [--description] [--visibility workspace\|private] [--dir]` | Creates the workspace (`create_workspace`) and space (`create_space`) when missing, then writes `.supaknowledge.json`. Re-running it only selects. `--space acme/finance` works too. |
 
@@ -135,7 +137,7 @@ kf mcp-config --client cursor --agent-key          # uses ${env:SUPAKNOWLEDGE_AP
 
 | Command | What it does |
 |---|---|
-| `kf sources add <notion\|slack\|github\|gdrive\|web\|upload> --name <name> [--config <json>] [--audience group,...] [--interval "1 hour"]` | Adds a source (space admin). `--audience` restricts who can see its documents. |
+| `kf sources add <notion\|slack\|github\|gdrive\|web\|upload\|schema> --name <name> [--config <json>] [--audience group,...] [--interval "1 hour"]` | Adds a source (space admin). `--audience` restricts who can see its documents. For `schema`, `--project-ref <ref>` and `--schemas a,b` fill the config. |
 | `kf sources secret <source>` | Reads the connector token from piped stdin (or prompts when stdin is a terminal) and stores it in Vault (`set_source_secret`). The token never reaches the API again. |
 | `kf sources sync <source>` | Queues a full sync now (`request_source_sync`). |
 | `kf sources list` / `kf sources remove <source>` | Sources with status and last sync; delete one. |
@@ -150,7 +152,12 @@ kf sources sync handbook
 
 | Command | What it does |
 |---|---|
-| `kf deploy --project-ref <ref> [--dir <path>] [--env-file <file>] [--studio-url <url>] [--public-url <url>] [--task-budget-ms <ms>] [--access-token-stdin] [--skip-db] [--skip-functions] [--skip-auth] [--skip-check] [--use-api] [--dry-run] [--verbose]` | Deploys this repository (run it from a clone, or pass `--dir <path>`) to a hosted Supabase project in seven steps: project check, `supabase db push`, Vault `kf_internal_secret` / `project_url`, function secrets through the Management API (never `supabase secrets set`), Edge Functions from a clean copy without `.env` files, Auth (OAuth server, Before User Created hook, Site URL and redirect URLs from `--studio-url`) and a post-deploy check. Needs a personal access token in `SUPABASE_ACCESS_TOKEN` (or `--access-token-stdin`); prints secret names, never values. `--dry-run` shows the plan without changing anything. See [Deploy](deploy.md#deploy-with-kf-deploy-recommended). |
+| `kf deploy --project-ref <ref> [--dir <path>] [--env-file <file>] [--studio-url <url>] [--public-url <url>] [--task-budget-ms <ms>] [--access-token-stdin] [--skip-db] [--skip-functions] [--skip-auth] [--skip-check] [--use-api] [--dry-run] [--verbose]` | Deploys this repository (run it from a clone, or pass `--dir <path>`) to a hosted Supabase project in seven steps: project check, `supabase db push`, Vault `kf_internal_secret` / `project_url`, function secrets through the Management API (never `supabase secrets set`), Edge Functions from a clean copy without `.env` files, Auth (OAuth server, Before User Created hook, Site URL and redirect URLs from `--studio-url`) and a post-deploy check. Needs a personal access token in `SUPABASE_ACCESS_TOKEN` (or `--access-token-stdin`), or `--login`; prints secret names, never values. `--dry-run` shows the plan without changing anything. See [Deploy](deploy.md#deploy-with-kf-deploy-recommended). |
+| `kf deploy --login [--project-ref <ref> \| --create-project <name> [--region <region>]] [--org <slug>] [...]` | The same deploy, signed in with Supabase's OAuth for integrations in the browser (PKCE) instead of a personal access token. Without `--project-ref` it lets you pick a project of the organization, or creates one (`--create-project`, or `n` at the prompt), prints its generated database password once and waits until it is healthy. Without a terminal it needs `--project-ref` or `--create-project`. See [Deploy](deploy.md#deploy-with-kf-deploy---login). |
+| `kf demo enable [--flags-per-hour 5] [--flags-per-day 200]` | Opens the current space as a [public demo](deploy.md#host-a-public-demo): anonymous visitors can join it as readers and raise rate-limited flags. Turns auto-apply off. Workspace owners only; refused when the workspace has another space every member can read. |
+| `kf demo status` | Whether the space is a demo, its flag limits, the number of visitors and the last reset. |
+| `kf demo reset [--bundle <dir>]` | Deletes visitor flags, traces and usage, unapplied proposals created since the demo was enabled, visitor memberships and the anonymous visitor users (the cron job `kf-demo-reset` does the same nightly). `--bundle` then re-imports the bundle and applies it. |
+| `kf demo disable` | Resets the demo and closes it. |
 
 ### Members and groups
 

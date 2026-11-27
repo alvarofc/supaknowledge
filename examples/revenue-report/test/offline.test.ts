@@ -54,3 +54,21 @@ test("offline curator run: data fix auto-applies, skill fix waits for review, AR
 
   assert.ok(store.flags.every((f) => f.status !== "open"), "every flag is resolved or in a proposal");
 });
+
+test("offline schema drift: the rename becomes a flag, then a proposal citing the schema document", async () => {
+  const { drift } = await runOfflineDemo({ quiet: true });
+  assert.equal(drift.runStatus, "succeeded");
+  const flags = drift.store.flags;
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0]!.concept_path, "data/bigquery/revenue");
+  assert.equal(flags[0]!.created_by, null);
+  assert.match(flags[0]!.observation, /probably renamed to revenue_usd_net/);
+  assert.equal(flags[0]!.status, "in_proposal");
+
+  assert.equal(drift.proposals.length, 1);
+  const p = drift.proposals[0]!;
+  assert.deepEqual(p.citations.map((x) => x.ref_kind).sort(), ["flag", "source_document"]);
+  assert.equal(p.status, "pending", "a heuristic rename waits for a person");
+  assert.match(p.ops[0]!.after.body!, /sum\(revenue_usd_net\)/);
+  assert.doesNotMatch(p.ops[0]!.after.body!, /sum\(revenue_usd\)/);
+});

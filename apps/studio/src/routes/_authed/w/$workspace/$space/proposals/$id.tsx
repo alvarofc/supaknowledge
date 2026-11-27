@@ -11,10 +11,14 @@ import {
   Quote,
   ShieldAlert,
   TriangleAlert,
+  Users,
   Zap,
 } from "lucide-react";
+import { useState } from "react";
 import { AudienceBadge, EscalationBadge, FlagKindBadge, ProposalStatusBadge, RiskBadge } from "@/components/kf/badges";
 import { LiveRefresh } from "@/components/kf/live-refresh";
+import { ViewerAvatars, namedViewers, usePeople, useProposalPresence } from "@/components/kf/presence";
+import { nameList } from "@/lib/presence";
 import { Markdown } from "@/components/kf/markdown";
 import { conceptHref } from "@/components/inbox/flag-list";
 import { OpCard } from "@/components/inbox/op-card";
@@ -94,6 +98,12 @@ function ProposalPage() {
       : null;
   const notes = reviews.filter((r) => r.decision === "comment" || r.decision === "request_changes");
 
+  // Realtime Presence on proposal:<id>: who else has this proposal open, and who has the review form open
+  const [reviewing, setReviewing] = useState(false);
+  const viewers = useProposalPresence(p.id, ctx.user.id, reviewing ? "reviewing" : "viewing");
+  const people = namedViewers(viewers, usePeople(viewers.map((v) => v.userId), profiles));
+  const othersReviewing = people.filter((v) => v.state === "reviewing").map((v) => v.name);
+
   return (
     <>
       <Link href={ctx.base} className="mb-4 inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
@@ -121,7 +131,10 @@ function ProposalPage() {
             ) : null}
           </p>
         </div>
-        <LiveRefresh spaceId={ctx.space.id} tables={["proposals"]} />
+        <div className="flex items-center gap-3">
+          <ViewerAvatars viewers={people} />
+          <LiveRefresh spaceId={ctx.space.id} tables={["proposals"]} />
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -292,13 +305,21 @@ function ProposalPage() {
             <h2 className="mb-3 text-sm font-medium">Decision</h2>
             {pending || p.status === "conflicted" ? (
               canReview ? (
-                <ReviewActions
+                <>
+                  {othersReviewing.length ? (
+                    <Callout tone="warn" icon={<Users />} className="mb-3" title={`${nameList(othersReviewing)} ${othersReviewing.length === 1 ? "is" : "are"} reviewing this proposal`}>
+                      Agree who decides before you approve or reject it.
+                    </Callout>
+                  ) : null}
+                  <ReviewActions
                   proposalId={p.id}
                   hasFiles={data.hasFiles}
                   canApprove={pending}
                   canReject
                   approveBlockedReason={pending ? approveBlockedReason : null}
+                  onReviewingChange={setReviewing}
                 />
+                </>
               ) : (
                 <p className="text-sm text-muted">Reviewers and admins of this space decide on proposals. You can read it and its evidence.</p>
               )
