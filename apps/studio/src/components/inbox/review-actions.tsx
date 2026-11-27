@@ -1,6 +1,6 @@
 import { Check, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { useRouter } from "@tanstack/react-router";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
@@ -62,6 +62,7 @@ export function ReviewActions({
   canReject,
   approveBlockedReason,
   hasFiles = false,
+  onReviewingChange,
 }: {
   proposalId: string;
   /** some op carries skill files (after.files) that must be synced into Storage after applying */
@@ -69,6 +70,8 @@ export function ReviewActions({
   canApprove: boolean;
   canReject: boolean;
   approveBlockedReason?: string | null;
+  /** the approve or reject form opened or closed (shown to others on the proposal as "reviewing") */
+  onReviewingChange?: (reviewing: boolean) => void;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -77,6 +80,10 @@ export function ReviewActions({
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [, startTransition] = useTransition();
+
+  useEffect(() => {
+    onReviewingChange?.(dialog !== null);
+  }, [dialog, onReviewingChange]);
 
   const rejectError = dialog === "reject" && touched && !note.trim() ? "A reason is required — the curator reads it on its next run." : null;
 

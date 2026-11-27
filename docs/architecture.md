@@ -55,7 +55,7 @@ users, writing skill files to Storage). See [access control](access-control.md).
 
 ## Data model
 
-Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups):
+Twenty-seven migrations in `supabase/migrations` (`20261124000001`–`…10` the base schema, `20261125000011`–`…26` review fixes and follow-ups, `20261127000300` Realtime):
 
 | Migration | Contents |
 |---|---|
@@ -85,6 +85,7 @@ Twenty-six migrations in `supabase/migrations` (`20261124000001`–`…10` the b
 | `…24_pr1_followups` | `search_sources(p_source)` (per-source search filtered before the limit), concept paths reject empty and `.` segments |
 | `…25_pr5_followups` | Proposal path validation (`private.valid_concept_path`) rejects empty and `.` segments like `concepts.path` |
 | `…26_settings_cas` | `update_space_settings()`: compare-and-swap saves of space settings (RLS and settings validation still apply) |
+| `20261127000300_realtime_review` | Realtime Authorization (RLS on `realtime.messages`) for the private topics `proposal:<id>` (review presence) and `curator:<space>` (curator progress); `kf_curator_progress()` (service role → `realtime.send()`) |
 
 ### One write path
 
@@ -195,6 +196,11 @@ Deleting a space, source or concept, or soft-deleting a document, queues its Sto
 
 `flags`, `proposals`, `curator_runs` and `concepts` are in the `supabase_realtime` publication. Studio subscribes
 to `postgres_changes` filtered by space; Realtime applies RLS, so nobody hears about rows they cannot read.
+
+Two private channels use Realtime Authorization (RLS policies on `realtime.messages`): **Presence** on
+`proposal:<id>`, joined only by people who can see the proposal, shows who is viewing or reviewing it; **Broadcast**
+on `curator:<space id>`, received by editors and up, carries the curator's progress events, which the `curator`
+function sends through `kf_curator_progress()` → `realtime.send()`. See [access control](access-control.md#realtime-channels).
 
 ## Packages
 

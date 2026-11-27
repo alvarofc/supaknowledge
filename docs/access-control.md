@@ -6,7 +6,7 @@ JWT. Edge Functions do not re-implement permissions; they call the database as t
 and the CLI only hide buttons.
 
 The model was designed in [DESIGN.md §5a](DESIGN.md#5a-access-control-supabase-auth--rls) and is pinned down by
-739 pgTAP tests ([below](#tests)).
+778 pgTAP tests ([below](#tests)).
 
 ## Principals
 
@@ -255,6 +255,20 @@ Other hardening worth knowing:
   sources, concepts and documents are queued in `kf_storage_gc` (not readable by API roles) and removed by the
   `maintenance` function.
 
+## Realtime channels
+
+Studio's Presence and Broadcast channels are private: Realtime authorizes each join with the user's JWT against RLS
+policies on `realtime.messages` (migration `20261127000300_realtime_review`). Clients can only use these topics:
+
+| Topic | Joined by | Sent by |
+|---|---|---|
+| `proposal:<proposal id>` (Presence: who is viewing or reviewing) | People who can see the proposal (the `proposals` SELECT policy decides, so every cited and consulted audience applies). Never agents (`app_metadata.kind = 'agent'`) or OAuth client tokens | The same people, presence only; nobody can broadcast |
+| `curator:<space id>` (Broadcast: curator progress) | Whoever may read the space's curator runs: editors and up | Only the curator, through `kf_curator_progress()` (service role); there is no INSERT policy |
+
+Presence payloads are written by clients, so a member who can join a proposal's channel could claim to be another
+member. Studio uses presence only to help people coordinate, and resolves names from `profiles` through RLS.
+Curator progress events carry ids and counts, never evidence (see [the curator](curator.md#live-progress)).
+
 ## Tests
 
 `supabase/tests/database` holds the pgTAP suite. `_fixture.psql` builds two workspaces with people at every role,
@@ -278,6 +292,7 @@ material; every test file runs inside a transaction that is rolled back.
 | `13_pr1_db_followups.test.sql` | 8 | `search_sources(p_source)` filtering before the limit without widening visibility, concept paths without empty or `.` segments |
 | `14_pr5_followups.test.sql` | 12 | `p_source` finding a source's documents outside the space-wide candidate sets (text, vector, hybrid), proposal path validation |
 | `15_settings_cas.test.sql` | 6 | `update_space_settings()` compare-and-swap: saved, conflict, forbidden for non-admins, not found |
+| `16_realtime.test.sql` | 39 | Realtime Authorization: presence on `proposal:<id>` follows proposal visibility (audiences, roles, workspaces), never agents or OAuth client tokens, no broadcast; curator progress on `curator:<space>` for editors and up, sent only through `kf_curator_progress()` (service role, validated events) |
 
 Run them against a running local stack:
 

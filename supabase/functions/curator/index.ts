@@ -9,9 +9,13 @@
 // visibility timeout until the task is marked failed. A message delivered more often than MAX_TASK_ATTEMPTS
 // (the worker was killed mid-task, e.g. by the platform wall-clock limit, so no attempt was recorded) fails
 // the task for good BEFORE any model is called: a killed task never loops and never burns tokens again.
+//
+// Live progress: the engine's progress events (ids, counts and timings, never evidence) go to Realtime Broadcast on
+// the private topic curator:<space id> through kf_curator_progress() (service role -> realtime.send()). Studio's
+// Activity page shows them; Realtime Authorization (RLS on realtime.messages) lets editors and up receive them.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { LLMConfigError, MastraLLM, llmConfigFromEnv } from "../_shared/core/index.ts";
-import { type CuratorTask, MAX_TASK_ATTEMPTS, runTask, SupabaseCuratorStore } from "../_shared/core/curator/index.ts";
+import { type CuratorTask, MAX_TASK_ATTEMPTS, progressEmitter, rpcProgressSink, runTask, SupabaseCuratorStore } from "../_shared/core/curator/index.ts";
 import { authenticate, requireInternal } from "../_shared/auth.ts";
 import { adminClient } from "../_shared/env.ts";
 import { embed } from "../_shared/embed.ts";
@@ -62,10 +66,17 @@ function limitRunRequests(userId: string) {
 const db = adminClient();
 const store = new SupabaseCuratorStore(db, embed);
 
+const logProgress = (m: string, d?: Record<string, unknown>) => console.log(`[curator] ${m}`, d ? JSON.stringify(d) : "");
+/** how long a task waits for its last progress events to be sent before the message is acked */
+const PROGRESS_FLUSH_MS = 2_000;
+
 /** Fail a task permanently (no retries) and close its run if nothing else is outstanding (kf_maybe_finish_run). */
-async function failPermanently(task: { id: string; run_id: string }, error: string) {
+async function failPermanently(task: { id: string; run_id: string; space_id: string; step: string }, error: string) {
   await store.failTask(task.id, error, { permanent: true });
   await store.maybeFinishRun(task.run_id);
+  const progress = rpcProgressSink(db, task.space_id, logProgress);
+  progressEmitter(progress, task)({ type: "task_failed", final: true });
+  await progress.flush(PROGRESS_FLUSH_MS);
 }
 
 async function work(msg: CuratorMessage, job: QueueJob<CuratorMessage>) {
@@ -117,13 +128,19 @@ async function work(msg: CuratorMessage, job: QueueJob<CuratorMessage>) {
   const task: CuratorTask = { id: row.id, run_id: row.run_id, space_id: row.space_id, step: row.step, input: row.input ?? {}, attempts: row.attempts };
   // runTask records success/failure + attempts on the task and closes the run when it was the last one.
   // It rethrows on failure, so processBatch leaves the message for a retry after the visibility timeout.
-  await runTask({
-    store,
-    llm,
-    budgetMs: BUDGET_MS,
-    maxTokensPerRun: MAX_TOKENS_PER_RUN,
-    log: (m, d) => console.log(`[curator] ${m}`, d ? JSON.stringify(d) : ""),
-  }, task);
+  const progress = rpcProgressSink(db, row.space_id, logProgress);
+  try {
+    await runTask({
+      store,
+      llm,
+      budgetMs: BUDGET_MS,
+      maxTokensPerRun: MAX_TOKENS_PER_RUN,
+      log: (m, d) => console.log(`[curator] ${m}`, d ? JSON.stringify(d) : ""),
+      progress,
+    }, task);
+  } finally {
+    await progress.flush(PROGRESS_FLUSH_MS);
+  }
 }
 
 Deno.serve(handler(async (req) => {

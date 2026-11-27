@@ -113,6 +113,34 @@ re-validate it: either move `stale_after` forward (low risk) or fix it.
 Applying a proposal resolves its flags. Rejecting one (`kf reject <id> --note …`) puts its flags back to `open`,
 and the note becomes context for the next draft.
 
+## Live progress
+
+While a task runs, the engine reports what it does through an optional callback, `CuratorDeps.progress`
+(`packages/core/src/curator/progress.ts`). Without one nothing is emitted, so Node, tests and the offline demo are
+unchanged; a sink that throws or rejects is ignored.
+
+| Event | When |
+|---|---|
+| `task_started`, `task_finished`, `task_failed` (`final`: no retry follows) | Every task |
+| `evidence` | Counts of what the task works from: new traces (gather), open flags and changed documents (triage), flags, traces, documents, source excerpts, target and related concepts, rejections (draft) |
+| `model_call_started`, `model_call_finished` | Each model call, with its purpose (`mine`, `triage`, `draft`, `repair`, `review`), duration and tokens |
+| `lessons`, `clusters`, `stale` | Gather, triage and sweep results, as counts |
+| `draft_ops`, `self_review`, `no_change`, `draft_invalid` | The checked changeset (ops by kind, citations, problems) and the self-review verdict (issues, blockers) |
+| `proposal_created`, `proposal_applied` | The proposal id, and when the space policy applied it |
+
+Everyone who may watch a space's curator (editors and up) receives the events, which is wider than the audience of
+the evidence a task reads. So events carry ids of curator rows, counts and timings only: never evidence text,
+titles, concept paths, cluster topics, model output or error messages (`packages/core/test/progress.test.ts` checks
+this against a run over finance-only evidence). Studio reads a proposal's title through RLS.
+
+The `curator` Edge Function sends them with `rpcProgressSink()`: in order, batched while a call is in flight, through
+`kf_curator_progress(space, events)` (service role only), which calls `realtime.send()` on the private topic
+`curator:<space id>` with the event name `progress`. `realtime.send()` stores each message in `realtime.messages`,
+so Realtime delivers it to subscribers its RLS policies allow and can replay it to a viewer who joins later; a REST
+broadcast would need the secret key in another place and could not be checked by pgTAP. A task waits at most 2 s
+for its last events before its queue message is acked. Studio shows them on Activity (see
+[Studio](studio.md#how-it-talks-to-supabase)).
+
 ## Provenance
 
 Every new or changed claim gets a footnote (`[^label]`) in the body, and every label is a citation:

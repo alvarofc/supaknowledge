@@ -4,6 +4,7 @@ import { FlagItem } from "@/components/inbox/flag-list";
 import { InvitationsBanner } from "@/components/invitations/invitations-banner";
 import { ProposalItem } from "@/components/inbox/proposal-list";
 import { LiveRefresh } from "@/components/kf/live-refresh";
+import { ViewerAvatars, namedViewers, usePeople, useProposalsPresence } from "@/components/kf/presence";
 import { LinkButton } from "@/components/ui/button";
 import { Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { LinkTabs } from "@/components/ui/tabs";
@@ -32,6 +33,9 @@ function InboxPage() {
 
   const requested = (sp.tab ?? "") as Tab;
   const tab: Tab = isEditor ? (["proposals", "flags", "history"].includes(requested) ? requested : "proposals") : "flags";
+  // who else has a pending proposal open (Realtime Presence; only people who can see a proposal can join its channel)
+  const presence = useProposalsPresence(isEditor && tab === "proposals" ? pending.map((p) => p.id) : [], ctx.user.id);
+  const people = usePeople(Object.values(presence).flatMap((v) => v.map((x) => x.userId)), profiles);
 
   const tabs = isEditor
     ? [
@@ -61,7 +65,13 @@ function InboxPage() {
             <Card>
               <ul className="divide-y divide-line">
                 {pending.map((p) => (
-                  <ProposalItem key={p.id} p={p} base={ctx.base} profiles={profiles} />
+                  <ProposalItem
+                    key={p.id}
+                    p={p}
+                    base={ctx.base}
+                    profiles={profiles}
+                    presence={<ViewerAvatars viewers={namedViewers(presence[p.id] ?? [], people)} />}
+                  />
                 ))}
               </ul>
             </Card>

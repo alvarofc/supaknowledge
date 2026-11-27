@@ -934,6 +934,9 @@ isOneToOne: false
 "kf_allow_agent_password_change":
 { Args: { "p_agent": string }; Returns: undefined
                            },
+"kf_curator_progress":
+{ Args: { "p_events": Json,"p_space": string }; Returns: number
+                           },
 "kf_embed_requeue":
 { Args: { "p_delay"?: number,"p_message": Json,"p_msg_id": number }; Returns: boolean
                            },

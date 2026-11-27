@@ -22,6 +22,7 @@ import { stableHash } from "./hash.ts";
 import { CLUSTER_SYSTEM, DRAFT_SYSTEM, REVIEW_SYSTEM, UNTRUSTED_DATA_RULE, untrusted, withHouseRules } from "./prompts.ts";
 import { ClusterSchema, DraftSchema, ReviewSchema, type DraftOutput, type ReviewOutput } from "./schemas.ts";
 import type { ConceptHit, CuratorRun, CuratorStore, CuratorTask, DocCursor, RejectedProposal, SearchOptions, SourceHit } from "./store.ts";
+import { type Emit, type ModelPurpose, type ProgressSink, type ProposalOpKind, progressEmitter } from "./progress.ts";
 
 export interface CuratorDeps {
   store: CuratorStore;
@@ -35,6 +36,11 @@ export interface CuratorDeps {
    * curator.max_tokens_per_run can lower it, never raise it; 0/undefined = no ceiling.
    */
   maxTokensPerRun?: number;
+  /**
+   * Live progress (task picked up, evidence counts, model calls, changeset, self-review, proposal). Optional and
+   * best effort: the Edge Function sends it to Realtime Broadcast; without it nothing is emitted. See progress.ts.
+   */
+  progress?: ProgressSink;
 }
 
 export interface ClusterInput {
@@ -101,13 +107,34 @@ class MeteredLLM implements LLM {
   private tokenBudget: number;
   private runTokens: number;
   private record: (delta: Record<string, number>) => Promise<Record<string, unknown> | void>;
+  private emit: Emit;
 
-  constructor(inner: LLM, opts: { deadline: number; tokenBudget: number; runTokens: number; record: (delta: Record<string, number>) => Promise<Record<string, unknown> | void> }) {
+  constructor(inner: LLM, opts: { deadline: number; tokenBudget: number; runTokens: number; record: (delta: Record<string, number>) => Promise<Record<string, unknown> | void>; emit?: Emit }) {
     this.inner = inner;
     this.deadline = opts.deadline;
     this.tokenBudget = opts.tokenBudget;
     this.runTokens = opts.runTokens;
     this.record = opts.record;
+    this.emit = opts.emit ?? (() => {});
+  }
+
+  /** The same model, reporting each call as `purpose` in the task's progress events. */
+  for(purpose: ModelPurpose): LLM {
+    return {
+      generate: async <T>(req: GenerateRequest<T>): Promise<GenerateResult<T>> => {
+        const started = Date.now();
+        this.emit({ type: "model_call_started", purpose });
+        try {
+          const res = await this.generate(req);
+          this.emit({ type: "model_call_finished", purpose, ok: true, ms: Date.now() - started, tokens: res.usage.input_tokens + res.usage.output_tokens });
+          return res;
+        } catch (e) {
+          const spent = usageOf(e);
+          this.emit({ type: "model_call_finished", purpose, ok: false, ms: Date.now() - started, tokens: spent ? spent.input_tokens + spent.output_tokens : 0 });
+          throw e;
+        }
+      },
+    };
   }
 
   remainingMs(): number {
@@ -162,6 +189,8 @@ interface TaskContext {
   log: (msg: string, data?: Record<string, unknown>) => void;
   budgetMs: number;
   remainingMs: () => number;
+  /** progress events (no-op without CuratorDeps.progress) */
+  emit: Emit;
 }
 
 /**
@@ -174,6 +203,8 @@ export async function runTask(deps: CuratorDeps, task: CuratorTask): Promise<Rec
   const log = deps.log ?? (() => {});
   const budgetMs = deps.budgetMs ?? DEFAULT_BUDGET_MS;
   const deadline = Date.now() + budgetMs;
+  const emit = progressEmitter(deps.progress, task, deps.now);
+  emit({ type: "task_started", attempt: (Number(task.attempts) || 0) + 1 });
   try {
     const run = await store.getRun(task.run_id);
     const settings = await store.getSettings(run.space_id);
@@ -184,8 +215,9 @@ export async function runTask(deps: CuratorDeps, task: CuratorTask): Promise<Rec
       tokenBudget: ceiling > 0 ? (spaceBudget > 0 ? Math.min(spaceBudget, ceiling) : ceiling) : spaceBudget,
       runTokens: tokensOf(run.stats),
       record: (delta) => store.addRunStats(run.id, delta),
+      emit,
     });
-    const ctx: TaskContext = { store, llm, run, settings, log, budgetMs, now: deps.now ?? (() => new Date()), remainingMs: () => deadline - Date.now() };
+    const ctx: TaskContext = { store, llm, run, settings, log, budgetMs, now: deps.now ?? (() => new Date()), remainingMs: () => deadline - Date.now(), emit };
 
     let output: Record<string, unknown>;
     if (task.step === "gather") output = await gather(ctx, task);
@@ -194,6 +226,7 @@ export async function runTask(deps: CuratorDeps, task: CuratorTask): Promise<Rec
     else if (task.step === "draft") output = await draft(ctx, task);
     else throw new LLMConfigError(`unknown curator step "${task.step}"`);
     await store.finishTask(task.id, output);
+    emit({ type: "task_finished" });
     await store.maybeFinishRun(task.run_id);
     return output;
   } catch (e) {
@@ -201,6 +234,7 @@ export async function runTask(deps: CuratorDeps, task: CuratorTask): Promise<Rec
     const permanent = e instanceof LLMBudgetError || e instanceof LLMConfigError;
     log("curator task failed", { task: task.id, step: task.step, error: msg, attempts: task.attempts, permanent });
     const { final } = await store.failTask(task.id, msg, { permanent });
+    emit({ type: "task_failed", final });
     if (!final) throw e;
     await store.maybeFinishRun(task.run_id);
     return { failed: true, error: msg };
@@ -219,6 +253,7 @@ async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
   const scannedBefore = Number(task.input.scanned ?? 0) || 0;
   const batch = Math.max(0, Math.min(TRACE_BATCH, settings.curator.max_traces_per_run - scannedBefore));
   const traces = batch > 0 ? await store.listUncuratedTraces(run.space_id, batch) : [];
+  ctx.emit({ type: "evidence", counts: { traces: traces.length } });
   let mined = 0;
   let lessons = 0;
   let done = 0;
@@ -226,7 +261,7 @@ async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     if (ctx.remainingMs() < RESERVE_MS + MIN_CALL_MS + 5_000) break;
     const { score } = scoreTrace(trace);
     if (score >= 2) {
-      const out = await extractLessons(llm, trace, { instructions: settings.curator.instructions });
+      const out = await extractLessons(llm.for("mine"), trace, { instructions: settings.curator.instructions });
       const flags = lessonsToFlags(trace, out);
       // idempotent (dedupe key per trace + lesson), then the trace is marked right away: a failure on the
       // next trace never re-mines this one
@@ -238,6 +273,7 @@ async function gather(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     done++;
   }
   if (traces.length) await store.addRunStats(run.id, { traces_scanned: done, traces_mined: mined, lessons });
+  if (traces.length) ctx.emit({ type: "lessons", traces_scanned: done, traces_mined: mined, lessons });
   const scanned = scannedBefore + done;
 
   const more = done < traces.length || (traces.length === batch && batch > 0 && scanned < settings.curator.max_traces_per_run);
@@ -376,7 +412,7 @@ async function triagePass(ctx: TaskContext, audience: Audience, signals: Signal[
       ([...candidates.values()].map((h) => `- ${h.path} (${h.kind}, ${h.type}): ${h.title} — ${h.description}`).join("\n") || "(none)"),
     "Signals:\n" + signals.map((s) => `${s.id}:\n${untrusted(s.id, s.text)}`).join("\n\n"),
   ];
-  const res = await llm.generate({
+  const res = await llm.for("triage").generate({
     system: withHouseRules(CLUSTER_SYSTEM + UNTRUSTED_DATA_RULE, settings.curator.instructions),
     input,
     schema: ClusterSchema,
@@ -434,6 +470,7 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     if (docs.length === TRIAGE_DOC_PAGE && last) nextCursor = { changed_at: last.changed_at, id: last.id };
   }
 
+  ctx.emit({ type: "evidence", counts: { flags: flags.length, documents: docs.length } });
   const byConcept = new Map<string, ClusterInput>();
   const loose: Signal[] = [];
 
@@ -525,6 +562,7 @@ async function triage(ctx: TaskContext, task: CuratorTask): Promise<Record<strin
     for (const d of dismissals) await store.dismissFlags([d.flagId], `curator triage: ${d.reason}`);
     dismissed = dismissals.length;
   }
+  ctx.emit({ type: "clusters", clusters: selected.length, deferred: clusters.length - selected.length, dismissed });
   // deferred signals were counted by the task that deferred them
   await store.addRunStats(run.id, { flags: deferred ? 0 : flags.length, documents: deferred ? 0 : docs.length, clusters: selected.length, ignored, flags_dismissed: dismissed, triage_passes: passes, ...(docsOverCap ? { documents_over_cap: docsOverCap } : {}) });
   return {
@@ -561,6 +599,7 @@ async function sweep(ctx: TaskContext): Promise<Record<string, unknown>> {
     };
     await store.enqueueTask(run.id, "draft", input as unknown as Record<string, unknown>, { dedupeKey: `stale:${c.path}` });
   }
+  ctx.emit({ type: "stale", concepts: stale.length });
   await store.addRunStats(run.id, { stale: stale.length });
   return { stale: stale.length };
 }
@@ -1127,11 +1166,23 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
     ev,
   );
   const input = renderEvidence(ev, cluster, rejections);
+  ctx.emit({
+    type: "evidence",
+    counts: {
+      flags: ev.flags.size,
+      traces: ev.traces.size,
+      documents: ev.documents.size,
+      source_excerpts: ev.sourceHits.length,
+      concepts: ev.targets.size,
+      related: ev.related.length,
+      rejections: rejections.length,
+    },
+  });
 
   // Deep-agent style: the drafting model starts from the evidence above and can pull more on demand.
   const tools = researchTools(ctx, ev, relatedByPath, scope);
   const system = withHouseRules(DRAFT_SYSTEM + UNTRUSTED_DATA_RULE + RESEARCH_GUIDE, settings.curator.instructions);
-  const drafted = await llm.generate({
+  const drafted = await llm.for("draft").generate({
     system,
     input,
     schema: DraftSchema,
@@ -1156,6 +1207,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
     const dismiss = dismissable(out);
     for (const d of dismiss) await dismissFlag(d);
     await store.addRunStats(run.id, { no_change: 1, flags_dismissed: dismiss.length });
+    ctx.emit({ type: "no_change", dismissed: dismiss.length });
     return { decision: "no_change", rationale: out.rationale, dismissed: dismiss.length };
   }
 
@@ -1169,7 +1221,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
       problems = [...problems, "repair round skipped: not enough time left in this task"];
     } else {
       try {
-        const repaired = await llm.generate({
+        const repaired = await llm.for("repair").generate({
           system,
           input: [
             ...input,
@@ -1196,8 +1248,13 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   }
   if (proposal.ops.length === 0) {
     await store.addRunStats(run.id, { invalid_drafts: 1 });
+    ctx.emit({ type: "draft_invalid", problems: problems.length });
     return { decision: "invalid", problems };
   }
+
+  const opCounts: Partial<Record<ProposalOpKind, number>> = {};
+  for (const o of proposal.ops) opCounts[o.op] = (opCounts[o.op] ?? 0) + 1;
+  ctx.emit({ type: "draft_ops", ops: opCounts, citations: proposal.citations.length, problems: problems.length });
 
   // second opinion against the same evidence (including what research found) and the same house rules
   let review: ReviewOutput = { ok: false, issues: [], risk: proposal.risk };
@@ -1207,7 +1264,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   } else {
     try {
       const evidence = renderEvidence(ev, cluster, rejections);
-      const res = await llm.generate({
+      const res = await llm.for("review").generate({
         system: withHouseRules(REVIEW_SYSTEM + UNTRUSTED_DATA_RULE, settings.curator.instructions),
         input: [
           ...evidence,
@@ -1226,6 +1283,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   }
 
   const blockers = review.issues.filter((i) => i.severity === "blocker");
+  ctx.emit({ type: "self_review", ok: reviewed && review.ok, issues: review.issues.length, blockers: blockers.length, skipped: !reviewed });
   // a reviewer verdict of not-ok blocks auto-apply even when it listed no blocker issue
   const rejectedByReview = reviewed && !review.ok;
   proposal.risk = maxRisk(proposal.risk, review.risk, blockers.length ? "high" : rejectedByReview ? "medium" : "low", problems.length ? "medium" : "low");
@@ -1240,6 +1298,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
   const cited = proposal.citations;
   const consulted = consultedCitations(ev, cited);
   const persisted = await store.createProposal(run.space_id, run.id, author, { ...proposal, citations: [...cited, ...consulted] });
+  ctx.emit({ type: "proposal_created", proposal_id: persisted.id });
 
   // After this point the proposal exists: a failure must not make the task retry (that would duplicate it).
   const sourceKinds = evidenceSourceKinds(ev);
@@ -1259,6 +1318,7 @@ async function draft(ctx: TaskContext, task: CuratorTask): Promise<Record<string
     if (decision.autoApply && reviewed && review.ok && blockers.length === 0 && problems.length === 0) {
       const res = await store.applyProposal(persisted.id, author);
       applied = res.status === "applied";
+      if (applied) ctx.emit({ type: "proposal_applied", proposal_id: persisted.id });
     }
     // dismissals only once the proposal is persisted, from the final (post-repair) changeset
     const dismiss = dismissable(out, proposal.flag_ids);

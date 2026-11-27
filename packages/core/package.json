@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./formats": "./src/formats.ts",
-    "./curator": "./src/curator/index.ts"
+    "./curator": "./src/curator/index.ts",
+    "./progress": "./src/curator/progress.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

@@ -1,4 +1,5 @@
 import { ChevronRight, FileDiff } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "@/components/ui/link";
 import { EscalationBadge, ProposalStatusBadge, RiskBadge } from "@/components/kf/badges";
 import type { Database } from "@/lib/database.types";
@@ -11,7 +12,20 @@ export type ProposalRow = Pick<
   "id" | "title" | "author" | "risk" | "escalation" | "status" | "auto_applied" | "created_at" | "applied_at" | "reviewed_at" | "reviewed_by"
 > & { proposal_ops: { count: number }[] };
 
-export function ProposalItem({ p, base, profiles, history }: { p: ProposalRow; base: string; profiles: ProfileMap; history?: boolean }) {
+export function ProposalItem({
+  p,
+  base,
+  profiles,
+  history,
+  presence,
+}: {
+  p: ProposalRow;
+  base: string;
+  profiles: ProfileMap;
+  history?: boolean;
+  /** who else has the proposal open (ViewerAvatars), shown before the timestamp */
+  presence?: ReactNode;
+}) {
   const when = history ? (p.applied_at ?? p.reviewed_at ?? p.created_at) : p.created_at;
   // one fact per row: who decided it (history) or who proposed it; the curator's model is on the proposal page
   // (the number of changes is on the proposal page)
@@ -36,6 +50,7 @@ export function ProposalItem({ p, base, profiles, history }: { p: ProposalRow; b
             <span className="text-xs text-subtle">{who}</span>
           </div>
         </div>
+        {presence}
         <Timestamp iso={when} className="shrink-0 text-xs text-subtle" />
         <ChevronRight className="mt-0.5 size-4 shrink-0 text-subtle" aria-hidden="true" />
       </Link>
