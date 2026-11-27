@@ -84,6 +84,7 @@ query it). What Supaknowledge adds to the post:
 | Source connectors | Edge Function + Storage + Vault (tokens) + Queues + Cron | `connectors` function |
 | Skill files, raw source files | Storage, with RLS that follows the rows they belong to | buckets `concept-files`, `sources` |
 | Live review inbox | Realtime (`postgres_changes`, RLS applied) | Studio |
+| Who is reviewing what, the curator at work | Realtime Presence and Broadcast on private channels (Realtime Authorization) | Studio, `curator` function |
 | Import / export | OKF + Agent Skills | `bundle` function, `kf` CLI |
 
 Details: [architecture](docs/architecture.md).
@@ -148,7 +149,7 @@ More: [getting started](docs/getting-started.md).
 |---|---|
 | `supabase/migrations` | Schema, RLS, RPCs, queues, cron jobs, Storage buckets, Realtime |
 | `supabase/functions` | Edge Functions: `mcp`, `agents`, `traces`, `bundle`, `curator`, `embed`, `connectors`, `maintenance` |
-| `supabase/tests/database` | 739 pgTAP tests of the access model |
+| `supabase/tests/database` | 778 pgTAP tests of the access model |
 | `packages/core` | `@supaknowledge/core` (internal, not published): OKF + Agent Skills formats, chunking, access rules, policy, the curator engine |
 | `packages/cli` | `@supaknowledge/cli`: the `supaknowledge` command, alias `kf` |
 | `packages/sdk`, `sdks/python` | `@supaknowledge/sdk` (TypeScript) and `supaknowledge` (Python): search, flag, traces, OpenAI-compatible / JSON Schema tool helpers |

@@ -19,13 +19,18 @@ First public release, planned as **0.1.0**. Highlights:
   tiers, staleness, an audit log, and hybrid search (pgvector + full-text) with gte-small embeddings computed in
   the Edge Runtime (no API key).
 - **Access control in the database.** Humans, OAuth-connected MCP clients and headless agents are all Supabase
-  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 739 pgTAP tests.
+  Auth users; row level security enforces workspaces, spaces, roles and audience groups. 778 pgTAP tests.
 - **Remote MCP server** (`mcp` Edge Function) with OAuth 2.1 through Supabase Auth, and agent API keys
   (`skn_...`) for headless agents.
 - **Trace ingest** (JSON and OTLP) and correction mining from agent traces.
 - **Source connectors** for Notion, Slack, GitHub, Google Drive, web pages and uploads, with tokens in Vault.
 - **Studio** (TanStack Start): review inbox with live updates, knowledge browser and editor, sources, agents,
   activity, health dashboard and settings.
+- **Realtime review presence and a live curator view.** Studio shows who else has a proposal open and who is
+  reviewing it (Presence on private channels, Realtime Authorization keyed on proposal visibility, never agents),
+  and Activity shows the curator's current run step by step (Broadcast from the `curator` function through
+  `realtime.send()`; ids and counts only). The engine reports progress through an optional, no-op-by-default
+  `progress` callback.
 - **CLI** `@supaknowledge/cli` (`supaknowledge`, alias `kf`): login, init, import / export / lint / pull of
   [OKF](docs/okf.md) bundles and [Agent Skills](https://agentskills.io), proposal review, agents, sources,
   members and MCP client config.

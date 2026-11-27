@@ -52,9 +52,27 @@ Nitro), Tailwind CSS v4, `@supabase/ssr` + `@supabase/supabase-js`, `react-markd
   - `mcp`: the address shown in the "connect your agent" snippets.
 
   If a function isn't deployed, Studio says so in place.
-- **Realtime.** The inbox, proposal pages, knowledge pages and Activity subscribe to `postgres_changes` on `proposals`,
-  `flags`, `curator_runs` and `concepts`, filtered by space, and refresh when rows change. Realtime applies RLS, so
-  nobody hears about rows they can't read. A change triggers `router.invalidate()`, which reloads the page's data.
+- **Realtime.** Three uses, all with the user's JWT:
+  - *Postgres Changes.* The inbox, proposal pages, knowledge pages and Activity subscribe to `postgres_changes` on
+    `proposals`, `flags`, `curator_runs` and `concepts`, filtered by space, and refresh when rows change. Realtime
+    applies RLS, so nobody hears about rows they can't read. A change triggers `router.invalidate()`, which reloads
+    the page's data.
+  - *Presence on review.* A proposal page tracks the viewer on the private channel `proposal:<id>` (`viewing`, or
+    `reviewing` while the approve or reject form is open) and shows the other people there as initials, with the
+    name on hover. When someone else is reviewing, the Decision panel says so. The inbox watches the channels of the
+    pending proposals it lists (up to 25) without tracking itself, and shows who has each one open. Nothing is shown
+    when you are alone. Names come from `profiles` through RLS; presence payloads are written by clients, so treat
+    them as a hint to coordinate, not as proof of who is there.
+  - *Curator live view.* Activity → Curator runs starts with a Curator panel: whether the curator is running (or
+    when the last run finished, from `curator_runs`), and the current run step by step as the curator's progress
+    events arrive on the private channel `curator:<space id>` (Broadcast; on joining, Studio replays the stored
+    events of the active or just finished run, up to 25). Events carry ids and counts only; a created proposal is
+    linked by reading its title through RLS, so a viewer who can't see it gets no title.
+
+  Private channels are authorized by Realtime Authorization: RLS policies on `realtime.messages` (migration
+  `20261127000300_realtime_review`, see [access control](access-control.md#realtime-channels)). Channels are shared
+  per topic and closed shortly after the last component leaves (`src/lib/realtime.ts`), because the policies check
+  the exact topic.
 - **Space settings** (`spaces.settings`) are validated with `SpaceSettingsSchema` from `@supaknowledge/core` before they are
   saved, in a POST server function (`saveSpaceSettings`). The update itself still runs as the user. It is merged
   into what is stored: keys the schema does not know are kept, and so are fields the form did not change, so a page
@@ -278,14 +296,14 @@ CDN cache them.
 | `/auth/signout` | Server route, POST: signs out and returns to `/login` (keeping a validated `next`). Cross-site POSTs are refused (`Sec-Fetch-Site` / `Origin` check). |
 | `/oauth/consent` | The consent screen for MCP clients (see above). |
 | `/onboarding` | Pending invitations (accept / decline), then create a workspace, a space, and connect an agent. `?workspace=<slug>` skips to "new space". |
-| `/w/<ws>/<space>` | **Inbox**: pending proposals (risk, escalation), open flags (dismiss), and history including auto-applied changes. Updates live. |
-| `…/proposals/<id>` | **Review**: rationale; per-change field, frontmatter and body diffs (split or unified); skill files by name and size; citations with quotes and links to documents, traces and flags; evidence the curator consulted but did not cite, listed separately (it still decides visibility and escalation); review notes; approve with an optional note (skill files are then synced into Storage) or reject with a required one; conflicts explained. |
+| `/w/<ws>/<space>` | **Inbox**: pending proposals (risk, escalation, who has each open), open flags (dismiss), and history including auto-applied changes. Updates live. |
+| `…/proposals/<id>` | **Review**: who else has it open and who is reviewing it (Presence); rationale; per-change field, frontmatter and body diffs (split or unified); skill files by name and size; citations with quotes and links to documents, traces and flags; evidence the curator consulted but did not cite, listed separately (it still decides visibility and escalation); review notes; approve with an optional note (skill files are then synced into Storage) or reject with a required one; conflicts explained. |
 | `…/knowledge` | Concept tree (kind icons, trust, stale, restricted), kind filters, full-text search (`search_knowledge`). |
 | `…/knowledge/<path>` | Rendered markdown with footnotes, frontmatter, OKF sources, links and backlinks, files, open flags. History tab with diffs between revisions. Actions: verify, revert (`propose_revert`), suggest an edit, report a problem. |
 | `…/suggest[?path=]` | Editor that creates a human proposal (`create_proposal`, atomic), with a live diff and preview. |
 | `…/sources` | Sources with status, last sync and errors. Add a source (connector config forms with the keys each connector reads, such as GitHub `ref` or Web `follow_links` / `sitemap` / `max_pages` / `same_origin_only`; audience), set a write-only token, sync now, browse and search documents, upload to `upload` sources. |
 | `…/agents` | "Connect as yourself" (OAuth) snippets; headless agents (create shows the key once, plus snippets for Claude Code, Cursor and generic clients; rotate, revoke, restore, delete; revoked agents are marked); connected applications. Revoke, rotate and delete sign the agent's sessions out; its old key stops working within seconds. |
-| `…/activity` | Curator runs (run now, cancel a queued or running run, stats, tasks for admins with their input and output loaded on demand), traces with a transcript viewer (reviewers and up), audit log (admins). |
+| `…/activity` | Curator live view (running or not, the current run step by step, the proposals it created); curator runs (run now, cancel a queued or running run, stats, tasks for admins with their input and output loaded on demand), traces with a transcript viewer (reviewers and up), audit log (admins). |
 | `…/health` | `knowledge_health`: counts by kind and trust, stale, open and missing flags, flag rate per concept, never-used concepts, last run. |
 | `…/graph` | Knowledge graph (`knowledge_graph`): concepts colored by kind, links between them, and for editors the documents, traces, flags and concepts that applied proposals cited. Filters: kind, only concepts with open flags, only stale, citations on or off. Click a node to open it. Below the `md` breakpoint, or with `?view=list`, the same concepts show as a list. See [below](#knowledge-graph-and-recap). |
 | `…/recap` | Monthly recap (`knowledge_recap`) for the space or the whole workspace, with a month picker, Download PNG, Copy image and Copy for Slack. See [below](#knowledge-graph-and-recap). |

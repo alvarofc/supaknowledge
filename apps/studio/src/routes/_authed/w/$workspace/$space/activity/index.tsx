@@ -4,7 +4,7 @@ import { JsonDetails, StatChips } from "@/components/activity/json-view";
 import { CancelRunButton } from "@/components/activity/cancel-run-button";
 import { TaskPayload } from "@/components/activity/task-payload";
 import { OutcomeBadge, RUN_STATUS, duration } from "@/components/activity/outcome-badge";
-import { RunCuratorButton } from "@/components/activity/run-curator-button";
+import { CuratorLive } from "@/components/activity/curator-live";
 import { AgentBadge, StatusDot } from "@/components/kf/badges";
 import { LiveRefresh } from "@/components/kf/live-refresh";
 import { Badge } from "@/components/ui/badge";
@@ -76,19 +76,10 @@ function ActivityPage() {
 
 function Runs({ ctx, isAdmin, isReviewer, data }: { ctx: Ctx; isAdmin: boolean; isReviewer: boolean; data: RunsData }) {
   const { list, tasks, profiles } = data;
-  const active = list.some((r) => r.status === "queued" || r.status === "running");
 
   return (
     <div className="flex flex-col gap-4">
-      {isReviewer ? (
-        <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <p className="max-w-xl text-sm text-muted">
-            The curator runs nightly and whenever enough flags pile up on one concept. Run it now to process open flags, new traces and
-            changed source documents since the last successful run.
-          </p>
-          <RunCuratorButton spaceId={ctx.space.id} active={active} />
-        </Card>
-      ) : null}
+      <CuratorLive spaceId={ctx.space.id} base={ctx.base} runs={list} canRun={isReviewer} />
       {list.length === 0 ? (
         <EmptyState framed icon={<Sparkles />} title="The curator has not run yet">
           Each run gathers open flags, new agent traces and changed source documents, clusters them by topic, researches each cluster
